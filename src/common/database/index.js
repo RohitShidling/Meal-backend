@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const bcrypt = require('bcrypt');
 require('dotenv').config();
 
 const pool = new Pool({
@@ -55,7 +56,9 @@ const initDB = async () => {
     // Create default admin if not exists (for testing/demo)
     const adminCheck = await pool.query('SELECT * FROM admins LIMIT 1');
     if (adminCheck.rows.length === 0) {
-      await pool.query('INSERT INTO admins (phone_number, password) VALUES ($1, $2)', ['+911234567890', 'adminpassword']);
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash('adminpassword', salt);
+      await pool.query('INSERT INTO admins (phone_number, password) VALUES ($1, $2)', ['+911234567890', hashedPassword]);
       console.log('✅ Default admin inserted: +911234567890 / adminpassword');
     }
   } catch (err) {

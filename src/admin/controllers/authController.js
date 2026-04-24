@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
 const db = require('../../common/database');
 const { sendOTP, verifyOTP } = require('../../common/services/otpService');
 const catchAsync = require('../../common/utils/catchAsync');
@@ -26,10 +27,19 @@ const loginController = catchAsync(async (req, res, next) => {
     return next(new AppError('phoneNumber and password are required.', 400));
   }
 
-  // Check if admin exists in DB with correct credentials
-  const result = await db.query('SELECT * FROM admins WHERE phone_number = $1 AND password = $2', [phoneNumber, password]);
+  // Check if admin exists in DB
+  const result = await db.query('SELECT * FROM admins WHERE phone_number = $1', [phoneNumber]);
 
   if (result.rows.length === 0) {
+    return next(new AppError('Invalid phone number or password.', 401));
+  }
+
+  const adminUser = result.rows[0];
+
+  // Compare provided password with stored hash
+  const isMatch = await bcrypt.compare(password, adminUser.password);
+  
+  if (!isMatch) {
     return next(new AppError('Invalid phone number or password.', 401));
   }
 
