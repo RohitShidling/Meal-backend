@@ -40,7 +40,17 @@ const initDB = async () => {
   try {
     await pool.query(createClientsTable);
     await pool.query(createAdminsTable);
-    console.log('✅ Database tables initialized.');
+    
+    // Add columns if they do not exist
+    await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS is_logged_in BOOLEAN DEFAULT false;`);
+    await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_login TIMESTAMP;`);
+    await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS refresh_token TEXT;`);
+    
+    await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS is_logged_in BOOLEAN DEFAULT false;`);
+    await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS last_login TIMESTAMP;`);
+    await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS refresh_token TEXT;`);
+
+    console.log('✅ Database tables initialized with necessary columns.');
 
     // Create default admin if not exists (for testing/demo)
     const adminCheck = await pool.query('SELECT * FROM admins LIMIT 1');
