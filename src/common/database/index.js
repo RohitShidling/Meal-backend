@@ -1,6 +1,7 @@
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
-require('dotenv').config();
+process.env.DOTENVX_QUIET = '1';
+require('dotenv').config({ quiet: true });
 
 const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
@@ -15,7 +16,7 @@ pool.connect((err, client, release) => {
   if (err) {
     return console.error('Error acquiring client', err.stack);
   }
-  console.log('✅ PostgreSQL database connected successfully.');
+  console.log('PostgreSQL database connected successfully.');
   release();
 });
 
@@ -131,7 +132,7 @@ const initDB = async () => {
     });
 
     if (shouldReset) {
-      console.log('🔄 Old integer IDs detected. Resetting tables for custom ID formats (SH-X, P-X)...');
+      console.log('Old integer IDs detected. Resetting tables for custom ID formats (SH-X, P-X)...');
       await pool.query('DROP TABLE IF EXISTS children CASCADE;');
       await pool.query('DROP TABLE IF EXISTS schools CASCADE;');
       await pool.query('DROP TABLE IF EXISTS clients CASCADE;');
@@ -159,7 +160,8 @@ const initDB = async () => {
     await pool.query(createStandardsTable);
     await pool.query(createChildrenTable);
 
-    // Migration: Update existing child IDs from PH- to CH- prefix if any exist
+    // Migration: Force CH- prefix for children and set as default for existing tables
+    await pool.query("ALTER TABLE children ALTER COLUMN id SET DEFAULT 'CH-' || nextval('child_id_seq')::TEXT;");
     await pool.query("UPDATE children SET id = REPLACE(id, 'PH-', 'CH-') WHERE id LIKE 'PH-%';");
 
     // Migration: Add 'address' column if it doesn't exist (in case table was created with old schema)
@@ -174,7 +176,7 @@ const initDB = async () => {
     // Ensure address is NOT NULL if it was just added (might need a default or manual data fix if data exists)
     // For now, just making sure it's there.
     
-    console.log('✅ Database tables initialized successfully.');
+    console.log('Database tables initialized successfully.');
 
     // ──────────────────────────────────────────────
     // SEED: Default Admin
@@ -187,7 +189,7 @@ const initDB = async () => {
         'INSERT INTO admins (phone_number, password) VALUES ($1, $2)',
         ['+911234567890', hashedPassword]
       );
-      console.log('✅ Default admin seeded: +911234567890 / adminpassword');
+      console.log('Default admin seeded: +911234567890 / adminpassword');
     }
 
     // ──────────────────────────────────────────────
@@ -202,7 +204,7 @@ const initDB = async () => {
           ('large',  'Large',  3)
         ON CONFLICT (name) DO NOTHING;
       `);
-      console.log('✅ Meal sizes seeded: Small, Medium, Large');
+      console.log('Meal sizes seeded: Small, Medium, Large');
     }
 
     // ──────────────────────────────────────────────
@@ -220,7 +222,7 @@ const initDB = async () => {
           ${standardValues}
         ON CONFLICT (name) DO NOTHING;
       `);
-      console.log('✅ Standards seeded: 1st to 12th');
+      console.log('Standards seeded: 1st to 12th');
     }
 
   } catch (err) {

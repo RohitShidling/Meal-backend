@@ -1,4 +1,5 @@
-require('dotenv').config();
+process.env.DOTENVX_QUIET = '1';
+require('dotenv').config({ quiet: true });
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -75,7 +76,7 @@ app.use((err, req, res, next) => {
   err.status = err.status || 'error';
 
   if (process.env.NODE_ENV === 'development') {
-    console.error('Error 💥:', err.message);
+    console.error('Error:', err.message);
     res.status(err.statusCode).json({
       success: false,
       status: err.status,
@@ -91,7 +92,7 @@ app.use((err, req, res, next) => {
       });
     } else {
       // Programming or other unknown error: don't leak error details
-      console.error('ERROR 💥:', err);
+      console.error('ERROR:', err);
       res.status(500).json({
         success: false,
         status: 'error',
@@ -104,8 +105,8 @@ app.use((err, req, res, next) => {
 // Start Server & Init DB
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, async () => {
-  console.log(`\n🚀 Server running at http://localhost:${PORT}`);
-  console.log(`📚 Swagger Docs available at http://localhost:${PORT}/api-docs`);
+  console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Swagger Docs available at http://localhost:${PORT}/api-docs`);
   
   // Initialize PostgreSQL database tables
   await initDB();
