@@ -32,7 +32,8 @@ const options = {
   },
   apis: [
     './src/client/routes/*.js',
-    './src/admin/routes/*.js'
+    './src/admin/routes/*.js',
+    './src/common/routes/*.js'
   ],
 };
 
