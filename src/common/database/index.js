@@ -22,11 +22,20 @@ pool.connect((err, client, release) => {
 // Initialize tables if they don't exist
 const initDB = async () => {
   // ──────────────────────────────────────────────
-  // EXISTING TABLES
+  // SEQUENCES FOR CUSTOM IDs
+  // ──────────────────────────────────────────────
+  const createSequences = `
+    CREATE SEQUENCE IF NOT EXISTS school_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS client_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS child_id_seq;
+  `;
+
+  // ──────────────────────────────────────────────
+  // CORE TABLES
   // ──────────────────────────────────────────────
   const createClientsTable = `
     CREATE TABLE IF NOT EXISTS clients (
-      id            SERIAL PRIMARY KEY,
+      id            VARCHAR(20) PRIMARY KEY DEFAULT 'P-' || nextval('client_id_seq')::TEXT,
       phone_number  VARCHAR(20) UNIQUE NOT NULL,
       created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
@@ -46,7 +55,7 @@ const initDB = async () => {
   // ──────────────────────────────────────────────
   const createSchoolsTable = `
     CREATE TABLE IF NOT EXISTS schools (
-      id              SERIAL PRIMARY KEY,
+      id              VARCHAR(20) PRIMARY KEY DEFAULT 'SH-' || nextval('school_id_seq')::TEXT,
       name            VARCHAR(255) UNIQUE NOT NULL,
       address         TEXT NOT NULL,
       city            VARCHAR(100) NOT NULL,
@@ -59,6 +68,24 @@ const initDB = async () => {
       updated_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  // ──────────────────────────────────────────────
+  // CHILDREN TABLE
+  // ──────────────────────────────────────────────
+  const createChildrenTable = `
+    CREATE TABLE IF NOT EXISTS children (
+      id               VARCHAR(20) PRIMARY KEY DEFAULT 'CH-' || nextval('child_id_seq')::TEXT,
+      parent_id        VARCHAR(20) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      name             VARCHAR(255) NOT NULL,
+      roll_number      VARCHAR(50) NOT NULL,
+      school_id        VARCHAR(20) NOT NULL REFERENCES schools(id),
+      standard_id      INTEGER NOT NULL REFERENCES standards(id),
+      meal_size_id     INTEGER NOT NULL REFERENCES meal_sizes(id),
+      meal_time        TIME NOT NULL,
+      created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `;
 
@@ -91,6 +118,28 @@ const initDB = async () => {
   `;
 
   try {
+    // 1. Drop existing tables if they use old integer IDs (Migration Step)
+    const tableChecks = await pool.query(`
+      SELECT table_name, column_name, data_type 
+      FROM information_schema.columns 
+      WHERE table_name IN ('clients', 'schools') AND column_name = 'id';
+    `);
+
+    let shouldReset = false;
+    tableChecks.rows.forEach(row => {
+      if (row.data_type === 'integer') shouldReset = true;
+    });
+
+    if (shouldReset) {
+      console.log('🔄 Old integer IDs detected. Resetting tables for custom ID formats (SH-X, P-X)...');
+      await pool.query('DROP TABLE IF EXISTS children CASCADE;');
+      await pool.query('DROP TABLE IF EXISTS schools CASCADE;');
+      await pool.query('DROP TABLE IF EXISTS clients CASCADE;');
+    }
+
+    // 2. Create sequences
+    await pool.query(createSequences);
+
     // Create core tables
     await pool.query(createClientsTable);
     await pool.query(createAdminsTable);
@@ -108,6 +157,10 @@ const initDB = async () => {
     await pool.query(createSchoolsTable);
     await pool.query(createMealSizesTable);
     await pool.query(createStandardsTable);
+    await pool.query(createChildrenTable);
+
+    // Migration: Update existing child IDs from PH- to CH- prefix if any exist
+    await pool.query("UPDATE children SET id = REPLACE(id, 'PH-', 'CH-') WHERE id LIKE 'PH-%';");
 
     // Migration: Add 'address' column if it doesn't exist (in case table was created with old schema)
     await pool.query(`ALTER TABLE schools ADD COLUMN IF NOT EXISTS address TEXT;`);

@@ -9,7 +9,9 @@ const { swaggerUi, specs } = require('./docs/swagger');
 
 // Import routes
 const clientAuthRoutes = require('./client/routes/authRoutes');
+const clientChildRoutes = require('./client/routes/childRoutes');
 const adminAuthRoutes = require('./admin/routes/authRoutes');
+const commonRoutes = require('./common/routes/commonRoutes');
 const adminSchoolRoutes = require('./admin/routes/schoolRoutes');
 const adminLookupRoutes = require('./admin/routes/lookupRoutes');
 
@@ -53,7 +55,9 @@ app.get('/', (req, res) => {
 
 // Routes Mounting
 app.use('/api/client/auth', clientAuthRoutes);
+app.use('/api/client/children', clientChildRoutes);
 app.use('/api/admin/auth', adminAuthRoutes);
+app.use('/api/common', commonRoutes);
 app.use('/api/admin/schools', adminSchoolRoutes);
 app.use('/api/admin/lookup', adminLookupRoutes);
 

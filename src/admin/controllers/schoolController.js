@@ -58,7 +58,7 @@ const editSchool = catchAsync(async (req, res, next) => {
   const { id } = req.params;
 
   // Verify school exists
-  const schoolCheck = await db.query('SELECT id FROM schools WHERE id = $1 AND is_deleted = false', [id]);
+  const schoolCheck = await db.query('SELECT id FROM schools WHERE id = $1', [id]);
   if (schoolCheck.rows.length === 0) {
     return next(new AppError('School not found.', 404));
   }
@@ -76,7 +76,7 @@ const editSchool = catchAsync(async (req, res, next) => {
   // Check if updated name conflicts with another school
   if (name) {
     const nameConflict = await db.query(
-      'SELECT id FROM schools WHERE LOWER(name) = LOWER($1) AND id != $2 AND is_deleted = false',
+      'SELECT id FROM schools WHERE LOWER(name) = LOWER($1) AND id != $2',
       [name.trim(), id]
     );
     if (nameConflict.rows.length > 0) {
@@ -95,7 +95,7 @@ const editSchool = catchAsync(async (req, res, next) => {
       is_active       = COALESCE($7, is_active),
       updated_at      = NOW(),
       updated_by      = $8
-    WHERE id = $9 AND is_deleted = false
+    WHERE id = $9
     RETURNING *`,
     [
       name ? name.trim() : null,
@@ -131,8 +131,7 @@ const getAllSchools = catchAsync(async (req, res, next) => {
 
   const countResult = await db.query(
     `SELECT COUNT(*) FROM schools
-     WHERE is_deleted = false
-       AND ($1 = '' OR LOWER(name) LIKE LOWER($2) OR LOWER(city) LIKE LOWER($2))`,
+     WHERE ($1 = '' OR LOWER(name) LIKE LOWER($2) OR LOWER(city) LIKE LOWER($2))`,
     [search, `%${search}%`]
   );
 
@@ -141,8 +140,7 @@ const getAllSchools = catchAsync(async (req, res, next) => {
 
   const result = await db.query(
     `SELECT * FROM schools
-     WHERE is_deleted = false
-       AND ($1 = '' OR LOWER(name) LIKE LOWER($2) OR LOWER(city) LIKE LOWER($2))
+     WHERE ($1 = '' OR LOWER(name) LIKE LOWER($2) OR LOWER(city) LIKE LOWER($2))
      ORDER BY created_at DESC
      LIMIT $3 OFFSET $4`,
     [search, `%${search}%`, limit, offset]
@@ -171,7 +169,7 @@ const getSchoolById = catchAsync(async (req, res, next) => {
   const { id } = req.params;
 
   const result = await db.query(
-    'SELECT * FROM schools WHERE id = $1 AND is_deleted = false',
+    'SELECT * FROM schools WHERE id = $1',
     [id]
   );
 
@@ -196,7 +194,7 @@ const deleteSchool = catchAsync(async (req, res, next) => {
   const { id } = req.params;
 
   const schoolCheck = await db.query(
-    'SELECT id FROM schools WHERE id = $1 AND is_deleted = false',
+    'SELECT id FROM schools WHERE id = $1',
     [id]
   );
   if (schoolCheck.rows.length === 0) {
@@ -204,8 +202,8 @@ const deleteSchool = catchAsync(async (req, res, next) => {
   }
 
   await db.query(
-    `UPDATE schools SET is_deleted = true, updated_at = NOW(), updated_by = $1 WHERE id = $2`,
-    [req.user.id, id]
+    `DELETE FROM schools WHERE id = $1`,
+    [id]
   );
 
   return res.status(200).json({
