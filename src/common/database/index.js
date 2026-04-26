@@ -193,6 +193,20 @@ const initDB = async () => {
     }
 
     // ──────────────────────────────────────────────
+    // Hash any plain-text passwords manually added to DB
+    // ──────────────────────────────────────────────
+    const allAdmins = await pool.query('SELECT id, password FROM admins');
+    for (let admin of allAdmins.rows) {
+      // Check if password looks like a bcrypt hash (starts with $2b$, $2a$, or $2y$)
+      if (!admin.password.startsWith('$2b$') && !admin.password.startsWith('$2a$') && !admin.password.startsWith('$2y$')) {
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(admin.password, salt);
+        await pool.query('UPDATE admins SET password = $1 WHERE id = $2', [hashedPassword, admin.id]);
+        console.log(`Hashed plain-text password for admin ID: ${admin.id}`);
+      }
+    }
+
+    // ──────────────────────────────────────────────
     // SEED: Meal Sizes (Small, Medium, Large)
     // ──────────────────────────────────────────────
     const mealSizesCheck = await pool.query('SELECT id FROM meal_sizes LIMIT 1');
