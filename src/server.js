@@ -104,12 +104,16 @@ app.use((err, req, res, next) => {
 
 // Start Server & Init DB
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, async () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+const server = app.listen(PORT,"0.0.0.0", async () => {
+  console.log(`Server running on port ${PORT}`);
   console.log(`Swagger Docs available at http://localhost:${PORT}/api-docs`);
-  
-  // Initialize PostgreSQL database tables
+
   await initDB();
+});
+
+
+app.get('/health', (req,res)=>{
+  res.json({status:'ok'});
 });
 
 // Graceful Shutdown (Industrial Standard)
