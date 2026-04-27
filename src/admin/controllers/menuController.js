@@ -5,7 +5,7 @@ const cloudinary = require('cloudinary').v2;
 // @route   POST /api/admin/menu/upload
 exports.uploadMenu = async (req, res, next) => {
   try {
-    const { school_id, items, menu_date } = req.body;
+    const { items, menu_date } = req.body;
     const image_url = req.file ? req.file.path : null;
     const image_public_id = req.file ? req.file.filename : null; // Multer-storage-cloudinary uses .filename for public_id
 
@@ -14,12 +14,12 @@ exports.uploadMenu = async (req, res, next) => {
     }
 
     const query = `
-      INSERT INTO daily_menus (school_id, image_url, image_public_id, items, menu_date, created_by)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO daily_menus (image_url, image_public_id, items, menu_date, created_by)
+      VALUES ($1, $2, $3, $4, $5)
       RETURNING *
     `;
     
-    const values = [school_id || null, image_url, image_public_id, items, menu_date || new Date(), req.user.id];
+    const values = [image_url, image_public_id, items, menu_date || new Date(), req.user.id];
     const result = await db.query(query, values);
 
     res.status(201).json({
