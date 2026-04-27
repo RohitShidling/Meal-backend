@@ -1,26 +1,30 @@
 const db = require('../database');
 
-// @desc    Get latest menu (Specific School or Global)
-// @route   GET /api/common/menu/:school_id
-exports.getLatestMenu = async (req, res, next) => {
+// @desc    Get menu by date (defaults to today if date is 'today')
+// @route   GET /api/common/menu/:date
+exports.getMenuByDate = async (req, res, next) => {
   try {
-    const { school_id } = req.params;
+    let { date } = req.params;
+    
+    // If the client asks for 'today', use the current date
+    if (date === 'today') {
+      date = new Date().toISOString().split('T')[0];
+    }
 
-    // Logic: Look for school-specific menu first, fallback to Global (NULL school_id)
     const query = `
-      SELECT id, school_id, image_url, items, menu_date, created_at
+      SELECT id, image_url, items, menu_date, created_at
       FROM daily_menus
-      WHERE (school_id = $1 OR school_id IS NULL) AND is_active = true
-      ORDER BY (school_id IS NOT NULL) DESC, menu_date DESC, created_at DESC
+      WHERE menu_date = $1 AND is_active = true
+      ORDER BY created_at DESC
       LIMIT 1
     `;
     
-    const result = await db.query(query, [school_id]);
+    const result = await db.query(query, [date]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'No active menu found for this school today.'
+        message: `No active menu found for ${date}.`
       });
     }
 
@@ -33,23 +37,22 @@ exports.getLatestMenu = async (req, res, next) => {
   }
 };
 
-// @desc    Get menu history
-// @route   GET /api/common/menu/:school_id/history
+// @desc    Get menu history (All global menus)
+// @route   GET /api/common/menu/history/all
 exports.getMenuHistory = async (req, res, next) => {
   try {
-    const { school_id } = req.params;
     const { limit = 10, page = 1 } = req.query;
     const offset = (page - 1) * limit;
 
     const query = `
-      SELECT id, school_id, image_url, items, menu_date, created_at
+      SELECT id, image_url, items, menu_date, created_at
       FROM daily_menus
-      WHERE (school_id = $1 OR school_id IS NULL) AND is_active = true
+      WHERE is_active = true
       ORDER BY menu_date DESC
-      LIMIT $2 OFFSET $3
+      LIMIT $1 OFFSET $2
     `;
     
-    const result = await db.query(query, [school_id, limit, offset]);
+    const result = await db.query(query, [limit, offset]);
 
     res.status(200).json({
       success: true,

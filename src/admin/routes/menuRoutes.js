@@ -22,8 +22,6 @@ router.use(adminAuth);
  *           schema:
  *             type: object
  *             properties:
- *               school_id:
- *                 type: string
  *               items:
  *                 type: string
  *               menu_date:
