@@ -116,4 +116,65 @@ const getMyChildren = catchAsync(async (req, res, next) => {
   });
 });
 
-module.exports = { addChildren, getMyChildren };
+/**
+ * PUT /api/client/children/:childId
+ * Update specific child details
+ */
+const updateChild = catchAsync(async (req, res, next) => {
+  const { childId } = req.params;
+  const clientId = req.user.id;
+  const { name, rollNumber, schoolId, standardId, mealSizeId, mealTime } = req.body;
+
+  // Check if child exists and belongs to client
+  const childCheck = await db.query('SELECT * FROM children WHERE id = $1 AND parent_id = $2', [childId, clientId]);
+  if (childCheck.rows.length === 0) {
+    return next(new AppError('Child not found or unauthorized.', 404));
+  }
+
+  // Update fields if provided
+  const result = await db.query(
+    `UPDATE children 
+     SET name = COALESCE($1, name), 
+         roll_number = COALESCE($2, roll_number), 
+         school_id = COALESCE($3, school_id), 
+         standard_id = COALESCE($4, standard_id), 
+         meal_size_id = COALESCE($5, meal_size_id), 
+         meal_time = COALESCE($6, meal_time),
+         updated_at = NOW()
+     WHERE id = $7 AND parent_id = $8
+     RETURNING *`,
+    [name, rollNumber, schoolId, standardId, mealSizeId, mealTime, childId, clientId]
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: 'Child updated successfully.',
+    data: result.rows[0],
+  });
+});
+
+/**
+ * DELETE /api/client/children/:childId
+ * Delete a specific child
+ */
+const deleteChild = catchAsync(async (req, res, next) => {
+  const { childId } = req.params;
+  const clientId = req.user.id;
+
+  const result = await db.query(
+    'DELETE FROM children WHERE id = $1 AND parent_id = $2 RETURNING *',
+    [childId, clientId]
+  );
+
+  if (result.rows.length === 0) {
+    return next(new AppError('Child not found or unauthorized.', 404));
+  }
+
+  return res.status(200).json({
+    success: true,
+    message: 'Child deleted successfully.',
+    data: result.rows[0],
+  });
+});
+
+module.exports = { addChildren, getMyChildren, updateChild, deleteChild };

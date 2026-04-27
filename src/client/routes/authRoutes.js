@@ -7,14 +7,14 @@ const clientAuthMiddleware = require('../middlewares/authMiddleware');
  * @swagger
  * tags:
  *   name: Client Auth
- *   description: Client authentication API
+ *   description: Authentication APIs for Clients (Phone + OTP)
  */
 
 /**
  * @swagger
  * /api/client/auth/send-otp:
  *   post:
- *     summary: Send OTP for login or registration
+ *     summary: Send OTP to a phone number
  *     tags: [Client Auth]
  *     requestBody:
  *       required: true
@@ -31,10 +31,19 @@ const clientAuthMiddleware = require('../middlewares/authMiddleware');
  *     responses:
  *       200:
  *         description: OTP sent successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "OTP sent to +911234567890."
  *       400:
- *         description: Bad request
- *       404:
- *         description: User not found (if action is login)
+ *         description: Bad Request
  */
 router.post('/send-otp', sendOtpController);
 
@@ -42,7 +51,7 @@ router.post('/send-otp', sendOtpController);
  * @swagger
  * /api/client/auth/verify-otp:
  *   post:
- *     summary: Verify OTP and login/register
+ *     summary: Verify OTP and Login/Register
  *     tags: [Client Auth]
  *     requestBody:
  *       required: true
@@ -62,7 +71,7 @@ router.post('/send-otp', sendOtpController);
  *                 example: "123456"
  *     responses:
  *       200:
- *         description: Authentication successful
+ *         description: Login successful
  *         content:
  *           application/json:
  *             schema:
@@ -70,8 +79,10 @@ router.post('/send-otp', sendOtpController);
  *               properties:
  *                 success:
  *                   type: boolean
+ *                   example: true
  *                 message:
  *                   type: string
+ *                   example: "Authentication successful."
  *                 data:
  *                   type: object
  *                   properties:
@@ -81,6 +92,19 @@ router.post('/send-otp', sendOtpController);
  *                       type: string
  *                     user:
  *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: string
+ *                           example: "P-1"
+ *                         phoneNumber:
+ *                           type: string
+ *                           example: "+911234567890"
+ *                         isLoggedIn:
+ *                           type: boolean
+ *                           example: true
+ *                         lastLogin:
+ *                           type: string
+ *                           format: date-time
  *       400:
  *         description: Invalid OTP
  */
@@ -90,15 +114,24 @@ router.post('/verify-otp', verifyOtpController);
  * @swagger
  * /api/client/auth/logout:
  *   post:
- *     summary: Logout a client user
+ *     summary: Logout client
  *     tags: [Client Auth]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Logged out successfully
- *       401:
- *         description: Unauthorized
+ *         description: Logout successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Logged out successfully."
  */
 router.post('/logout', clientAuthMiddleware, logoutController);
 
@@ -106,7 +139,7 @@ router.post('/logout', clientAuthMiddleware, logoutController);
  * @swagger
  * /api/client/auth/refresh:
  *   post:
- *     summary: Refresh access and refresh tokens
+ *     summary: Refresh access token
  *     tags: [Client Auth]
  *     requestBody:
  *       required: true
@@ -121,11 +154,25 @@ router.post('/logout', clientAuthMiddleware, logoutController);
  *                 type: string
  *     responses:
  *       200:
- *         description: Tokens refreshed successfully
- *       400:
- *         description: Bad request
- *       403:
- *         description: Invalid or expired refresh token
+ *         description: Token refreshed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Tokens refreshed successfully."
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     accessToken:
+ *                       type: string
+ *                     refreshToken:
+ *                       type: string
  */
 router.post('/refresh', refreshTokenController);
 
@@ -133,15 +180,51 @@ router.post('/refresh', refreshTokenController);
  * @swagger
  * /api/client/auth/me:
  *   get:
- *     summary: Get current user profile status (Parent/Professional/Both)
+ *     summary: Get current client profile status (Parent/Professional/Both)
  *     tags: [Client Auth]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Current user status and profiles
- *       401:
- *         description: Unauthorized
+ *         description: Profile status fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     user:
+ *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: string
+ *                           example: "P-1"
+ *                         phone_number:
+ *                           type: string
+ *                           example: "+911234567890"
+ *                         last_login:
+ *                           type: string
+ *                           format: date-time
+ *                     profiles:
+ *                       type: object
+ *                       properties:
+ *                         isParent:
+ *                           type: boolean
+ *                         parentProfile:
+ *                           type: object
+ *                           nullable: true
+ *                         childrenCount:
+ *                           type: integer
+ *                         isProfessional:
+ *                           type: boolean
+ *                         professionalProfile:
+ *                           type: object
+ *                           nullable: true
  */
 router.get('/me', clientAuthMiddleware, getMe);
 

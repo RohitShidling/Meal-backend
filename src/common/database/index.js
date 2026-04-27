@@ -34,6 +34,7 @@ const initDB = async () => {
     CREATE SEQUENCE IF NOT EXISTS corporate_location_id_seq;
     CREATE SEQUENCE IF NOT EXISTS professional_id_seq;
     CREATE SEQUENCE IF NOT EXISTS parent_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS teacher_id_seq;
   `;
 
   // ──────────────────────────────────────────────
@@ -204,6 +205,24 @@ const initDB = async () => {
     );
   `;
 
+  // ──────────────────────────────────────────────
+  // TEACHER PROFILES TABLE
+  // ──────────────────────────────────────────────
+  const createTeacherProfilesTable = `
+    CREATE TABLE IF NOT EXISTS teacher_profiles (
+      id                  VARCHAR(20) PRIMARY KEY DEFAULT 'TCH-' || nextval('teacher_id_seq')::TEXT,
+      client_id           VARCHAR(20) UNIQUE NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      name                VARCHAR(255) NOT NULL,
+      school_college_name VARCHAR(255) NOT NULL,
+      city                VARCHAR(100) NOT NULL,
+      state               VARCHAR(100) NOT NULL,
+      location            TEXT NOT NULL,
+      status              VARCHAR(50) NOT NULL DEFAULT 'active',
+      created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
   try {
     // 1. Drop existing tables if they use old integer IDs (Migration Step)
     const tableChecks = await pool.query(`
@@ -250,6 +269,7 @@ const initDB = async () => {
     await pool.query(createCorporateLocationsTable);
     await pool.query(createProfessionalProfilesTable);
     await pool.query(createParentProfilesTable);
+    await pool.query(createTeacherProfilesTable);
 
     // Migration: Force CH- prefix for children and set as default for existing tables
     await pool.query("ALTER TABLE children ALTER COLUMN id SET DEFAULT 'CH-' || nextval('child_id_seq')::TEXT;");

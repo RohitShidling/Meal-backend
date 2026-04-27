@@ -41,6 +41,37 @@ router.use(commonAuthMiddleware);
  *     responses:
  *       200:
  *         description: Schools fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Schools fetched successfully."
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     schools:
+ *                       type: array
+ *                       items:
+ *                         $ref: '#/components/schemas/School'
+ *                     pagination:
+ *                       type: object
+ *                       properties:
+ *                         currentPage:
+ *                           type: integer
+ *                         totalPages:
+ *                           type: integer
+ *                         totalItems:
+ *                           type: integer
+ *                         itemsPerPage:
+ *                           type: integer
+ *       401:
+ *         description: Unauthorized
  */
 router.get('/schools', getAllSchools);
 
@@ -55,6 +86,24 @@ router.get('/schools', getAllSchools);
  *     responses:
  *       200:
  *         description: Meal sizes fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Meal sizes fetched successfully."
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     mealSizes:
+ *                       type: array
+ *                       items:
+ *                         $ref: '#/components/schemas/MealSize'
  */
 router.get('/lookup/meal-sizes', getMealSizes);
 
@@ -69,6 +118,24 @@ router.get('/lookup/meal-sizes', getMealSizes);
  *     responses:
  *       200:
  *         description: Standards fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Standards fetched successfully."
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     standards:
+ *                       type: array
+ *                       items:
+ *                         $ref: '#/components/schemas/Standard'
  */
 router.get('/lookup/standards', getStandards);
 

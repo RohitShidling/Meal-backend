@@ -79,21 +79,8 @@ router.use(adminAuthMiddleware);
  *                       type: array
  *                       items:
  *                         $ref: '#/components/schemas/MealSize'
- *                       example:
- *                         - id: 1
- *                           name: "small"
- *                           display_name: "Small"
- *                           sort_order: 1
- *                         - id: 2
- *                           name: "medium"
- *                           display_name: "Medium"
- *                           sort_order: 2
- *                         - id: 3
- *                           name: "large"
- *                           display_name: "Large"
- *                           sort_order: 3
  *       401:
- *         description: Unauthorized - Admin JWT required
+ *         description: Unauthorized
  */
 router.get('/meal-sizes', getMealSizes);
 
@@ -126,17 +113,8 @@ router.get('/meal-sizes', getMealSizes);
  *                       type: array
  *                       items:
  *                         $ref: '#/components/schemas/Standard'
- *                       example:
- *                         - id: 1
- *                           name: "1st"
- *                           display_name: "1st Standard"
- *                           numeric_value: 1
- *                         - id: 12
- *                           name: "12th"
- *                           display_name: "12th Standard"
- *                           numeric_value: 12
  *       401:
- *         description: Unauthorized - Admin JWT required
+ *         description: Unauthorized
  */
 router.get('/standards', getStandards);
 

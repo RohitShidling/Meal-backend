@@ -192,6 +192,9 @@ const getMe = catchAsync(async (req, res, next) => {
   // Fetch professional profile
   const professionalResult = await db.query('SELECT * FROM professional_profiles WHERE client_id = $1', [clientId]);
 
+  // Fetch teacher profile
+  const teacherResult = await db.query('SELECT * FROM teacher_profiles WHERE client_id = $1', [clientId]);
+
   return res.status(200).json({
     success: true,
     data: {
@@ -201,7 +204,9 @@ const getMe = catchAsync(async (req, res, next) => {
         parentProfile: parentResult.rows[0] || null,
         childrenCount: parseInt(childrenResult.rows[0].count, 10),
         isProfessional: professionalResult.rows.length > 0,
-        professionalProfile: professionalResult.rows[0] || null
+        professionalProfile: professionalResult.rows[0] || null,
+        isTeacher: teacherResult.rows.length > 0,
+        teacherProfile: teacherResult.rows[0] || null
       }
     }
   });

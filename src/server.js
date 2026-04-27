@@ -23,6 +23,7 @@ const adminCorporateLocationRoutes = require('./admin/routes/corporateLocationRo
 const commonCorporateLocationRoutes = require('./common/routes/corporateLocationRoutes');
 const clientProfessionalRoutes = require('./client/routes/professionalRoutes');
 const clientParentRoutes = require('./client/routes/parentRoutes');
+const clientTeacherRoutes = require('./client/routes/teacherRoutes');
 
 const app = express();
 
@@ -77,6 +78,7 @@ app.use('/api/admin/corporate-locations', adminCorporateLocationRoutes);
 app.use('/api/common/corporate-locations', commonCorporateLocationRoutes);
 app.use('/api/client/professional', clientProfessionalRoutes);
 app.use('/api/client/parent', clientParentRoutes);
+app.use('/api/client/teacher', clientTeacherRoutes);
 
 // 404 Handler
 app.use((req, res) => {

@@ -31,9 +31,41 @@ router.use(authMiddleware);
  *             properties:
  *               name:
  *                 type: string
+ *                 example: "Jane Doe"
  *     responses:
  *       200:
  *         description: Parent profile saved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Parent profile created successfully"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       example: "PAR-1"
+ *                     client_id:
+ *                       type: string
+ *                       example: "P-1"
+ *                     name:
+ *                       type: string
+ *                       example: "Jane Doe"
+ *                     created_at:
+ *                       type: string
+ *                       example: "2023-10-27T10:00:00.000Z"
+ *                     updated_at:
+ *                       type: string
+ *                       example: "2023-10-27T10:00:00.000Z"
+ *       400:
+ *         description: Bad Request (missing name)
  */
 router.post('/profile', parentController.saveParentProfile);
 
@@ -48,6 +80,26 @@ router.post('/profile', parentController.saveParentProfile);
  *     responses:
  *       200:
  *         description: Parent profile details
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       example: "PAR-1"
+ *                     client_id:
+ *                       type: string
+ *                       example: "P-1"
+ *                     name:
+ *                       type: string
+ *                       example: "Jane Doe"
  */
 router.get('/profile', parentController.getParentProfile);
 

@@ -1,23 +1,22 @@
 const express = require('express');
 const router = express.Router();
-const professionalController = require('../controllers/professionalController');
-const authMiddleware = require('../../common/middlewares/commonAuthMiddleware');
+const teacherController = require('../controllers/teacherController');
+const clientAuthMiddleware = require('../middlewares/authMiddleware');
+const commonAuthMiddleware = require('../../common/middlewares/commonAuthMiddleware');
 
 /**
  * @swagger
  * tags:
- *   name: Client Professional Profile
- *   description: Professional profile management for Clients
+ *   name: Client Teacher Profile
+ *   description: Teacher profile management for Clients
  */
-
-router.use(authMiddleware);
 
 /**
  * @swagger
- * /api/client/professional/profile:
+ * /api/client/teacher/profile:
  *   post:
- *     summary: Create or Update professional profile
- *     tags: [Client Professional Profile]
+ *     summary: Create or Update teacher profile (Client ONLY)
+ *     tags: [Client Teacher Profile]
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -28,34 +27,32 @@ router.use(authMiddleware);
  *             type: object
  *             required:
  *               - name
- *               - company_name
- *               - corporate_location_id
+ *               - school_college_name
  *               - city
  *               - state
- *               - lunch_time
+ *               - location
  *             properties:
  *               name:
  *                 type: string
- *                 example: "John Doe"
- *               company_name:
+ *                 example: "Mrs. Sarah Smith"
+ *               school_college_name:
  *                 type: string
- *                 example: "Tech Solutions Inc."
- *               corporate_location_id:
- *                 type: string
- *                 example: "CL-1"
+ *                 example: "Global International School"
  *               city:
  *                 type: string
  *                 example: "Bangalore"
  *               state:
  *                 type: string
  *                 example: "Karnataka"
- *               lunch_time:
+ *               location:
  *                 type: string
- *                 format: time
- *                 example: "13:00:00"
+ *                 example: "Whitefield, Bangalore"
+ *               status:
+ *                 type: string
+ *                 example: "active"
  *     responses:
  *       200:
- *         description: Profile saved successfully
+ *         description: Teacher profile saved successfully
  *         content:
  *           application/json:
  *             schema:
@@ -66,51 +63,47 @@ router.use(authMiddleware);
  *                   example: true
  *                 message:
  *                   type: string
- *                   example: "Professional profile created successfully"
+ *                   example: "Teacher profile created successfully"
  *                 data:
  *                   type: object
  *                   properties:
  *                     id:
  *                       type: string
- *                       example: "PRO-1"
+ *                       example: "TCH-1"
  *                     client_id:
  *                       type: string
  *                       example: "P-1"
  *                     name:
  *                       type: string
- *                       example: "John Doe"
- *                     company_name:
+ *                       example: "Mrs. Sarah Smith"
+ *                     school_college_name:
  *                       type: string
- *                       example: "Tech Solutions Inc."
- *                     corporate_location_id:
- *                       type: string
- *                       example: "CL-1"
+ *                       example: "Global International School"
  *                     city:
  *                       type: string
  *                       example: "Bangalore"
  *                     state:
  *                       type: string
  *                       example: "Karnataka"
- *                     lunch_time:
+ *                     location:
  *                       type: string
- *                       example: "13:00:00"
- *                     created_at:
+ *                       example: "Whitefield, Bangalore"
+ *                     status:
  *                       type: string
- *                       example: "2023-10-27T10:00:00.000Z"
- *                     updated_at:
- *                       type: string
- *                       example: "2023-10-27T10:00:00.000Z"
- *       400:
- *         description: Bad Request (missing fields or invalid location)
+ *                       example: "active"
+ *       403:
+ *         description: Forbidden (Mutual exclusivity rule violated - Professional profile already exists)
+ *       401:
+ *         description: Unauthorized
  */
-router.post('/profile', professionalController.saveProfessionalProfile);
+router.post('/profile', clientAuthMiddleware, teacherController.saveTeacherProfile);
 
 /**
  * @swagger
- * /api/client/professional/profile:
+ * /api/client/teacher/profile:
  *   put:
- *     summary: Update professional profile
- *     tags: [Client Professional Profile]
+ *     summary: Update teacher profile (Client ONLY)
+ *     tags: [Client Teacher Profile]
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -122,26 +115,25 @@ router.post('/profile', professionalController.saveProfessionalProfile);
  *             properties:
  *               name:
  *                 type: string
- *                 example: "John Doe"
- *               company_name:
+ *                 example: "Mrs. Sarah Smith"
+ *               school_college_name:
  *                 type: string
- *                 example: "Tech Solutions Inc."
- *               corporate_location_id:
- *                 type: string
- *                 example: "CL-1"
+ *                 example: "Global International School"
  *               city:
  *                 type: string
  *                 example: "Bangalore"
  *               state:
  *                 type: string
  *                 example: "Karnataka"
- *               lunch_time:
+ *               location:
  *                 type: string
- *                 format: time
- *                 example: "13:00:00"
+ *                 example: "Whitefield, Bangalore"
+ *               status:
+ *                 type: string
+ *                 example: "active"
  *     responses:
  *       200:
- *         description: Professional profile updated successfully
+ *         description: Teacher profile updated successfully
  *         content:
  *           application/json:
  *             schema:
@@ -152,21 +144,27 @@ router.post('/profile', professionalController.saveProfessionalProfile);
  *                   example: true
  *                 message:
  *                   type: string
- *                   example: "Professional profile updated successfully"
+ *                   example: "Teacher profile updated successfully"
  */
-router.put('/profile', professionalController.saveProfessionalProfile);
+router.put('/profile', clientAuthMiddleware, teacherController.saveTeacherProfile);
 
 /**
  * @swagger
- * /api/client/professional/profile:
+ * /api/client/teacher/profile:
  *   get:
- *     summary: Get professional profile
- *     tags: [Client Professional Profile]
+ *     summary: Get teacher profile (Client & Admin)
+ *     tags: [Client Teacher Profile]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: clientId
+ *         schema:
+ *           type: string
+ *         description: (Admin only) Specific client ID to fetch profile for
  *     responses:
  *       200:
- *         description: Professional profile details
+ *         description: Teacher profile details
  *         content:
  *           application/json:
  *             schema:
@@ -180,40 +178,31 @@ router.put('/profile', professionalController.saveProfessionalProfile);
  *                   properties:
  *                     id:
  *                       type: string
- *                       example: "PRO-1"
+ *                       example: "TCH-1"
  *                     name:
  *                       type: string
- *                       example: "John Doe"
- *                     company_name:
+ *                       example: "Mrs. Sarah Smith"
+ *                     school_college_name:
  *                       type: string
- *                       example: "Tech Solutions Inc."
- *                     corporate_location_id:
- *                       type: string
- *                       example: "CL-1"
- *                     corporate_location_name:
- *                       type: string
- *                       example: "Main Tech Hub"
- *                     corporate_location_address:
- *                       type: string
- *                       example: "123 Business Park"
+ *                       example: "Global International School"
  *                     city:
  *                       type: string
  *                       example: "Bangalore"
  *                     state:
  *                       type: string
  *                       example: "Karnataka"
- *                     lunch_time:
+ *                     location:
  *                       type: string
- *                       example: "13:00:00"
+ *                       example: "Whitefield, Bangalore"
  */
-router.get('/profile', professionalController.getProfessionalProfile);
+router.get('/profile', commonAuthMiddleware, teacherController.getTeacherProfile);
 
 /**
  * @swagger
- * /api/client/professional/profile:
+ * /api/client/teacher/profile:
  *   delete:
- *     summary: Delete professional profile
- *     tags: [Client Professional Profile]
+ *     summary: Delete teacher profile
+ *     tags: [Client Teacher Profile]
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -224,7 +213,7 @@ router.get('/profile', professionalController.getProfessionalProfile);
  *         description: (Admin only) Specific client ID to delete profile for
  *     responses:
  *       200:
- *         description: Professional profile deleted successfully
+ *         description: Teacher profile deleted successfully
  *         content:
  *           application/json:
  *             schema:
@@ -235,10 +224,10 @@ router.get('/profile', professionalController.getProfessionalProfile);
  *                   example: true
  *                 message:
  *                   type: string
- *                   example: "Professional profile deleted successfully"
+ *                   example: "Teacher profile deleted successfully"
  *       404:
  *         description: Profile not found
  */
-router.delete('/profile', professionalController.deleteProfessionalProfile);
+router.delete('/profile', commonAuthMiddleware, teacherController.deleteTeacherProfile);
 
 module.exports = router;
