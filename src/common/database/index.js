@@ -123,7 +123,6 @@ const initDB = async () => {
   const createDailyMenusTable = `
     CREATE TABLE IF NOT EXISTS daily_menus (
       id              VARCHAR(20) PRIMARY KEY DEFAULT 'MN-' || nextval('menu_id_seq')::TEXT,
-      school_id       VARCHAR(20) REFERENCES schools(id) ON DELETE CASCADE,
       image_url       TEXT NOT NULL,
       image_public_id TEXT,
       items           TEXT,
@@ -214,9 +213,9 @@ const initDB = async () => {
     // Ensure address is NOT NULL if it was just added (might need a default or manual data fix if data exists)
     // For now, just making sure it's there.
     
-    // Ensure menus table has the public_id column and optional school_id
+    // Ensure menus table has the public_id column and remove school_id if it exists
     await pool.query(`ALTER TABLE daily_menus ADD COLUMN IF NOT EXISTS image_public_id TEXT;`);
-    await pool.query(`ALTER TABLE daily_menus ALTER COLUMN school_id DROP NOT NULL;`);
+    await pool.query(`ALTER TABLE daily_menus DROP COLUMN IF EXISTS school_id;`);
     
     console.log('Database tables initialized successfully.');
 
