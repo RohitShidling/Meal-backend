@@ -12,9 +12,11 @@ const { swaggerUi, specs } = require('./docs/swagger');
 const clientAuthRoutes = require('./client/routes/authRoutes');
 const clientChildRoutes = require('./client/routes/childRoutes');
 const adminAuthRoutes = require('./admin/routes/authRoutes');
-const commonRoutes = require('./common/routes/commonRoutes');
 const adminSchoolRoutes = require('./admin/routes/schoolRoutes');
 const adminLookupRoutes = require('./admin/routes/lookupRoutes');
+const adminMenuRoutes = require('./admin/routes/menuRoutes');
+const commonMenuRoutes = require('./common/routes/menuRoutes');
+const commonRoutes = require('./common/routes/commonRoutes');
 
 const app = express();
 
@@ -61,6 +63,8 @@ app.use('/api/admin/auth', adminAuthRoutes);
 app.use('/api/common', commonRoutes);
 app.use('/api/admin/schools', adminSchoolRoutes);
 app.use('/api/admin/lookup', adminLookupRoutes);
+app.use('/api/admin/menu', adminMenuRoutes);
+app.use('/api/common/menu', commonMenuRoutes);
 
 // 404 Handler
 app.use((req, res) => {
