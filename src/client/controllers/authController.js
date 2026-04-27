@@ -170,4 +170,46 @@ const refreshTokenController = catchAsync(async (req, res, next) => {
   });
 });
 
-module.exports = { sendOtpController, verifyOtpController, logoutController, refreshTokenController };
+/**
+ * GET /api/client/auth/me
+ * Get current user profile status (Parent/Professional/Both)
+ */
+const getMe = catchAsync(async (req, res, next) => {
+  const clientId = req.user.id;
+
+  // Fetch client basic info
+  const clientResult = await db.query('SELECT id, phone_number, last_login FROM clients WHERE id = $1', [clientId]);
+  if (clientResult.rows.length === 0) {
+    return next(new AppError('User not found.', 404));
+  }
+
+  // Fetch parent profile
+  const parentResult = await db.query('SELECT * FROM parent_profiles WHERE client_id = $1', [clientId]);
+  
+  // Fetch children count
+  const childrenResult = await db.query('SELECT COUNT(*) FROM children WHERE parent_id = $1', [clientId]);
+  
+  // Fetch professional profile
+  const professionalResult = await db.query('SELECT * FROM professional_profiles WHERE client_id = $1', [clientId]);
+
+  // Fetch teacher profile
+  const teacherResult = await db.query('SELECT * FROM teacher_profiles WHERE client_id = $1', [clientId]);
+
+  return res.status(200).json({
+    success: true,
+    data: {
+      user: clientResult.rows[0],
+      profiles: {
+        isParent: parentResult.rows.length > 0,
+        parentProfile: parentResult.rows[0] || null,
+        childrenCount: parseInt(childrenResult.rows[0].count, 10),
+        isProfessional: professionalResult.rows.length > 0,
+        professionalProfile: professionalResult.rows[0] || null,
+        isTeacher: teacherResult.rows.length > 0,
+        teacherProfile: teacherResult.rows[0] || null
+      }
+    }
+  });
+});
+
+module.exports = { sendOtpController, verifyOtpController, logoutController, refreshTokenController, getMe };

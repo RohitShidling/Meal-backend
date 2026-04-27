@@ -34,28 +34,79 @@ router.use(adminAuthMiddleware);
  *             properties:
  *               plan_name:
  *                 type: string
+ *                 example: "Basic Plan"
  *               price:
  *                 type: number
+ *                 example: 99.99
  *               billing_cycle:
  *                 type: string
+ *                 example: "Monthly"
  *               trial_days:
  *                 type: integer
  *                 default: 0
+ *                 example: 7
  *               display_order:
  *                 type: integer
  *                 default: 1
+ *                 example: 1
  *               is_active:
  *                 type: boolean
  *                 default: true
+ *                 example: true
  *     responses:
  *       201:
  *         description: Subscription created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Subscription created successfully"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       example: "SUB-1"
+ *                     plan_name:
+ *                       type: string
+ *                       example: "Basic Plan"
+ *                     price:
+ *                       type: string
+ *                       example: "99.99"
+ *                     billing_cycle:
+ *                       type: string
+ *                       example: "Monthly"
+ *                     trial_days:
+ *                       type: integer
+ *                       example: 7
+ *                     display_order:
+ *                       type: integer
+ *                       example: 1
+ *                     is_active:
+ *                       type: boolean
+ *                       example: true
+ *                     created_by:
+ *                       type: integer
+ *                       example: 1
+ *                     updated_by:
+ *                       type: integer
+ *                       example: 1
+ *                     created_at:
+ *                       type: string
+ *                       example: "2023-10-27T10:00:00.000Z"
+ *                     updated_at:
+ *                       type: string
+ *                       example: "2023-10-27T10:00:00.000Z"
  *       400:
  *         description: Missing required fields
  *       401:
  *         description: Unauthorized
- *       403:
- *         description: Forbidden (Admin only)
  */
 router.post('/', subscriptionController.createSubscription);
 
@@ -73,6 +124,7 @@ router.post('/', subscriptionController.createSubscription);
  *         required: true
  *         schema:
  *           type: string
+ *           example: "SUB-1"
  *         description: Subscription ID
  *     requestBody:
  *       required: true
@@ -83,23 +135,38 @@ router.post('/', subscriptionController.createSubscription);
  *             properties:
  *               plan_name:
  *                 type: string
+ *                 example: "Updated Basic Plan"
  *               price:
  *                 type: number
- *               billing_cycle:
- *                 type: string
- *               trial_days:
- *                 type: integer
- *               display_order:
- *                 type: integer
- *               is_active:
- *                 type: boolean
+ *                 example: 109.99
  *     responses:
  *       200:
  *         description: Subscription updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Subscription updated successfully"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       example: "SUB-1"
+ *                     plan_name:
+ *                       type: string
+ *                       example: "Updated Basic Plan"
+ *                     price:
+ *                       type: string
+ *                       example: "109.99"
  *       401:
  *         description: Unauthorized
- *       403:
- *         description: Forbidden (Admin only)
  *       404:
  *         description: Subscription not found
  */
@@ -119,14 +186,30 @@ router.put('/:id', subscriptionController.updateSubscription);
  *         required: true
  *         schema:
  *           type: string
+ *           example: "SUB-1"
  *         description: Subscription ID
  *     responses:
  *       200:
  *         description: Subscription deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Subscription deleted successfully"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       example: "SUB-1"
  *       401:
  *         description: Unauthorized
- *       403:
- *         description: Forbidden (Admin only)
  *       404:
  *         description: Subscription not found
  */

@@ -28,8 +28,8 @@ router.use(adminAuthMiddleware);
  *       type: object
  *       properties:
  *         id:
- *           type: integer
- *           example: 1
+ *           type: string
+ *           example: "SH-1"
  *         name:
  *           type: string
  *           example: "St. Mary's High School"
@@ -54,6 +54,12 @@ router.use(adminAuthMiddleware);
  *         is_deleted:
  *           type: boolean
  *           example: false
+ *         created_by:
+ *           type: integer
+ *           example: 1
+ *         updated_by:
+ *           type: integer
+ *           example: 1
  *         created_at:
  *           type: string
  *           format: date-time
@@ -88,31 +94,6 @@ router.use(adminAuthMiddleware);
  *         country:
  *           type: string
  *           example: "India"
- *
- *     EditSchoolRequest:
- *       type: object
- *       properties:
- *         name:
- *           type: string
- *           example: "Updated School Name"
- *         address:
- *           type: string
- *           example: "456 New Street, Block B"
- *         city:
- *           type: string
- *           example: "Mysore"
- *         state:
- *           type: string
- *           example: "Karnataka"
- *         pincode:
- *           type: string
- *           example: "570001"
- *         country:
- *           type: string
- *           example: "India"
- *         is_active:
- *           type: boolean
- *           example: false
  */
 
 /**
@@ -149,11 +130,9 @@ router.use(adminAuthMiddleware);
  *                     school:
  *                       $ref: '#/components/schemas/School'
  *       400:
- *         description: Validation error - missing required fields
- *       401:
- *         description: Unauthorized - Admin JWT required
+ *         description: Validation error
  *       409:
- *         description: Conflict - School name already exists
+ *         description: Conflict (School already exists)
  */
 router.post('/', validateAddSchool, addSchool);
 
@@ -171,18 +150,15 @@ router.post('/', validateAddSchool, addSchool);
  *         schema:
  *           type: integer
  *           default: 1
- *         description: Page number
  *       - in: query
  *         name: limit
  *         schema:
  *           type: integer
  *           default: 10
- *         description: Records per page
  *       - in: query
  *         name: search
  *         schema:
  *           type: string
- *         description: Search by school name or city
  *     responses:
  *       200:
  *         description: Schools fetched successfully
@@ -209,18 +185,12 @@ router.post('/', validateAddSchool, addSchool);
  *                       properties:
  *                         currentPage:
  *                           type: integer
- *                           example: 1
  *                         totalPages:
  *                           type: integer
- *                           example: 5
  *                         totalItems:
  *                           type: integer
- *                           example: 50
  *                         itemsPerPage:
  *                           type: integer
- *                           example: 10
- *       401:
- *         description: Unauthorized - Admin JWT required
  */
 router.get('/', getAllSchools);
 
@@ -237,8 +207,8 @@ router.get('/', getAllSchools);
  *         name: id
  *         required: true
  *         schema:
- *           type: integer
- *         description: School ID
+ *           type: string
+ *           example: "SH-1"
  *     responses:
  *       200:
  *         description: School fetched successfully
@@ -258,8 +228,6 @@ router.get('/', getAllSchools);
  *                   properties:
  *                     school:
  *                       $ref: '#/components/schemas/School'
- *       401:
- *         description: Unauthorized - Admin JWT required
  *       404:
  *         description: School not found
  */
@@ -278,14 +246,13 @@ router.get('/:id', getSchoolById);
  *         name: id
  *         required: true
  *         schema:
- *           type: integer
- *         description: School ID
+ *           type: string
+ *           example: "SH-1"
  *     requestBody:
- *       required: true
  *       content:
  *         application/json:
  *           schema:
- *             $ref: '#/components/schemas/EditSchoolRequest'
+ *             $ref: '#/components/schemas/School'
  *     responses:
  *       200:
  *         description: School updated successfully
@@ -305,14 +272,6 @@ router.get('/:id', getSchoolById);
  *                   properties:
  *                     school:
  *                       $ref: '#/components/schemas/School'
- *       400:
- *         description: Bad request
- *       401:
- *         description: Unauthorized - Admin JWT required
- *       404:
- *         description: School not found
- *       409:
- *         description: Conflict - School name already taken
  */
 router.put('/:id', validateEditSchool, editSchool);
 
@@ -329,15 +288,22 @@ router.put('/:id', validateEditSchool, editSchool);
  *         name: id
  *         required: true
  *         schema:
- *           type: integer
- *         description: School ID
+ *           type: string
+ *           example: "SH-1"
  *     responses:
  *       200:
  *         description: School deleted successfully
- *       401:
- *         description: Unauthorized - Admin JWT required
- *       404:
- *         description: School not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "School deleted successfully."
  */
 router.delete('/:id', deleteSchool);
 
