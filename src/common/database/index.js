@@ -29,6 +29,7 @@ const initDB = async () => {
     CREATE SEQUENCE IF NOT EXISTS school_id_seq;
     CREATE SEQUENCE IF NOT EXISTS client_id_seq;
     CREATE SEQUENCE IF NOT EXISTS child_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS menu_id_seq;
   `;
 
   // ──────────────────────────────────────────────
@@ -118,6 +119,21 @@ const initDB = async () => {
     );
   `;
 
+  const createDailyMenusTable = `
+    CREATE TABLE IF NOT EXISTS daily_menus (
+      id              VARCHAR(20) PRIMARY KEY DEFAULT 'MN-' || nextval('menu_id_seq')::TEXT,
+      school_id       VARCHAR(20) REFERENCES schools(id) ON DELETE CASCADE,
+      image_url       TEXT NOT NULL,
+      image_public_id TEXT,
+      items           TEXT,
+      menu_date       DATE NOT NULL DEFAULT CURRENT_DATE,
+      is_active       BOOLEAN NOT NULL DEFAULT true,
+      created_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
   try {
     // 1. Drop existing tables if they use old integer IDs (Migration Step)
     const tableChecks = await pool.query(`
@@ -158,6 +174,7 @@ const initDB = async () => {
     await pool.query(createSchoolsTable);
     await pool.query(createMealSizesTable);
     await pool.query(createStandardsTable);
+    await pool.query(createDailyMenusTable);
     await pool.query(createChildrenTable);
 
     // Migration: Force CH- prefix for children and set as default for existing tables
@@ -175,6 +192,10 @@ const initDB = async () => {
 
     // Ensure address is NOT NULL if it was just added (might need a default or manual data fix if data exists)
     // For now, just making sure it's there.
+    
+    // Ensure menus table has the public_id column and optional school_id
+    await pool.query(`ALTER TABLE daily_menus ADD COLUMN IF NOT EXISTS image_public_id TEXT;`);
+    await pool.query(`ALTER TABLE daily_menus ALTER COLUMN school_id DROP NOT NULL;`);
     
     console.log('Database tables initialized successfully.');
 
