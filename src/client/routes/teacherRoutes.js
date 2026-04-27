@@ -13,6 +13,45 @@ const commonAuthMiddleware = require('../../common/middlewares/commonAuthMiddlew
 
 /**
  * @swagger
+ * components:
+ *   schemas:
+ *     TeacherProfile:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           example: "TCH-1"
+ *         client_id:
+ *           type: string
+ *           example: "P-1"
+ *         name:
+ *           type: string
+ *           example: "Mrs. Sarah Smith"
+ *         school_college_name:
+ *           type: string
+ *           example: "Global International School"
+ *         city:
+ *           type: string
+ *           example: "Bangalore"
+ *         state:
+ *           type: string
+ *           example: "Karnataka"
+ *         location:
+ *           type: string
+ *           example: "Whitefield, Bangalore"
+ *         status:
+ *           type: string
+ *           example: "active"
+ *         created_at:
+ *           type: string
+ *           format: date-time
+ *         updated_at:
+ *           type: string
+ *           format: date-time
+ */
+
+/**
+ * @swagger
  * /api/client/teacher/profile:
  *   post:
  *     summary: Create or Update teacher profile (Client ONLY)
@@ -65,32 +104,7 @@ const commonAuthMiddleware = require('../../common/middlewares/commonAuthMiddlew
  *                   type: string
  *                   example: "Teacher profile created successfully"
  *                 data:
- *                   type: object
- *                   properties:
- *                     id:
- *                       type: string
- *                       example: "TCH-1"
- *                     client_id:
- *                       type: string
- *                       example: "P-1"
- *                     name:
- *                       type: string
- *                       example: "Mrs. Sarah Smith"
- *                     school_college_name:
- *                       type: string
- *                       example: "Global International School"
- *                     city:
- *                       type: string
- *                       example: "Bangalore"
- *                     state:
- *                       type: string
- *                       example: "Karnataka"
- *                     location:
- *                       type: string
- *                       example: "Whitefield, Bangalore"
- *                     status:
- *                       type: string
- *                       example: "active"
+ *                   $ref: '#/components/schemas/TeacherProfile'
  *       403:
  *         description: Forbidden (Mutual exclusivity rule violated - Professional profile already exists)
  *       401:
@@ -145,6 +159,8 @@ router.post('/profile', clientAuthMiddleware, teacherController.saveTeacherProfi
  *                 message:
  *                   type: string
  *                   example: "Teacher profile updated successfully"
+ *                 data:
+ *                   $ref: '#/components/schemas/TeacherProfile'
  */
 router.put('/profile', clientAuthMiddleware, teacherController.saveTeacherProfile);
 
@@ -174,26 +190,7 @@ router.put('/profile', clientAuthMiddleware, teacherController.saveTeacherProfil
  *                   type: boolean
  *                   example: true
  *                 data:
- *                   type: object
- *                   properties:
- *                     id:
- *                       type: string
- *                       example: "TCH-1"
- *                     name:
- *                       type: string
- *                       example: "Mrs. Sarah Smith"
- *                     school_college_name:
- *                       type: string
- *                       example: "Global International School"
- *                     city:
- *                       type: string
- *                       example: "Bangalore"
- *                     state:
- *                       type: string
- *                       example: "Karnataka"
- *                     location:
- *                       type: string
- *                       example: "Whitefield, Bangalore"
+ *                   $ref: '#/components/schemas/TeacherProfile'
  */
 router.get('/profile', commonAuthMiddleware, teacherController.getTeacherProfile);
 
@@ -225,6 +222,8 @@ router.get('/profile', commonAuthMiddleware, teacherController.getTeacherProfile
  *                 message:
  *                   type: string
  *                   example: "Teacher profile deleted successfully"
+ *                 data:
+ *                   $ref: '#/components/schemas/TeacherProfile'
  *       404:
  *         description: Profile not found
  */

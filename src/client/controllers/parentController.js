@@ -76,3 +76,32 @@ exports.getParentProfile = async (req, res, next) => {
     next(new AppError(error.message || 'Error fetching parent profile', 500));
   }
 };
+
+/**
+ * @desc    Delete parent profile
+ * @route   DELETE /api/client/parent/profile
+ * @access  Private (Client & Admin)
+ */
+exports.deleteParentProfile = async (req, res, next) => {
+  try {
+    const clientId = (req.user.role === 'admin' && req.query.clientId) ? req.query.clientId : req.user.id;
+
+    const deleteQuery = `DELETE FROM parent_profiles WHERE client_id = $1 RETURNING *`;
+    const result = await query(deleteQuery, [clientId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No parent profile found to delete'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Parent profile deleted successfully',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    next(new AppError(error.message || 'Error deleting parent profile', 500));
+  }
+};

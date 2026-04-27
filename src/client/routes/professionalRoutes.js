@@ -10,6 +10,51 @@ const authMiddleware = require('../../common/middlewares/commonAuthMiddleware');
  *   description: Professional profile management for Clients
  */
 
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     ProfessionalProfile:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           example: "PRO-1"
+ *         client_id:
+ *           type: string
+ *           example: "P-1"
+ *         name:
+ *           type: string
+ *           example: "John Doe"
+ *         company_name:
+ *           type: string
+ *           example: "Tech Solutions Inc."
+ *         corporate_location_id:
+ *           type: string
+ *           example: "CL-1"
+ *         corporate_location_name:
+ *           type: string
+ *           example: "Main Tech Hub"
+ *         corporate_location_address:
+ *           type: string
+ *           example: "123 Business Park"
+ *         city:
+ *           type: string
+ *           example: "Bangalore"
+ *         state:
+ *           type: string
+ *           example: "Karnataka"
+ *         lunch_time:
+ *           type: string
+ *           example: "13:00:00"
+ *         created_at:
+ *           type: string
+ *           format: date-time
+ *         updated_at:
+ *           type: string
+ *           format: date-time
+ */
+
 router.use(authMiddleware);
 
 /**
@@ -68,38 +113,7 @@ router.use(authMiddleware);
  *                   type: string
  *                   example: "Professional profile created successfully"
  *                 data:
- *                   type: object
- *                   properties:
- *                     id:
- *                       type: string
- *                       example: "PRO-1"
- *                     client_id:
- *                       type: string
- *                       example: "P-1"
- *                     name:
- *                       type: string
- *                       example: "John Doe"
- *                     company_name:
- *                       type: string
- *                       example: "Tech Solutions Inc."
- *                     corporate_location_id:
- *                       type: string
- *                       example: "CL-1"
- *                     city:
- *                       type: string
- *                       example: "Bangalore"
- *                     state:
- *                       type: string
- *                       example: "Karnataka"
- *                     lunch_time:
- *                       type: string
- *                       example: "13:00:00"
- *                     created_at:
- *                       type: string
- *                       example: "2023-10-27T10:00:00.000Z"
- *                     updated_at:
- *                       type: string
- *                       example: "2023-10-27T10:00:00.000Z"
+ *                   $ref: '#/components/schemas/ProfessionalProfile'
  *       400:
  *         description: Bad Request (missing fields or invalid location)
  */
@@ -153,6 +167,8 @@ router.post('/profile', professionalController.saveProfessionalProfile);
  *                 message:
  *                   type: string
  *                   example: "Professional profile updated successfully"
+ *                 data:
+ *                   $ref: '#/components/schemas/ProfessionalProfile'
  */
 router.put('/profile', professionalController.saveProfessionalProfile);
 
@@ -164,6 +180,12 @@ router.put('/profile', professionalController.saveProfessionalProfile);
  *     tags: [Client Professional Profile]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: clientId
+ *         schema:
+ *           type: string
+ *         description: (Admin only) Specific client ID to fetch profile for
  *     responses:
  *       200:
  *         description: Professional profile details
@@ -176,35 +198,7 @@ router.put('/profile', professionalController.saveProfessionalProfile);
  *                   type: boolean
  *                   example: true
  *                 data:
- *                   type: object
- *                   properties:
- *                     id:
- *                       type: string
- *                       example: "PRO-1"
- *                     name:
- *                       type: string
- *                       example: "John Doe"
- *                     company_name:
- *                       type: string
- *                       example: "Tech Solutions Inc."
- *                     corporate_location_id:
- *                       type: string
- *                       example: "CL-1"
- *                     corporate_location_name:
- *                       type: string
- *                       example: "Main Tech Hub"
- *                     corporate_location_address:
- *                       type: string
- *                       example: "123 Business Park"
- *                     city:
- *                       type: string
- *                       example: "Bangalore"
- *                     state:
- *                       type: string
- *                       example: "Karnataka"
- *                     lunch_time:
- *                       type: string
- *                       example: "13:00:00"
+ *                   $ref: '#/components/schemas/ProfessionalProfile'
  */
 router.get('/profile', professionalController.getProfessionalProfile);
 
@@ -236,6 +230,8 @@ router.get('/profile', professionalController.getProfessionalProfile);
  *                 message:
  *                   type: string
  *                   example: "Professional profile deleted successfully"
+ *                 data:
+ *                   $ref: '#/components/schemas/ProfessionalProfile'
  *       404:
  *         description: Profile not found
  */

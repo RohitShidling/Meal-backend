@@ -225,6 +225,11 @@ router.post('/refresh', refreshTokenController);
  *                         professionalProfile:
  *                           type: object
  *                           nullable: true
+ *                         isTeacher:
+ *                           type: boolean
+ *                         teacherProfile:
+ *                           type: object
+ *                           nullable: true
  */
 router.get('/me', clientAuthMiddleware, getMe);
 
