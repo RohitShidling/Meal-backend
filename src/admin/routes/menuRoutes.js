@@ -38,18 +38,19 @@ router.post('/upload', upload.single('image'), menuController.uploadMenu);
 
 /**
  * @swagger
- * /api/admin/menu/{id}:
+ * /api/admin/menu/{date}:
  *   put:
  *     tags: [Admin Menu]
- *     summary: Update an existing menu
+ *     summary: Update an existing menu by date
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: path
- *         name: id
+ *         name: date
  *         required: true
  *         schema:
  *           type: string
+ *         description: Use 'today' or a date format like 'YYYY-MM-DD'
  *     requestBody:
  *       content:
  *         multipart/form-data:
@@ -58,9 +59,6 @@ router.post('/upload', upload.single('image'), menuController.uploadMenu);
  *             properties:
  *               items:
  *                 type: string
- *               menu_date:
- *                 type: string
- *                 format: date
  *               is_active:
  *                 type: boolean
  *               image:
@@ -70,26 +68,27 @@ router.post('/upload', upload.single('image'), menuController.uploadMenu);
  *       200:
  *         description: Menu updated successfully
  */
-router.put('/:id', upload.single('image'), menuController.updateMenu);
+router.put('/:date', upload.single('image'), menuController.updateMenu);
 
 /**
  * @swagger
- * /api/admin/menu/{id}:
+ * /api/admin/menu/{date}:
  *   delete:
  *     tags: [Admin Menu]
- *     summary: Delete a menu
+ *     summary: Delete a menu by date
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: path
- *         name: id
+ *         name: date
  *         required: true
  *         schema:
  *           type: string
+ *         description: Use 'today' or a date format like 'YYYY-MM-DD'
  *     responses:
  *       200:
  *         description: Menu deleted successfully
  */
-router.delete('/:id', menuController.deleteMenu);
+router.delete('/:date', menuController.deleteMenu);
 
 module.exports = router;
