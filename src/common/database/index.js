@@ -31,6 +31,9 @@ const initDB = async () => {
     CREATE SEQUENCE IF NOT EXISTS child_id_seq;
     CREATE SEQUENCE IF NOT EXISTS menu_id_seq;
     CREATE SEQUENCE IF NOT EXISTS subscription_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS corporate_location_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS professional_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS parent_id_seq;
   `;
 
   // ──────────────────────────────────────────────
@@ -153,6 +156,54 @@ const initDB = async () => {
     );
   `;
 
+  // ──────────────────────────────────────────────
+  // CORPORATE LOCATIONS TABLE (Admin managed)
+  // ──────────────────────────────────────────────
+  const createCorporateLocationsTable = `
+    CREATE TABLE IF NOT EXISTS corporate_locations (
+      id              VARCHAR(20) PRIMARY KEY DEFAULT 'CL-' || nextval('corporate_location_id_seq')::TEXT,
+      name            VARCHAR(255) NOT NULL,
+      address         TEXT NOT NULL,
+      city            VARCHAR(100) NOT NULL,
+      state           VARCHAR(100) NOT NULL,
+      is_active       BOOLEAN NOT NULL DEFAULT true,
+      created_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  // ──────────────────────────────────────────────
+  // PROFESSIONAL PROFILES TABLE
+  // ──────────────────────────────────────────────
+  const createProfessionalProfilesTable = `
+    CREATE TABLE IF NOT EXISTS professional_profiles (
+      id                    VARCHAR(20) PRIMARY KEY DEFAULT 'PRO-' || nextval('professional_id_seq')::TEXT,
+      client_id             VARCHAR(20) UNIQUE NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      name                  VARCHAR(255) NOT NULL,
+      company_name          VARCHAR(255) NOT NULL,
+      corporate_location_id VARCHAR(20) NOT NULL REFERENCES corporate_locations(id),
+      city                  VARCHAR(100) NOT NULL,
+      state                 VARCHAR(100) NOT NULL,
+      lunch_time            TIME NOT NULL,
+      created_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  // ──────────────────────────────────────────────
+  // PARENT PROFILES TABLE
+  // ──────────────────────────────────────────────
+  const createParentProfilesTable = `
+    CREATE TABLE IF NOT EXISTS parent_profiles (
+      id          VARCHAR(20) PRIMARY KEY DEFAULT 'PAR-' || nextval('parent_id_seq')::TEXT,
+      client_id   VARCHAR(20) UNIQUE NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      name        VARCHAR(255) NOT NULL,
+      created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
   try {
     // 1. Drop existing tables if they use old integer IDs (Migration Step)
     const tableChecks = await pool.query(`
@@ -196,6 +247,9 @@ const initDB = async () => {
     await pool.query(createDailyMenusTable);
     await pool.query(createChildrenTable);
     await pool.query(createSubscriptionsTable);
+    await pool.query(createCorporateLocationsTable);
+    await pool.query(createProfessionalProfilesTable);
+    await pool.query(createParentProfilesTable);
 
     // Migration: Force CH- prefix for children and set as default for existing tables
     await pool.query("ALTER TABLE children ALTER COLUMN id SET DEFAULT 'CH-' || nextval('child_id_seq')::TEXT;");

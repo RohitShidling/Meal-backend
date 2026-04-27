@@ -19,6 +19,10 @@ const commonMenuRoutes = require('./common/routes/menuRoutes');
 const commonRoutes = require('./common/routes/commonRoutes');
 const adminSubscriptionRoutes = require('./admin/routes/subscriptionRoutes');
 const commonSubscriptionRoutes = require('./common/routes/subscriptionRoutes');
+const adminCorporateLocationRoutes = require('./admin/routes/corporateLocationRoutes');
+const commonCorporateLocationRoutes = require('./common/routes/corporateLocationRoutes');
+const clientProfessionalRoutes = require('./client/routes/professionalRoutes');
+const clientParentRoutes = require('./client/routes/parentRoutes');
 
 const app = express();
 
@@ -69,6 +73,10 @@ app.use('/api/admin/menu', adminMenuRoutes);
 app.use('/api/common/menu', commonMenuRoutes);
 app.use('/api/admin/subscriptions', adminSubscriptionRoutes);
 app.use('/api/common/subscriptions', commonSubscriptionRoutes);
+app.use('/api/admin/corporate-locations', adminCorporateLocationRoutes);
+app.use('/api/common/corporate-locations', commonCorporateLocationRoutes);
+app.use('/api/client/professional', clientProfessionalRoutes);
+app.use('/api/client/parent', clientParentRoutes);
 
 // 404 Handler
 app.use((req, res) => {

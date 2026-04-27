@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { sendOtpController, verifyOtpController, logoutController, refreshTokenController } = require('../controllers/authController');
+const { sendOtpController, verifyOtpController, logoutController, refreshTokenController, getMe } = require('../controllers/authController');
 const clientAuthMiddleware = require('../middlewares/authMiddleware');
 
 /**
@@ -128,5 +128,21 @@ router.post('/logout', clientAuthMiddleware, logoutController);
  *         description: Invalid or expired refresh token
  */
 router.post('/refresh', refreshTokenController);
+
+/**
+ * @swagger
+ * /api/client/auth/me:
+ *   get:
+ *     summary: Get current user profile status (Parent/Professional/Both)
+ *     tags: [Client Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Current user status and profiles
+ *       401:
+ *         description: Unauthorized
+ */
+router.get('/me', clientAuthMiddleware, getMe);
 
 module.exports = router;
