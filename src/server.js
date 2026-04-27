@@ -17,6 +17,8 @@ const adminLookupRoutes = require('./admin/routes/lookupRoutes');
 const adminMenuRoutes = require('./admin/routes/menuRoutes');
 const commonMenuRoutes = require('./common/routes/menuRoutes');
 const commonRoutes = require('./common/routes/commonRoutes');
+const adminSubscriptionRoutes = require('./admin/routes/subscriptionRoutes');
+const commonSubscriptionRoutes = require('./common/routes/subscriptionRoutes');
 
 const app = express();
 
@@ -65,6 +67,8 @@ app.use('/api/admin/schools', adminSchoolRoutes);
 app.use('/api/admin/lookup', adminLookupRoutes);
 app.use('/api/admin/menu', adminMenuRoutes);
 app.use('/api/common/menu', commonMenuRoutes);
+app.use('/api/admin/subscriptions', adminSubscriptionRoutes);
+app.use('/api/common/subscriptions', commonSubscriptionRoutes);
 
 // 404 Handler
 app.use((req, res) => {

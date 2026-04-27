@@ -30,6 +30,7 @@ const initDB = async () => {
     CREATE SEQUENCE IF NOT EXISTS client_id_seq;
     CREATE SEQUENCE IF NOT EXISTS child_id_seq;
     CREATE SEQUENCE IF NOT EXISTS menu_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS subscription_id_seq;
   `;
 
   // ──────────────────────────────────────────────
@@ -133,6 +134,25 @@ const initDB = async () => {
     );
   `;
 
+  // ──────────────────────────────────────────────
+  // SUBSCRIPTIONS TABLE
+  // ──────────────────────────────────────────────
+  const createSubscriptionsTable = `
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id              VARCHAR(20) PRIMARY KEY DEFAULT 'SUB-' || nextval('subscription_id_seq')::TEXT,
+      plan_name       VARCHAR(255) NOT NULL,
+      price           DECIMAL(10, 2) NOT NULL,
+      billing_cycle   VARCHAR(50) NOT NULL,
+      trial_days      INTEGER NOT NULL DEFAULT 0,
+      display_order   INTEGER NOT NULL DEFAULT 1,
+      is_active       BOOLEAN NOT NULL DEFAULT true,
+      created_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      updated_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
   try {
     // 1. Drop existing tables if they use old integer IDs (Migration Step)
     const tableChecks = await pool.query(`
@@ -175,6 +195,7 @@ const initDB = async () => {
     await pool.query(createStandardsTable);
     await pool.query(createDailyMenusTable);
     await pool.query(createChildrenTable);
+    await pool.query(createSubscriptionsTable);
 
     // Migration: Force CH- prefix for children and set as default for existing tables
     await pool.query("ALTER TABLE children ALTER COLUMN id SET DEFAULT 'CH-' || nextval('child_id_seq')::TEXT;");
