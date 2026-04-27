@@ -32,36 +32,42 @@ exports.uploadMenu = async (req, res, next) => {
   }
 };
 
-// @desc    Update existing menu
-// @route   PUT /api/admin/menu/:id
+// @desc    Update existing menu by date
+// @route   PUT /api/admin/menu/:date
 exports.updateMenu = async (req, res, next) => {
   try {
-    const { id } = req.params;
-    const { items, menu_date, is_active } = req.body;
+    let { date } = req.params;
+    if (date === 'today') {
+      date = new Date().toISOString().split('T')[0];
+    }
+    
+    const { items, is_active } = req.body;
     const image_url = req.file ? req.file.path : null;
     const image_public_id = req.file ? req.file.filename : null;
 
     // Get current menu to find old public_id
-    const currentMenu = await db.query('SELECT image_public_id FROM daily_menus WHERE id = $1', [id]);
+    const currentMenu = await db.query('SELECT id, image_public_id FROM daily_menus WHERE menu_date = $1', [date]);
     
     if (currentMenu.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Menu not found' });
+      return res.status(404).json({ success: false, message: `No menu found for date: ${date}` });
     }
+
+    const menuId = currentMenu.rows[0].id;
 
     // If new image is uploaded, delete the OLD one from Cloudinary
     if (image_url && currentMenu.rows[0].image_public_id) {
       await cloudinary.uploader.destroy(currentMenu.rows[0].image_public_id);
     }
 
-    let query = 'UPDATE daily_menus SET items = $1, menu_date = $2, is_active = $3, updated_at = CURRENT_TIMESTAMP';
-    let values = [items, menu_date, is_active];
+    let query = 'UPDATE daily_menus SET items = $1, is_active = $2, updated_at = CURRENT_TIMESTAMP';
+    let values = [items, is_active];
 
     if (image_url) {
-      query += ', image_url = $4, image_public_id = $5 WHERE id = $6 RETURNING *';
-      values.push(image_url, image_public_id, id);
+      query += ', image_url = $3, image_public_id = $4 WHERE id = $5 RETURNING *';
+      values.push(image_url, image_public_id, menuId);
     } else {
-      query += ' WHERE id = $4 RETURNING *';
-      values.push(id);
+      query += ' WHERE id = $3 RETURNING *';
+      values.push(menuId);
     }
 
     const result = await db.query(query, values);
@@ -76,18 +82,23 @@ exports.updateMenu = async (req, res, next) => {
   }
 };
 
-// @desc    Delete menu
-// @route   DELETE /api/admin/menu/:id
+// @desc    Delete menu by date
+// @route   DELETE /api/admin/menu/:date
 exports.deleteMenu = async (req, res, next) => {
   try {
-    const { id } = req.params;
+    let { date } = req.params;
+    if (date === 'today') {
+      date = new Date().toISOString().split('T')[0];
+    }
     
     // Get public_id first to delete from Cloudinary
-    const currentMenu = await db.query('SELECT image_public_id FROM daily_menus WHERE id = $1', [id]);
+    const currentMenu = await db.query('SELECT id, image_public_id FROM daily_menus WHERE menu_date = $1', [date]);
     
     if (currentMenu.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Menu not found' });
+      return res.status(404).json({ success: false, message: `No menu found for date: ${date}` });
     }
+
+    const menuId = currentMenu.rows[0].id;
 
     // Delete from Cloudinary
     if (currentMenu.rows[0].image_public_id) {
@@ -95,7 +106,7 @@ exports.deleteMenu = async (req, res, next) => {
     }
 
     // Delete from Database
-    await db.query('DELETE FROM daily_menus WHERE id = $1', [id]);
+    await db.query('DELETE FROM daily_menus WHERE id = $1', [menuId]);
 
     res.status(200).json({
       success: true,
