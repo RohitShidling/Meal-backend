@@ -36,9 +36,6 @@ const commonAuthMiddleware = require('../../common/middlewares/commonAuthMiddlew
  *         state:
  *           type: string
  *           example: "Karnataka"
- *         location:
- *           type: string
- *           example: "Whitefield, Bangalore"
  *         status:
  *           type: string
  *           example: "active"
@@ -69,7 +66,6 @@ const commonAuthMiddleware = require('../../common/middlewares/commonAuthMiddlew
  *               - school_college_name
  *               - city
  *               - state
- *               - location
  *             properties:
  *               name:
  *                 type: string
@@ -83,9 +79,6 @@ const commonAuthMiddleware = require('../../common/middlewares/commonAuthMiddlew
  *               state:
  *                 type: string
  *                 example: "Karnataka"
- *               location:
- *                 type: string
- *                 example: "Whitefield, Bangalore"
  *               status:
  *                 type: string
  *                 example: "active"
@@ -139,9 +132,6 @@ router.post('/profile', clientAuthMiddleware, teacherController.saveTeacherProfi
  *               state:
  *                 type: string
  *                 example: "Karnataka"
- *               location:
- *                 type: string
- *                 example: "Whitefield, Bangalore"
  *               status:
  *                 type: string
  *                 example: "active"

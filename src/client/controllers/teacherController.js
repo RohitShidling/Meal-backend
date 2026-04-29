@@ -8,11 +8,11 @@ const AppError = require('../../common/utils/AppError');
  */
 exports.saveTeacherProfile = async (req, res, next) => {
   try {
-    const { name, school_college_name, city, state, location, status } = req.body;
+    const { name, school_college_name, city, state, status } = req.body;
     const clientId = req.user.id;
 
-    if (!name || !school_college_name || !city || !state || !location) {
-      return next(new AppError('All fields (name, school_college_name, city, state, location) are required', 400));
+    if (!name || !school_college_name || !city || !state) {
+      return next(new AppError('All fields (name, school_college_name, city, state) are required', 400));
     }
 
     // INDUSTRIAL RULE: Check for mutual exclusivity with Professional profile
@@ -36,13 +36,12 @@ exports.saveTeacherProfile = async (req, res, next) => {
           school_college_name = $2, 
           city = $3, 
           state = $4, 
-          location = $5,
-          status = $6,
+          status = $5,
           updated_at = CURRENT_TIMESTAMP
-        WHERE client_id = $7
+        WHERE client_id = $6
         RETURNING *;
       `;
-      const values = [name, school_college_name, city, state, location, status || 'active', clientId];
+      const values = [name, school_college_name, city, state, status || 'active', clientId];
       const updateResult = await query(updateQuery, values);
       result = updateResult.rows[0];
     } else {
@@ -53,7 +52,7 @@ exports.saveTeacherProfile = async (req, res, next) => {
         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *;
       `;
-      const values = [clientId, name, school_college_name, city, state, location, status || 'active'];
+      const values = [clientId, name, school_college_name, city, state, '', status || 'active'];
       const insertResult = await query(insertQuery, values);
       result = insertResult.rows[0];
     }

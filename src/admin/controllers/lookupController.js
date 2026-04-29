@@ -37,4 +37,7 @@ const getStandards = catchAsync(async (req, res) => {
   });
 });
 
-module.exports = { getMealSizes, getStandards };
+module.exports = {
+  getMealSizes,
+  getStandards
+};

@@ -41,6 +41,42 @@ const sendOtpController = catchAsync(async (req, res, next) => {
 });
 
 /**
+ * POST /api/client/auth/login/send-otp
+ * Body: { phoneNumber, username }
+ */
+const loginSendOtpController = catchAsync(async (req, res, next) => {
+  const { phoneNumber, username } = req.body;
+  const trimmedUsername = String(username).trim();
+
+  try {
+    await sendOTP(phoneNumber);
+  } catch (error) {
+    const firebaseMsg = error.response?.data?.error?.message || error.message;
+    return next(new AppError(`Failed to send OTP: ${firebaseMsg}`, 400));
+  }
+
+  // Keep username in sync at OTP initiation stage.
+  await db.query(
+    `
+      INSERT INTO clients (phone_number, username)
+      VALUES ($1, $2)
+      ON CONFLICT (phone_number)
+      DO UPDATE SET username = EXCLUDED.username
+    `,
+    [phoneNumber, trimmedUsername]
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: `Login OTP sent to ${phoneNumber}.`,
+    data: {
+      phoneNumber,
+      username: trimmedUsername
+    }
+  });
+});
+
+/**
  * POST /api/client/auth/verify-otp
  * Body: { phoneNumber, code }
  */
@@ -98,6 +134,7 @@ const verifyOtpController = catchAsync(async (req, res, next) => {
       refreshToken,
       user: { 
         id: updatedUser.id, 
+        username: updatedUser.username || null,
         phoneNumber: updatedUser.phone_number,
         isLoggedIn: updatedUser.is_logged_in,
         lastLogin: updatedUser.last_login
@@ -178,7 +215,10 @@ const getMe = catchAsync(async (req, res, next) => {
   const clientId = req.user.id;
 
   // Fetch client basic info
-  const clientResult = await db.query('SELECT id, phone_number, last_login FROM clients WHERE id = $1', [clientId]);
+  const clientResult = await db.query(
+    'SELECT id, username, phone_number, last_login FROM clients WHERE id = $1',
+    [clientId]
+  );
   if (clientResult.rows.length === 0) {
     return next(new AppError('User not found.', 404));
   }
@@ -212,4 +252,11 @@ const getMe = catchAsync(async (req, res, next) => {
   });
 });
 
-module.exports = { sendOtpController, verifyOtpController, logoutController, refreshTokenController, getMe };
+module.exports = {
+  sendOtpController,
+  loginSendOtpController,
+  verifyOtpController,
+  logoutController,
+  refreshTokenController,
+  getMe
+};
