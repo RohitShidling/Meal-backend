@@ -23,6 +23,7 @@
   },
   "homepage": "https://github.com/RohitShidling/Meal-backend#readme",
   "dependencies": {
+    "@phonepe-pg/pg-sdk-node": "^2.0.6",
     "axios": "^1.15.2",
     "bcrypt": "^6.0.0",
     "cloudinary": "^1.41.3",
