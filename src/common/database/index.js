@@ -35,6 +35,8 @@ const initDB = async () => {
     CREATE SEQUENCE IF NOT EXISTS professional_id_seq;
     CREATE SEQUENCE IF NOT EXISTS parent_id_seq;
     CREATE SEQUENCE IF NOT EXISTS teacher_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS order_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS transaction_id_seq;
   `;
 
   // ──────────────────────────────────────────────
@@ -223,6 +225,52 @@ const initDB = async () => {
     );
   `;
 
+  const createOrdersTable = `
+    CREATE TABLE IF NOT EXISTS orders (
+      id              VARCHAR(20) PRIMARY KEY DEFAULT 'ORD-' || nextval('order_id_seq')::TEXT,
+      client_id       VARCHAR(20) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      subscription_id VARCHAR(20) NOT NULL REFERENCES subscriptions(id),
+      entity_type     VARCHAR(20) NOT NULL, -- 'child', 'teacher', 'professional'
+      entity_id       VARCHAR(20) NOT NULL, -- ID of the child/teacher/professional
+      amount          DECIMAL(10, 2) NOT NULL,
+      status          VARCHAR(20) NOT NULL DEFAULT 'pending', -- 'pending', 'completed', 'failed', 'cancelled'
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  const createTransactionsTable = `
+    CREATE TABLE IF NOT EXISTS transactions (
+      id                      VARCHAR(20) PRIMARY KEY DEFAULT 'TXN-' || nextval('transaction_id_seq')::TEXT,
+      order_id                VARCHAR(20) NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      merchant_transaction_id VARCHAR(255) UNIQUE NOT NULL,
+      gateway_transaction_id  VARCHAR(255),
+      amount                  DECIMAL(10, 2) NOT NULL,
+      status                  VARCHAR(20) NOT NULL DEFAULT 'pending', -- 'pending', 'success', 'failure'
+      payment_method          VARCHAR(50),
+      gateway_response        JSONB,
+      created_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  const createClientSubscriptionsTable = `
+    CREATE TABLE IF NOT EXISTS client_subscriptions (
+      id              SERIAL PRIMARY KEY,
+      client_id       VARCHAR(20) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      subscription_id VARCHAR(20) NOT NULL REFERENCES subscriptions(id),
+      entity_type     VARCHAR(20) NOT NULL,
+      entity_id       VARCHAR(20) NOT NULL,
+      start_date      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      end_date        TIMESTAMP NOT NULL,
+      is_active       BOOLEAN NOT NULL DEFAULT true,
+      order_id        VARCHAR(20) REFERENCES orders(id),
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(client_id, entity_id, entity_type)
+    );
+  `;
+
   try {
     // 1. Drop existing tables if they use old integer IDs (Migration Step)
     const tableChecks = await pool.query(`
@@ -270,6 +318,9 @@ const initDB = async () => {
     await pool.query(createProfessionalProfilesTable);
     await pool.query(createParentProfilesTable);
     await pool.query(createTeacherProfilesTable);
+    await pool.query(createOrdersTable);
+    await pool.query(createTransactionsTable);
+    await pool.query(createClientSubscriptionsTable);
 
     // Migration: Force CH- prefix for children and set as default for existing tables
     await pool.query("ALTER TABLE children ALTER COLUMN id SET DEFAULT 'CH-' || nextval('child_id_seq')::TEXT;");
