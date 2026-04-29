@@ -61,6 +61,46 @@ router.get('/history/all', menuController.getMenuHistory);
 
 /**
  * @swagger
+ * /api/common/menu/weekly/all:
+ *   get:
+ *     tags: [Common Menu]
+ *     summary: Get the menu for the current week (7 days starting from today)
+ *     responses:
+ *       200:
+ *         description: Weekly menu retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 count:
+ *                   type: integer
+ *                   example: 7
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       image_url:
+ *                         type: string
+ *                       items:
+ *                         type: string
+ *                       menu_date:
+ *                         type: string
+ *                       created_at:
+ *                         type: string
+ *       500:
+ *         description: Internal Server Error
+ */
+router.get('/weekly/all', menuController.getWeeklyMenu);
+
+/**
+ * @swagger
  * /api/common/menu/{date}:
  *   get:
  *     tags: [Common Menu]

@@ -63,3 +63,27 @@ exports.getMenuHistory = async (req, res, next) => {
     next(error);
   }
 };
+
+// @desc    Get weekly menu (next 7 days starting from today)
+// @route   GET /api/common/menu/weekly/all
+exports.getWeeklyMenu = async (req, res, next) => {
+  try {
+    // Get meals from today to the next 6 days (total 7 days)
+    const query = `
+      SELECT id, image_url, items, menu_date, created_at
+      FROM daily_menus
+      WHERE is_active = true AND menu_date >= CURRENT_DATE AND menu_date < CURRENT_DATE + INTERVAL '7 days'
+      ORDER BY menu_date ASC;
+    `;
+    
+    const result = await db.query(query);
+
+    res.status(200).json({
+      success: true,
+      count: result.rowCount,
+      data: result.rows
+    });
+  } catch (error) {
+    next(error);
+  }
+};

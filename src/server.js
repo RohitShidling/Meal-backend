@@ -18,14 +18,19 @@ const adminMenuRoutes = require('./admin/routes/menuRoutes');
 const commonMenuRoutes = require('./common/routes/menuRoutes');
 const commonRoutes = require('./common/routes/commonRoutes');
 const adminSubscriptionRoutes = require('./admin/routes/subscriptionRoutes');
+const adminSubscriptionAnalyticsRoutes = require('./admin/routes/subscriptionAnalyticsRoutes');
 const commonSubscriptionRoutes = require('./common/routes/subscriptionRoutes');
+const clientSubscriptionRoutes = require('./client/routes/subscriptionRoutes');
 const adminCorporateLocationRoutes = require('./admin/routes/corporateLocationRoutes');
 const commonCorporateLocationRoutes = require('./common/routes/corporateLocationRoutes');
 const clientProfessionalRoutes = require('./client/routes/professionalRoutes');
 const clientParentRoutes = require('./client/routes/parentRoutes');
 const clientTeacherRoutes = require('./client/routes/teacherRoutes');
 const clientPaymentRoutes = require('./client/routes/paymentRoutes');
+const clientCartRoutes = require('./client/routes/cartRoutes');
 const adminPaymentRoutes = require('./admin/routes/paymentRoutes');
+const adminHomepageRoutes = require('./admin/routes/homepageRoutes');
+const commonHomepageRoutes = require('./common/routes/homepageRoutes');
 
 const app = express();
 
@@ -75,14 +80,19 @@ app.use('/api/admin/lookup', adminLookupRoutes);
 app.use('/api/admin/menu', adminMenuRoutes);
 app.use('/api/common/menu', commonMenuRoutes);
 app.use('/api/admin/subscriptions', adminSubscriptionRoutes);
+app.use('/api/admin/subscriptions', adminSubscriptionAnalyticsRoutes);
 app.use('/api/common/subscriptions', commonSubscriptionRoutes);
+app.use('/api/client/subscriptions', clientSubscriptionRoutes);
 app.use('/api/admin/corporate-locations', adminCorporateLocationRoutes);
 app.use('/api/common/corporate-locations', commonCorporateLocationRoutes);
 app.use('/api/client/professional', clientProfessionalRoutes);
 app.use('/api/client/parent', clientParentRoutes);
 app.use('/api/client/teacher', clientTeacherRoutes);
 app.use('/api/client/payment', clientPaymentRoutes);
+app.use('/api/client/cart', clientCartRoutes);
 app.use('/api/admin/payment', adminPaymentRoutes);
+app.use('/api/admin/homepage', adminHomepageRoutes);
+app.use('/api/common/homepage', commonHomepageRoutes);
 
 // 404 Handler
 app.use((req, res) => {

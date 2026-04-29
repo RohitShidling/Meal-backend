@@ -37,6 +37,8 @@ const initDB = async () => {
     CREATE SEQUENCE IF NOT EXISTS teacher_id_seq;
     CREATE SEQUENCE IF NOT EXISTS order_id_seq;
     CREATE SEQUENCE IF NOT EXISTS transaction_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS homepage_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS cart_id_seq;
   `;
 
   // ──────────────────────────────────────────────
@@ -271,6 +273,52 @@ const initDB = async () => {
     );
   `;
 
+  // ──────────────────────────────────────────────
+  // CART TABLE (for multi-entity payments)
+  // ──────────────────────────────────────────────
+  const createCartsTable = `
+    CREATE TABLE IF NOT EXISTS carts (
+      id              VARCHAR(20) PRIMARY KEY DEFAULT 'CART-' || nextval('cart_id_seq')::TEXT,
+      client_id       VARCHAR(20) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      status          VARCHAR(20) NOT NULL DEFAULT 'active', -- 'active', 'checked_out', 'abandoned'
+      total_amount    DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(client_id, status) -- Only one active cart per client
+    );
+  `;
+
+  const createCartItemsTable = `
+    CREATE TABLE IF NOT EXISTS cart_items (
+      id              SERIAL PRIMARY KEY,
+      cart_id         VARCHAR(20) NOT NULL REFERENCES carts(id) ON DELETE CASCADE,
+      subscription_id VARCHAR(20) NOT NULL REFERENCES subscriptions(id),
+      entity_type     VARCHAR(20) NOT NULL, -- 'child', 'teacher', 'professional'
+      entity_id       VARCHAR(20) NOT NULL,
+      entity_name     VARCHAR(255),
+      unit_price      DECIMAL(10, 2) NOT NULL,
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(cart_id, entity_id, entity_type) -- Cannot add same entity twice to cart
+    );
+  `;
+
+  // ──────────────────────────────────────────────
+  // HOMEPAGES TABLE
+  // ──────────────────────────────────────────────
+  const createHomepagesTable = `
+    CREATE TABLE IF NOT EXISTS homepages (
+      id              VARCHAR(20) PRIMARY KEY DEFAULT 'HP-' || nextval('homepage_id_seq')::TEXT,
+      name            VARCHAR(255) NOT NULL,
+      description     TEXT NOT NULL,
+      display_order   INTEGER UNIQUE NOT NULL,
+      is_active       BOOLEAN NOT NULL DEFAULT true,
+      created_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      updated_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
   try {
     // 1. Drop existing tables if they use old integer IDs (Migration Step)
     const tableChecks = await pool.query(`
@@ -321,6 +369,13 @@ const initDB = async () => {
     await pool.query(createOrdersTable);
     await pool.query(createTransactionsTable);
     await pool.query(createClientSubscriptionsTable);
+    await pool.query(createHomepagesTable);
+    await pool.query(createCartsTable);
+    await pool.query(createCartItemsTable);
+
+    // Migration: Add order_type to orders table if it doesn't exist
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_type VARCHAR(20) NOT NULL DEFAULT 'single';`);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cart_id VARCHAR(20) REFERENCES carts(id);`);
 
     // Migration: Force CH- prefix for children and set as default for existing tables
     await pool.query("ALTER TABLE children ALTER COLUMN id SET DEFAULT 'CH-' || nextval('child_id_seq')::TEXT;");
