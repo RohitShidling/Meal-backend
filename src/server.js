@@ -124,13 +124,19 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   err.statusCode = err.statusCode || 500;
   err.status = err.status || 'error';
+  
+  const normalizedErrors =
+    Array.isArray(err.details) ? err.details
+    : (typeof err.message === 'string' && err.message.includes(' | ')) ? err.message.split(' | ').map(s => s.trim()).filter(Boolean)
+    : undefined;
 
   if (process.env.NODE_ENV === 'development') {
     console.error('Error:', err.message);
     res.status(err.statusCode).json({
       success: false,
       status: err.status,
-      message: err.message
+      message: err.message,
+      ...(normalizedErrors ? { errors: normalizedErrors } : {})
     });
   } else {
     // Production
@@ -138,7 +144,8 @@ app.use((err, req, res, next) => {
       res.status(err.statusCode).json({
         success: false,
         status: err.status,
-        message: err.message
+        message: err.message,
+        ...(normalizedErrors ? { errors: normalizedErrors } : {})
       });
     } else {
       // Programming or other unknown error: don't leak error details

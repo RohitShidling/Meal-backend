@@ -1,6 +1,83 @@
 const swaggerJsDoc = require('swagger-jsdoc');
 const swaggerUi = require('swagger-ui-express');
 
+function ensureResponseContent(specs) {
+  const apiSuccessRef = { $ref: '#/components/schemas/ApiSuccess' };
+  const apiErrorRef = { $ref: '#/components/schemas/ApiError' };
+  const pdfBinarySchema = { type: 'string', format: 'binary' };
+
+  if (!specs.paths) return specs;
+
+  for (const [, pathItem] of Object.entries(specs.paths)) {
+    if (!pathItem || typeof pathItem !== 'object') continue;
+
+    for (const [method, op] of Object.entries(pathItem)) {
+      if (!op || typeof op !== 'object') continue;
+      if (!['get', 'post', 'put', 'patch', 'delete', 'options', 'head'].includes(method)) continue;
+
+      op.responses = op.responses || {};
+
+      // If the operation has no responses at all, add safe defaults.
+      if (Object.keys(op.responses).length === 0) {
+        op.responses['200'] = { description: 'OK' };
+        op.responses['500'] = { description: 'Internal Server Error' };
+      }
+
+      for (const [statusCode, response] of Object.entries(op.responses)) {
+        if (!response || typeof response !== 'object') continue;
+
+        const codeNum = Number(statusCode);
+        const isSuccess = !Number.isNaN(codeNum) ? (codeNum >= 200 && codeNum < 300) : false;
+
+        // Swagger shows "No response body" when content is missing.
+        if (!response.content) {
+          response.content = {
+            'application/json': {
+              schema: isSuccess ? apiSuccessRef : apiErrorRef,
+            },
+          };
+        } else {
+          // If content exists, make sure at least one schema is present.
+          if (response.content['application/pdf'] && !response.content['application/pdf'].schema) {
+            response.content['application/pdf'].schema = pdfBinarySchema;
+          }
+          if (response.content['application/json'] && !response.content['application/json'].schema) {
+            response.content['application/json'].schema = isSuccess ? apiSuccessRef : apiErrorRef;
+          }
+        }
+      }
+
+      // Ensure common error responses exist for consistency in docs.
+      const commonErrors = {
+        '400': { description: 'Bad Request' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden' },
+        '404': { description: 'Not Found' },
+        '500': { description: 'Internal Server Error' },
+      };
+
+      for (const [code, def] of Object.entries(commonErrors)) {
+        if (!op.responses[code]) {
+          op.responses[code] = {
+            ...def,
+            content: {
+              'application/json': {
+                schema: apiErrorRef,
+              },
+            },
+          };
+        } else if (!op.responses[code].content) {
+          op.responses[code].content = {
+            'application/json': { schema: apiErrorRef },
+          };
+        }
+      }
+    }
+  }
+
+  return specs;
+}
+
 const options = {
   definition: {
     openapi: '3.0.0',
@@ -24,6 +101,39 @@ const options = {
         },
       },
       schemas: {
+        ApiSuccess: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: true },
+            message: { type: 'string', nullable: true, example: 'OK' },
+            count: { type: 'integer', nullable: true, example: 1 },
+            data: {
+              description: 'Response payload (object/array), depends on endpoint',
+              oneOf: [{ type: 'object' }, { type: 'array' }, { type: 'string' }, { type: 'number' }, { type: 'boolean' }, { type: 'null' }],
+            },
+            alerts: {
+              type: 'array',
+              nullable: true,
+              items: { type: 'object' },
+            },
+          },
+          additionalProperties: true,
+        },
+        ApiError: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: false },
+            status: { type: 'string', example: 'fail' },
+            message: { type: 'string', example: 'Validation failed.' },
+            errors: {
+              type: 'array',
+              nullable: true,
+              items: { type: 'string' },
+              example: ['phoneNumber is required.'],
+            },
+          },
+          additionalProperties: true,
+        },
         Order: {
           type: 'object',
           properties: {
@@ -63,7 +173,7 @@ const options = {
   ],
 };
 
-const specs = swaggerJsDoc(options);
+const specs = ensureResponseContent(swaggerJsDoc(options));
 
 module.exports = {
   swaggerUi,
