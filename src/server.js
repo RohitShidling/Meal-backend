@@ -13,8 +13,8 @@ const clientAuthRoutes = require('./client/routes/authRoutes');
 const clientChildRoutes = require('./client/routes/childRoutes');
 const adminAuthRoutes = require('./admin/routes/authRoutes');
 const adminSchoolRoutes = require('./admin/routes/schoolRoutes');
-const adminLookupRoutes = require('./admin/routes/lookupRoutes');
 const adminMasterDataRoutes = require('./admin/routes/masterDataRoutes');
+const adminMasterDataReadRoutes = require('./admin/routes/masterDataReadRoutes');
 const adminMenuRoutes = require('./admin/routes/menuRoutes');
 const commonMenuRoutes = require('./common/routes/menuRoutes');
 const commonRoutes = require('./common/routes/commonRoutes');
@@ -30,6 +30,7 @@ const clientParentRoutes = require('./client/routes/parentRoutes');
 const clientTeacherRoutes = require('./client/routes/teacherRoutes');
 const clientPaymentRoutes = require('./client/routes/paymentRoutes');
 const adminPaymentRoutes = require('./admin/routes/paymentRoutes');
+const adminDashboardRoutes = require('./admin/routes/dashboardRoutes');
 
 const app = express();
 
@@ -49,7 +50,7 @@ if (process.env.NODE_ENV === 'development') {
 // Global Rate Limiting (Industrial Standard)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
+  max: 1000, // Limit each IP to 1000 requests per `window` (here, per 15 minutes)
   message: { success: false, message: 'Too many requests from this IP, please try again after 15 minutes' },
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
@@ -75,8 +76,8 @@ app.use('/api/client/children', clientChildRoutes);
 app.use('/api/admin/auth', adminAuthRoutes);
 app.use('/api/common', commonRoutes);
 app.use('/api/admin/schools', adminSchoolRoutes);
-app.use('/api/admin/lookup', adminLookupRoutes);
 app.use('/api/admin/lookup', adminMasterDataRoutes);
+app.use('/api/admin/lookup', adminMasterDataReadRoutes);
 app.use('/api/admin/menu', adminMenuRoutes);
 app.use('/api/common/menu', commonMenuRoutes);
 app.use('/api/admin/subscriptions', adminSubscriptionRoutes);
@@ -91,6 +92,7 @@ app.use('/api/client/parent', clientParentRoutes);
 app.use('/api/client/teacher', clientTeacherRoutes);
 app.use('/api/client/payment', clientPaymentRoutes);
 app.use('/api/admin/payment', adminPaymentRoutes);
+app.use('/api/admin/dashboard', adminDashboardRoutes);
 
 // 404 Handler
 app.use((req, res) => {
