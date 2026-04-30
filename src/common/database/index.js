@@ -451,21 +451,7 @@ const initDB = async () => {
       );
     `);
 
-    // ──────────────────────────────────────────────
-    // DAILY MEAL LOG TABLE (per-entity, per-date truth)
-    // ──────────────────────────────────────────────
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS daily_meal_log (
-        id                  SERIAL PRIMARY KEY,
-        subscription_id     VARCHAR(20) NOT NULL REFERENCES client_subscriptions(id) ON DELETE CASCADE,
-        entity_type         VARCHAR(20) NOT NULL,
-        entity_id           VARCHAR(20) NOT NULL,
-        meal_date           DATE NOT NULL,
-        reduction_id        INTEGER REFERENCES meal_reductions(id),
-        created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(subscription_id, meal_date)
-      );
-    `);
+    // (Moved daily_meal_log creation after migration to avoid type mismatch)
 
     // ──────────────────────────────────────────────
     // MIGRATIONS: Add meal tracking columns
@@ -491,9 +477,10 @@ const initDB = async () => {
       await pool.query(`ALTER TABLE client_subscriptions ALTER COLUMN id SET DEFAULT 'CT-SUB-' || nextval('client_subscription_id_seq')::TEXT;`);
       // Set sequence to max existing value
       await pool.query(`
-        SELECT setval('client_subscription_id_seq', COALESCE(
-          (SELECT MAX(REPLACE(id, 'CT-SUB-', '')::INTEGER) FROM client_subscriptions), 0
-        ));
+        SELECT setval('client_subscription_id_seq', 
+          COALESCE((SELECT MAX(REPLACE(id, 'CT-SUB-', '')::INTEGER) FROM client_subscriptions), 1),
+          (SELECT MAX(id) IS NOT NULL FROM client_subscriptions)
+        );
       `);
       // Recreate daily_meal_log with correct FK type
       await pool.query(`
@@ -510,6 +497,22 @@ const initDB = async () => {
       `);
       console.log('Migration complete: client_subscriptions now uses CT-SUB-X format.');
     }
+
+    // ──────────────────────────────────────────────
+    // DAILY MEAL LOG TABLE (per-entity, per-date truth)
+    // ──────────────────────────────────────────────
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS daily_meal_log (
+        id                  SERIAL PRIMARY KEY,
+        subscription_id     VARCHAR(20) NOT NULL REFERENCES client_subscriptions(id) ON DELETE CASCADE,
+        entity_type         VARCHAR(20) NOT NULL,
+        entity_id           VARCHAR(20) NOT NULL,
+        meal_date           DATE NOT NULL,
+        reduction_id        INTEGER REFERENCES meal_reductions(id),
+        created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(subscription_id, meal_date)
+      );
+    `);
 
     // Migration: Add order_type to orders table if it doesn't exist
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_type VARCHAR(20) NOT NULL DEFAULT 'single';`);
