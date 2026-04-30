@@ -21,7 +21,7 @@ const generateTokens = (id, phoneNumber) => {
  * Body: { phoneNumber, password }
  */
 const loginController = catchAsync(async (req, res, next) => {
-  const { phoneNumber, password } = req.body;
+  const { phoneNumber, password, username } = req.body;
 
   if (!phoneNumber || !password) {
     return next(new AppError('phoneNumber and password are required.', 400));
@@ -41,6 +41,12 @@ const loginController = catchAsync(async (req, res, next) => {
   
   if (!isMatch) {
     return next(new AppError('Invalid phone number or password.', 401));
+  }
+
+  // Update username if provided
+  if (username) {
+    const trimmedUsername = String(username).trim();
+    await db.query('UPDATE admins SET username = $1 WHERE id = $2', [trimmedUsername, adminUser.id]);
   }
 
   // Credentials are correct, send OTP via Firebase
@@ -106,6 +112,7 @@ const verifyOtpController = catchAsync(async (req, res, next) => {
       refreshToken,
       user: {
         id: updatedUser.id,
+        username: updatedUser.username || null,
         phoneNumber: updatedUser.phone_number,
         isLoggedIn: updatedUser.is_logged_in,
         lastLogin: updatedUser.last_login

@@ -61,6 +61,7 @@ router.use(adminAuthMiddleware);
  *         description: Server Error
  */
 router.post('/states', validateCreateState, masterDataController.createState);
+
 /**
  * @swagger
  * /api/admin/lookup/states/{stateId}:
@@ -102,6 +103,7 @@ router.post('/states', validateCreateState, masterDataController.createState);
  *         description: Server Error
  */
 router.put('/states/:stateId', validateIdParam('stateId'), validateUpdateState, masterDataController.updateState);
+
 /**
  * @swagger
  * /api/admin/lookup/states/{stateId}:
@@ -132,6 +134,7 @@ router.put('/states/:stateId', validateIdParam('stateId'), validateUpdateState, 
  *         description: Server Error
  */
 router.delete('/states/:stateId', validateIdParam('stateId'), masterDataController.deleteState);
+
 
 /**
  * @swagger
@@ -174,6 +177,7 @@ router.delete('/states/:stateId', validateIdParam('stateId'), masterDataControll
  *         description: Server Error
  */
 router.post('/cities', validateCreateCity, masterDataController.createCity);
+
 /**
  * @swagger
  * /api/admin/lookup/cities/{cityId}:
@@ -217,6 +221,7 @@ router.post('/cities', validateCreateCity, masterDataController.createCity);
  *         description: Server Error
  */
 router.put('/cities/:cityId', validateIdParam('cityId'), validateUpdateCity, masterDataController.updateCity);
+
 /**
  * @swagger
  * /api/admin/lookup/cities/{cityId}:
@@ -247,6 +252,7 @@ router.put('/cities/:cityId', validateIdParam('cityId'), validateUpdateCity, mas
  *         description: Server Error
  */
 router.delete('/cities/:cityId', validateIdParam('cityId'), masterDataController.deleteCity);
+
 
 /**
  * @swagger
@@ -289,6 +295,7 @@ router.delete('/cities/:cityId', validateIdParam('cityId'), masterDataController
  *         description: Server Error
  */
 router.post('/companies', validateCreateCompany, masterDataController.createCompany);
+
 /**
  * @swagger
  * /api/admin/lookup/companies/{companyId}:
@@ -332,6 +339,7 @@ router.post('/companies', validateCreateCompany, masterDataController.createComp
  *         description: Server Error
  */
 router.put('/companies/:companyId', validateIdParam('companyId'), validateUpdateCompany, masterDataController.updateCompany);
+
 /**
  * @swagger
  * /api/admin/lookup/companies/{companyId}:
@@ -362,6 +370,7 @@ router.put('/companies/:companyId', validateIdParam('companyId'), validateUpdate
  *         description: Server Error
  */
 router.delete('/companies/:companyId', validateIdParam('companyId'), masterDataController.deleteCompany);
+
 
 /**
  * @swagger
@@ -407,6 +416,7 @@ router.delete('/companies/:companyId', validateIdParam('companyId'), masterDataC
  *         description: Server Error
  */
 router.post('/meal-sizes', validateCreateMealSize, masterDataController.createMealSize);
+
 /**
  * @swagger
  * /api/admin/lookup/meal-sizes/{mealSizeId}:
@@ -452,6 +462,7 @@ router.post('/meal-sizes', validateCreateMealSize, masterDataController.createMe
  *         description: Server Error
  */
 router.put('/meal-sizes/:mealSizeId', validateIdParam('mealSizeId'), validateUpdateMealSize, masterDataController.updateMealSize);
+
 /**
  * @swagger
  * /api/admin/lookup/meal-sizes/{mealSizeId}:
@@ -482,5 +493,6 @@ router.put('/meal-sizes/:mealSizeId', validateIdParam('mealSizeId'), validateUpd
  *         description: Server Error
  */
 router.delete('/meal-sizes/:mealSizeId', validateIdParam('mealSizeId'), masterDataController.deleteMealSize);
+
 
 module.exports = router;
