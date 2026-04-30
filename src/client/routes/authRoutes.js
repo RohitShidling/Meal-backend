@@ -1,7 +1,15 @@
 const express = require('express');
 const router = express.Router();
-const { sendOtpController, verifyOtpController, logoutController, refreshTokenController, getMe } = require('../controllers/authController');
+const {
+  sendOtpController,
+  loginSendOtpController,
+  verifyOtpController,
+  logoutController,
+  refreshTokenController,
+  getMe
+} = require('../controllers/authController');
 const clientAuthMiddleware = require('../middlewares/authMiddleware');
+const { validateLoginSendOtp } = require('../validators/authValidator');
 
 /**
  * @swagger
@@ -46,6 +54,56 @@ const clientAuthMiddleware = require('../middlewares/authMiddleware');
  *         description: Bad Request
  */
 router.post('/send-otp', sendOtpController);
+
+/**
+ * @swagger
+ * /api/client/auth/login/send-otp:
+ *   post:
+ *     summary: Send OTP for client login with username
+ *     tags: [Client Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - phoneNumber
+ *               - username
+ *             properties:
+ *               phoneNumber:
+ *                 type: string
+ *                 example: "+911234567890"
+ *               username:
+ *                 type: string
+ *                 example: "Rohit"
+ *     responses:
+ *       200:
+ *         description: Login OTP sent successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Login OTP sent to +911234567890."
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     phoneNumber:
+ *                       type: string
+ *                       example: "+911234567890"
+ *                     username:
+ *                       type: string
+ *                       example: "Rohit"
+ *       400:
+ *         description: Validation or OTP provider error
+ */
+router.post('/login/send-otp', validateLoginSendOtp, loginSendOtpController);
 
 /**
  * @swagger
@@ -96,6 +154,10 @@ router.post('/send-otp', sendOtpController);
  *                         id:
  *                           type: string
  *                           example: "P-1"
+ *                         username:
+ *                           type: string
+ *                           nullable: true
+ *                           example: "Rohit"
  *                         phoneNumber:
  *                           type: string
  *                           example: "+911234567890"
@@ -204,6 +266,10 @@ router.post('/refresh', refreshTokenController);
  *                         id:
  *                           type: string
  *                           example: "P-1"
+ *                         username:
+ *                           type: string
+ *                           nullable: true
+ *                           example: "Rohit"
  *                         phone_number:
  *                           type: string
  *                           example: "+911234567890"
