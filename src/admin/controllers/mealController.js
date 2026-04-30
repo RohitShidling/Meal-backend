@@ -33,11 +33,11 @@ exports.reduceMealsForToday = catchAsync(async (req, res, next) => {
   );
   const reductionId = reductionRow.rows[0].id;
 
-  // Get all active subscriptions with remaining meals > 0
+  // Get all active subscriptions with remaining meals > 0 and start_date <= today
   const activeSubscriptions = await db.query(
     `SELECT cs.id, cs.client_id, cs.entity_type, cs.entity_id, cs.total_meals, cs.used_meals
      FROM client_subscriptions cs
-     WHERE cs.is_active = true AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0`
+     WHERE cs.is_active = true AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0 AND cs.start_date <= CURRENT_DATE`
   );
 
   let affectedCount = 0;
@@ -268,41 +268,109 @@ exports.getAllMealSkips = catchAsync(async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PDF HELPER: Draw a styled table
+// PDF HELPER: Draw a single token card
 // ─────────────────────────────────────────────────────────────────────────────
+const CARD_W = 245;
+const CARD_H = 120;
+const CARD_GAP = 15;
+const CARD_MARGIN_X = 40;
+const CARD_MARGIN_TOP = 40;
+const COLS = 2;
+
+const drawTokenCard = (doc, x, y, data) => {
+  // Outer border
+  doc.lineWidth(1.2).strokeColor('#1a365d')
+    .roundedRect(x, y, CARD_W, CARD_H, 6).stroke();
+
+  // Header strip
+  doc.save();
+  doc.roundedRect(x, y, CARD_W, 22, 6).clip();
+  doc.rect(x, y, CARD_W, 22).fill('#1a365d');
+  doc.restore();
+  // Cover bottom corners of header strip
+  doc.rect(x, y + 16, CARD_W, 6).fill('#1a365d');
+
+  // School / Location name in header
+  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8);
+  doc.text(String(data.header || ''), x + 8, y + 6, { width: CARD_W - 16, align: 'center' });
+
+  // Card body
+  const bx = x + 10;
+  let by = y + 28;
+  const labelW = 72;
+  const valW = CARD_W - labelW - 20;
+
+  const rows = data.rows || [];
+  rows.forEach(r => {
+    doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#4a5568');
+    doc.text(String(r.label), bx, by, { width: labelW, align: 'left' });
+    doc.font('Helvetica').fontSize(7.5).fillColor('#1a202c');
+    doc.text(String(r.value || '—'), bx + labelW, by, { width: valW, align: 'left' });
+    by += 12;
+  });
+
+  // Meal size badge at bottom-right
+  if (data.badge) {
+    const bw = 60;
+    const bh = 16;
+    const bxPos = x + CARD_W - bw - 8;
+    const byPos = y + CARD_H - bh - 6;
+    doc.roundedRect(bxPos, byPos, bw, bh, 3).fill('#2b6cb0');
+    doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(7);
+    doc.text(String(data.badge), bxPos, byPos + 4, { width: bw, align: 'center' });
+  }
+
+  // Token # at bottom-left
+  if (data.serial) {
+    doc.font('Helvetica').fontSize(7).fillColor('#a0aec0');
+    doc.text(String(data.serial), x + 10, y + CARD_H - 16, { width: 60, align: 'left' });
+  }
+};
+
+// Returns { x, y } for the next card position, auto-adds pages
+const getCardPos = (doc, index) => {
+  const cardsPerRow = COLS;
+  const rowsPerPage = Math.floor((doc.page.height - CARD_MARGIN_TOP - 60) / (CARD_H + CARD_GAP));
+  const cardsPerPage = cardsPerRow * rowsPerPage;
+
+  const pageIdx = Math.floor(index / cardsPerPage);
+  const posOnPage = index % cardsPerPage;
+  const row = Math.floor(posOnPage / cardsPerRow);
+  const col = posOnPage % cardsPerRow;
+
+  const x = CARD_MARGIN_X + col * (CARD_W + CARD_GAP);
+  const y = CARD_MARGIN_TOP + row * (CARD_H + CARD_GAP);
+  return { x, y, pageIdx };
+};
+
+// Legacy drawTable kept for backwards compat if needed
 const drawTable = (doc, headers, rows, startX, startY, colWidths) => {
   const rowHeight = 22;
-  let y = startY;
+  let y = startY || 50;
+  const totalW = (colWidths || []).reduce((a, b) => a + b, 0) || 480;
 
-  // Header
-  doc.fillColor('#1a365d').rect(startX, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill();
+  doc.fillColor('#1a365d').rect(startX, y, totalW, rowHeight).fill();
   doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(9);
   let x = startX;
-  headers.forEach((h, i) => {
-    doc.text(h, x + 4, y + 6, { width: colWidths[i] - 8, align: 'left' });
-    x += colWidths[i];
+  (headers || []).forEach((h, i) => {
+    doc.text(String(h), x + 4, y + 6, { width: (colWidths[i] || 80) - 8, align: 'left' });
+    x += (colWidths[i] || 80);
   });
   y += rowHeight;
 
-  // Rows
   doc.font('Helvetica').fontSize(8).fillColor('#1a202c');
-  rows.forEach((row, rowIdx) => {
-    if (y > doc.page.height - 60) {
-      doc.addPage();
-      y = 50;
-    }
-    const bgColor = rowIdx % 2 === 0 ? '#f7fafc' : '#edf2f7';
-    doc.fillColor(bgColor).rect(startX, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill();
+  (rows || []).forEach((row, rowIdx) => {
+    if (y > doc.page.height - 60) { doc.addPage(); y = 50; }
+    const bg = rowIdx % 2 === 0 ? '#f7fafc' : '#edf2f7';
+    doc.fillColor(bg).rect(startX, y, totalW, rowHeight).fill();
     doc.fillColor('#1a202c');
-
     x = startX;
-    row.forEach((cell, i) => {
-      doc.text(String(cell || '—'), x + 4, y + 6, { width: colWidths[i] - 8, align: 'left' });
-      x += colWidths[i];
+    (row || []).forEach((cell, i) => {
+      doc.text(String(cell || '—'), x + 4, y + 6, { width: (colWidths[i] || 80) - 8, align: 'left' });
+      x += (colWidths[i] || 80);
     });
     y += rowHeight;
   });
-
   return y;
 };
 
@@ -358,34 +426,45 @@ exports.getSchoolTokensPDF = catchAsync(async (req, res, next) => {
     groups[key].push(c);
   });
 
-  // Generate PDF
-  const doc = new PDFDocument({ margin: 40, size: 'A4' });
+  // Generate PDF with CARD layout
+  const doc = new PDFDocument({ margin: 30, size: 'A4', bufferPages: true });
   const filename = `tokens_${schoolData.name.replace(/\s+/g, '_')}_${today}.pdf`;
 
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  doc.pipe(res);
+  const chunks = [];
+  doc.on('data', chunk => chunks.push(chunk));
+  doc.on('end', () => {
+    const result = Buffer.concat(chunks);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', result.length);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(result);
+  });
 
-  for (const [mealSize, students] of Object.entries(groups)) {
-    doc.fillColor('#1a365d').font('Helvetica-Bold').fontSize(18)
-      .text(schoolData.name, { align: 'center' });
-    doc.fontSize(11).fillColor('#4a5568')
-      .text(`${schoolData.city}, ${schoolData.state} | Date: ${today}`, { align: 'center' });
-    doc.moveDown(0.3);
+  // Flatten all children into one list (all meal sizes on same pages)
+  const allStudents = children.rows;
+  const rowsPerPage = Math.floor((doc.page.height - CARD_MARGIN_TOP - 40) / (CARD_H + CARD_GAP));
+  const cardsPerPage = COLS * rowsPerPage;
+  let currentPage = 0;
 
-    doc.fontSize(14).fillColor('#2b6cb0')
-      .text(`Meal Size: ${mealSize}`, { align: 'center' });
-    doc.fontSize(10).fillColor('#718096')
-      .text(`Total Students: ${students.length}`, { align: 'center' });
-    doc.moveDown(0.5);
-
-    const headers = ['#', 'Name', 'Roll No', 'Standard', 'Meal Time', 'Remaining'];
-    const colWidths = [30, 140, 80, 80, 70, 70];
-    const rows = students.map((s, i) => [i + 1, s.child_name, s.roll_number, s.standard, s.meal_time, s.remaining_meals]);
-
-    drawTable(doc, headers, rows, 40, doc.y, colWidths);
-    doc.addPage();
-  }
+  allStudents.forEach((s, idx) => {
+    const pos = getCardPos(doc, idx);
+    if (pos.pageIdx > currentPage) {
+      doc.addPage();
+      currentPage = pos.pageIdx;
+    }
+    drawTokenCard(doc, pos.x, pos.y, {
+      header: `${schoolData.name} — ${today}`,
+      badge: s.meal_size || 'Standard',
+      serial: `#${idx + 1}`,
+      rows: [
+        { label: 'Name:', value: s.child_name },
+        { label: 'Roll No:', value: s.roll_number },
+        { label: 'Standard:', value: s.standard },
+        { label: 'Meal Time:', value: s.meal_time },
+        { label: 'Remaining:', value: s.remaining_meals }
+      ]
+    });
+  });
 
   doc.end();
 });
@@ -430,26 +509,38 @@ exports.getCorporateTokensPDF = catchAsync(async (req, res, next) => {
     });
   }
 
-  const doc = new PDFDocument({ margin: 40, size: 'A4' });
+  const doc = new PDFDocument({ margin: 30, size: 'A4', bufferPages: true });
   const filename = `tokens_${locData.name.replace(/\s+/g, '_')}_${today}.pdf`;
 
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  doc.pipe(res);
+  const chunks = [];
+  doc.on('data', chunk => chunks.push(chunk));
+  doc.on('end', () => {
+    const result = Buffer.concat(chunks);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', result.length);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(result);
+  });
 
-  doc.fillColor('#1a365d').font('Helvetica-Bold').fontSize(18)
-    .text(locData.name, { align: 'center' });
-  doc.fontSize(11).fillColor('#4a5568')
-    .text(`${locData.city}, ${locData.state} | Date: ${today}`, { align: 'center' });
-  doc.fontSize(10).fillColor('#718096')
-    .text(`Total Professionals: ${professionals.rowCount}`, { align: 'center' });
-  doc.moveDown(0.5);
+  let currentPage = 0;
+  professionals.rows.forEach((p, idx) => {
+    const pos = getCardPos(doc, idx);
+    if (pos.pageIdx > currentPage) {
+      doc.addPage();
+      currentPage = pos.pageIdx;
+    }
+    drawTokenCard(doc, pos.x, pos.y, {
+      header: `${locData.name} — ${today}`,
+      badge: 'Professional',
+      serial: `#${idx + 1}`,
+      rows: [
+        { label: 'Name:', value: p.professional_name },
+        { label: 'Company:', value: p.company_name },
+        { label: 'Remaining:', value: p.remaining_meals }
+      ]
+    });
+  });
 
-  const headers = ['#', 'Name', 'Company', 'Remaining Meals'];
-  const colWidths = [30, 180, 180, 100];
-  const rows = professionals.rows.map((p, i) => [i + 1, p.professional_name, p.company_name, p.remaining_meals]);
-
-  drawTable(doc, headers, rows, 40, doc.y, colWidths);
   doc.end();
 });
 
@@ -463,7 +554,6 @@ exports.getCorporateTokensPDF = catchAsync(async (req, res, next) => {
 exports.getAllTokensPDF = catchAsync(async (req, res) => {
   const today = new Date().toISOString().split('T')[0];
 
-  // Get all schools with subscribed children wanting meal today
   const schools = await db.query(
     `SELECT DISTINCT sc.id, sc.name, sc.city, sc.state
      FROM schools sc
@@ -480,11 +570,40 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
     [today]
   );
 
-  const doc = new PDFDocument({ margin: 40, size: 'A4' });
+  const locations = await db.query(
+    `SELECT DISTINCT cl.id, cl.name, cl.city, cl.state
+     FROM corporate_locations cl
+     JOIN professional_profiles pp ON pp.corporate_location_id = cl.id
+     JOIN client_subscriptions cs ON cs.entity_type='professional' AND cs.entity_id=pp.id
+       AND cs.is_active=true AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
+     WHERE NOT EXISTS (
+       SELECT 1 FROM meal_skips msk
+       WHERE msk.entity_type='professional' AND msk.entity_id=pp.id
+         AND msk.status='approved'
+         AND msk.skip_start_date <= $1 AND msk.skip_end_date >= $1
+     )
+     ORDER BY cl.name`,
+    [today]
+  );
+
+  if (schools.rowCount === 0 && locations.rowCount === 0) {
+    return res.status(200).json({
+      success: false,
+      message: `No meal tokens to generate for today (${today}).`
+    });
+  }
+
+  const doc = new PDFDocument({ margin: 30, size: 'A4', bufferPages: true });
   const filename = `all_meal_tokens_${today}.pdf`;
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  doc.pipe(res);
+  const chunks = [];
+  doc.on('data', chunk => chunks.push(chunk));
+  doc.on('end', () => {
+    const result = Buffer.concat(chunks);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', result.length);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(result);
+  });
 
   // Cover page
   doc.moveDown(8);
@@ -494,13 +613,12 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
   doc.fontSize(14).fillColor('#4a5568')
     .text(`Date: ${today}`, { align: 'center' });
   doc.fontSize(11).fillColor('#718096')
-    .text(`Generated at: ${new Date().toLocaleTimeString('en-IN')}`, { align: 'center' });
+    .text(`Generated at: ${new Date().toLocaleString('en-IN')}`, { align: 'center' });
   doc.moveDown(1);
   doc.fontSize(12).fillColor('#2b6cb0')
-    .text(`Total Schools: ${schools.rowCount}`, { align: 'center' });
-  doc.addPage();
+    .text(`Schools: ${schools.rowCount} | Corporates: ${locations.rowCount}`, { align: 'center' });
 
-  // School pages
+  // School cards — each school starts a new page, all meal sizes together
   for (const school of schools.rows) {
     const children = await db.query(
       `SELECT ch.name AS child_name, ch.roll_number,
@@ -522,55 +640,32 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
        ORDER BY ms.sort_order, ch.name`,
       [school.id, today]
     );
-
     if (children.rowCount === 0) continue;
 
-    // Group by meal size
-    const groups = {};
-    children.rows.forEach(c => {
-      const key = c.meal_size || 'Unknown';
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(c);
+    doc.addPage();
+    let currentPage = 0;
+    children.rows.forEach((s, idx) => {
+      const pos = getCardPos(doc, idx);
+      if (pos.pageIdx > currentPage) {
+        doc.addPage();
+        currentPage = pos.pageIdx;
+      }
+      drawTokenCard(doc, pos.x, pos.y, {
+        header: `${school.name} — ${today}`,
+        badge: s.meal_size || 'Standard',
+        serial: `#${idx + 1}`,
+        rows: [
+          { label: 'Name:', value: s.child_name },
+          { label: 'Roll No:', value: s.roll_number },
+          { label: 'Standard:', value: s.standard },
+          { label: 'Meal Time:', value: s.meal_time },
+          { label: 'Remaining:', value: s.remaining_meals }
+        ]
+      });
     });
-
-    for (const [mealSize, students] of Object.entries(groups)) {
-      doc.fillColor('#1a365d').font('Helvetica-Bold').fontSize(16)
-        .text(school.name, { align: 'center' });
-      doc.fontSize(10).fillColor('#4a5568')
-        .text(`${school.city}, ${school.state} | Date: ${today}`, { align: 'center' });
-      doc.moveDown(0.3);
-      doc.fontSize(13).fillColor('#2b6cb0')
-        .text(`Meal Size: ${mealSize}`, { align: 'center' });
-      doc.fontSize(9).fillColor('#718096')
-        .text(`Total: ${students.length} student(s)`, { align: 'center' });
-      doc.moveDown(0.5);
-
-      const headers = ['#', 'Name', 'Roll No', 'Standard', 'Meal Time', 'Remaining'];
-      const colWidths = [30, 140, 80, 80, 70, 70];
-      const rows = students.map((s, i) => [i + 1, s.child_name, s.roll_number, s.standard, s.meal_time, s.remaining_meals]);
-
-      drawTable(doc, headers, rows, 40, doc.y, colWidths);
-      doc.addPage();
-    }
   }
 
-  // Corporate / Professional pages
-  const locations = await db.query(
-    `SELECT DISTINCT cl.id, cl.name, cl.city, cl.state
-     FROM corporate_locations cl
-     JOIN professional_profiles pp ON pp.corporate_location_id = cl.id
-     JOIN client_subscriptions cs ON cs.entity_type='professional' AND cs.entity_id=pp.id
-       AND cs.is_active=true AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
-     WHERE NOT EXISTS (
-       SELECT 1 FROM meal_skips msk
-       WHERE msk.entity_type='professional' AND msk.entity_id=pp.id
-         AND msk.status='approved'
-         AND msk.skip_start_date <= $1 AND msk.skip_end_date >= $1
-     )
-     ORDER BY cl.name`,
-    [today]
-  );
-
+  // Corporate cards
   for (const loc of locations.rows) {
     const profs = await db.query(
       `SELECT pp.name AS professional_name, pp.company_name,
@@ -588,24 +683,113 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
        ORDER BY pp.name`,
       [loc.id, today]
     );
-
     if (profs.rowCount === 0) continue;
 
-    doc.fillColor('#1a365d').font('Helvetica-Bold').fontSize(16)
-      .text(`Corporate: ${loc.name}`, { align: 'center' });
-    doc.fontSize(10).fillColor('#4a5568')
-      .text(`${loc.city}, ${loc.state} | Date: ${today}`, { align: 'center' });
-    doc.fontSize(9).fillColor('#718096')
-      .text(`Total: ${profs.rowCount} professional(s)`, { align: 'center' });
-    doc.moveDown(0.5);
-
-    const headers = ['#', 'Name', 'Company', 'Remaining'];
-    const colWidths = [30, 180, 180, 100];
-    const rows = profs.rows.map((p, i) => [i + 1, p.professional_name, p.company_name, p.remaining_meals]);
-
-    drawTable(doc, headers, rows, 40, doc.y, colWidths);
     doc.addPage();
+    let currentPage = 0;
+    profs.rows.forEach((p, idx) => {
+      const pos = getCardPos(doc, idx);
+      if (pos.pageIdx > currentPage) {
+        doc.addPage();
+        currentPage = pos.pageIdx;
+      }
+      drawTokenCard(doc, pos.x, pos.y, {
+        header: `${loc.name} — ${today}`,
+        badge: 'Professional',
+        serial: `#${idx + 1}`,
+        rows: [
+          { label: 'Name:', value: p.professional_name },
+          { label: 'Company:', value: p.company_name },
+          { label: 'Remaining:', value: p.remaining_meals }
+        ]
+      });
+    });
   }
 
   doc.end();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. KITCHEN REPORT (Today's Active Count & Meal Sizes)
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * @desc  Get today's kitchen report: total subscribed, active today, and breakdown of meal sizes
+ * @route GET /api/admin/meals/kitchen-report/today
+ */
+exports.getKitchenReport = catchAsync(async (req, res, next) => {
+  const today = new Date().toISOString().split('T')[0];
+
+  // 1. Total Subscribed (Everyone who has a valid subscription, regardless of skip or start date)
+  const totalSubscribedRes = await db.query(
+    `SELECT COUNT(*) as total FROM client_subscriptions 
+     WHERE is_active = true 
+       AND end_date > NOW() 
+       AND (total_meals - used_meals) > 0`
+  );
+  const totalSubscribed = parseInt(totalSubscribedRes.rows[0].total);
+
+  // 2. Active Today (People who need a meal TODAY)
+  // Condition: active, remaining > 0, start_date <= today, not skipped today
+  const activeTodayQuery = `
+    SELECT cs.entity_type, cs.entity_id 
+    FROM client_subscriptions cs
+    WHERE cs.is_active = true 
+      AND cs.end_date > NOW() 
+      AND (cs.total_meals - cs.used_meals) > 0
+      AND cs.start_date <= $1
+      AND NOT EXISTS (
+        SELECT 1 FROM meal_skips ms
+        WHERE ms.entity_type = cs.entity_type 
+          AND ms.entity_id = cs.entity_id
+          AND ms.status = 'approved'
+          AND ms.skip_start_date <= $1 AND ms.skip_end_date >= $1
+      )
+  `;
+  const activeTodayRes = await db.query(activeTodayQuery, [today]);
+  const activeTodayCount = activeTodayRes.rowCount;
+
+  // 3. Meal Sizes Breakdown (for children only, teachers/professionals can be grouped)
+  const mealSizes = {};
+
+  // For children, join with children table and meal_sizes table
+  const activeChildrenIds = activeTodayRes.rows
+    .filter(r => r.entity_type === 'child')
+    .map(r => r.entity_id);
+
+  if (activeChildrenIds.length > 0) {
+    const childrenSizesRes = await db.query(`
+      SELECT ms.display_name as size_name, COUNT(c.id) as count
+      FROM children c
+      JOIN meal_sizes ms ON c.meal_size_id = ms.id
+      WHERE c.id = ANY($1)
+      GROUP BY ms.display_name
+    `, [activeChildrenIds]);
+
+    childrenSizesRes.rows.forEach(r => {
+      mealSizes[r.size_name] = parseInt(r.count);
+    });
+  }
+
+  // Count teachers and professionals separately (since they don't have meal_size_id)
+  const teacherCount = activeTodayRes.rows.filter(r => r.entity_type === 'teacher').length;
+  const profCount = activeTodayRes.rows.filter(r => r.entity_type === 'professional').length;
+
+  if (teacherCount > 0) mealSizes['Teacher (Standard)'] = teacherCount;
+  if (profCount > 0) mealSizes['Professional (Standard)'] = profCount;
+
+  // Format the meal sizes object into an array for easier frontend parsing
+  const formattedMealSizes = Object.keys(mealSizes).map(key => ({
+    size: key,
+    count: mealSizes[key]
+  }));
+
+  res.status(200).json({
+    success: true,
+    data: {
+      date: today,
+      total_subscribed: totalSubscribed,
+      active_today: activeTodayCount,
+      meal_sizes: formattedMealSizes
+    }
+  });
 });

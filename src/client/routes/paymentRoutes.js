@@ -33,6 +33,7 @@ const clientAuth = require('../middlewares/authMiddleware');
  *                 enum: [child, teacher, professional]
  *                 example: "child"
  *               entityId: { type: string, example: "CH-1" }
+ *               startDate: { type: string, format: date, example: "2026-05-10", description: "Date from when meal delivery should start" }
  *               redirectUrl: { type: string, example: "https://yourdomain.com/payment-result" }
  *     responses:
  *       200:
@@ -120,6 +121,20 @@ router.post('/checkout-cart', clientAuth, paymentController.checkoutCart);
  *         description: OK
  */
 router.post('/webhook', paymentController.handleWebhook);
+
+// ─── INSTANT CALLBACK (Backend Redirect) ──────────────────────────────────
+/**
+ * @swagger
+ * /api/client/payment/callback:
+ *   post:
+ *     summary: Instant callback handler for PhonePe redirects (Do not call manually)
+ *     tags: [Client - Payment]
+ *   get:
+ *     summary: Instant callback handler for PhonePe redirects (Do not call manually)
+ *     tags: [Client - Payment]
+ */
+router.post('/callback', paymentController.handleRedirectCallback);
+router.get('/callback', paymentController.handleRedirectCallback);
 
 // ─── STATUS PAGE (browser redirect) ──────────────────────────────────────────
 /**

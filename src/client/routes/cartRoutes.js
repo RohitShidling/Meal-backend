@@ -79,6 +79,11 @@ router.get('/', cartController.viewCart);
  *               entityId:
  *                 type: string
  *                 example: "CH-1"
+ *               startDate:
+ *                 type: string
+ *                 format: date
+ *                 example: "2026-05-10"
+ *                 description: "Date from when meal delivery should start"
  *     responses:
  *       200:
  *         description: Item added to cart successfully

@@ -237,6 +237,7 @@ const initDB = async () => {
       entity_id       VARCHAR(20) NOT NULL, -- ID of the child/teacher/professional
       amount          DECIMAL(10, 2) NOT NULL,
       status          VARCHAR(20) NOT NULL DEFAULT 'pending', -- 'pending', 'completed', 'failed', 'cancelled'
+      start_date      DATE, -- User selected start date for the subscription
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -298,6 +299,7 @@ const initDB = async () => {
       entity_id       VARCHAR(20) NOT NULL,
       entity_name     VARCHAR(255),
       unit_price      DECIMAL(10, 2) NOT NULL,
+      start_date      DATE, -- User selected start date for this cart item
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(cart_id, entity_id, entity_type) -- Cannot add same entity twice to cart
     );
@@ -471,6 +473,8 @@ const initDB = async () => {
     // Migration: Add order_type to orders table if it doesn't exist
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_type VARCHAR(20) NOT NULL DEFAULT 'single';`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cart_id VARCHAR(20) REFERENCES carts(id);`);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS start_date DATE;`);
+    await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS start_date DATE;`);
 
     // Migration: Force CH- prefix for children and set as default for existing tables
     await pool.query("ALTER TABLE children ALTER COLUMN id SET DEFAULT 'CH-' || nextval('child_id_seq')::TEXT;");

@@ -320,4 +320,43 @@ router.get('/tokens/corporate/:locationId', mealController.getCorporateTokensPDF
  */
 router.get('/tokens/all', mealController.getAllTokensPDF);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// KITCHEN REPORT
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * @swagger
+ * /api/admin/meals/kitchen-report/today:
+ *   get:
+ *     summary: Get today's kitchen report (subscribed count, active today, and meal sizes)
+ *     description: >
+ *       Provides the total number of people subscribed, the total active today (those not on leave
+ *       and whose start date is today or earlier), and the breakdown of meal sizes for cooking.
+ *     tags: [Admin - Meals]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Kitchen report for today
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     date: { type: string, example: "2026-04-30" }
+ *                     total_subscribed: { type: integer, example: 100 }
+ *                     active_today: { type: integer, example: 85 }
+ *                     meal_sizes:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           size: { type: string, example: "Medium" }
+ *                           count: { type: integer, example: 45 }
+ */
+router.get('/kitchen-report/today', mealController.getKitchenReport);
+
 module.exports = router;

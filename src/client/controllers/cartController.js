@@ -64,13 +64,26 @@ const recalcCartTotal = async (cartId) => {
  */
 exports.addToCart = catchAsync(async (req, res, next) => {
   const clientId = req.user.id;
-  const { subscriptionId, entityType, entityId } = req.body;
+  const { subscriptionId, entityType, entityId, startDate } = req.body;
 
   if (!subscriptionId || !entityType || !entityId) {
     return next(new AppError('subscriptionId, entityType and entityId are required', 400));
   }
   if (!['child', 'teacher', 'professional'].includes(entityType)) {
     return next(new AppError('entityType must be child, teacher, or professional', 400));
+  }
+
+  let effectiveStartDate = new Date();
+  if (startDate) {
+    effectiveStartDate = new Date(startDate);
+    if (isNaN(effectiveStartDate.getTime())) {
+      return next(new AppError('Invalid startDate format', 400));
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (effectiveStartDate < today) {
+      return next(new AppError('startDate cannot be in the past', 400));
+    }
   }
 
   const owned = await validateEntityOwnership(entityType, entityId, clientId);
@@ -84,8 +97,8 @@ exports.addToCart = catchAsync(async (req, res, next) => {
 
   try {
     await db.query(
-      'INSERT INTO cart_items (cart_id,subscription_id,entity_type,entity_id,entity_name,unit_price) VALUES ($1,$2,$3,$4,$5,$6)',
-      [cart.id, subscriptionId, entityType, entityId, entityName, sub.rows[0].price]
+      'INSERT INTO cart_items (cart_id,subscription_id,entity_type,entity_id,entity_name,unit_price,start_date) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+      [cart.id, subscriptionId, entityType, entityId, entityName, sub.rows[0].price, effectiveStartDate.toISOString().split('T')[0]]
     );
   } catch (e) {
     if (e.code === '23505') return next(new AppError(`${entityName || entityId} is already in your cart`, 400));

@@ -27,7 +27,7 @@ const validateEntityOwnership = async (entityType, entityId, clientId) => {
 /**
  * Core function: finalize ONE subscription after successful payment
  */
-const activateSingleSubscription = async (clientId, subscriptionId, entityType, entityId, orderId) => {
+const activateSingleSubscription = async (clientId, subscriptionId, entityType, entityId, orderId, requestedStartDate) => {
   const subRes = await db.query('SELECT billing_cycle FROM subscriptions WHERE id=$1', [subscriptionId]);
   const billingCycle = subRes.rows[0].billing_cycle.toLowerCase();
 
@@ -43,10 +43,14 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
     [clientId, entityId, entityType]
   );
 
-  let baseDate = new Date();
+  let baseDate = requestedStartDate ? new Date(requestedStartDate) : new Date();
   let carryOverMeals = 0;
   if (existingSub.rows.length > 0 && new Date(existingSub.rows[0].end_date) > new Date()) {
-    baseDate = new Date(existingSub.rows[0].end_date); // extend from current end
+    const currentEnd = new Date(existingSub.rows[0].end_date);
+    // If existing subscription is still active and ends after requested start date, extend from current end
+    if (currentEnd > baseDate) {
+      baseDate = currentEnd;
+    }
     // Carry over UNUSED meals: remaining = total - used
     const oldTotal = existingSub.rows[0].total_meals || 0;
     const oldUsed = existingSub.rows[0].used_meals || 0;
@@ -64,12 +68,12 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
 
   await db.query(
     `INSERT INTO client_subscriptions (client_id,subscription_id,entity_type,entity_id,start_date,end_date,order_id,is_active,total_meals,used_meals)
-     VALUES ($1,$2,$3,$4,NOW(),$5,$6,true,$7,0)
+     VALUES ($1,$2,$3,$4,$8,$5,$6,true,$7,0)
      ON CONFLICT (client_id,entity_id,entity_type) DO UPDATE SET
-       end_date=EXCLUDED.end_date, subscription_id=EXCLUDED.subscription_id,
+       start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date, subscription_id=EXCLUDED.subscription_id,
        order_id=EXCLUDED.order_id, is_active=true, updated_at=NOW(),
        total_meals=EXCLUDED.total_meals, used_meals=0`,
-    [clientId, subscriptionId, entityType, entityId, endDate, orderId, finalTotalMeals]
+    [clientId, subscriptionId, entityType, entityId, endDate, orderId, finalTotalMeals, baseDate]
   );
 };
 
@@ -87,13 +91,13 @@ const finalizeSuccessfulPayment = async (orderId) => {
     // CART ORDER — activate subscriptions for every cart item
     const cartItems = await db.query('SELECT * FROM cart_items WHERE cart_id=$1', [order.cart_id]);
     for (const item of cartItems.rows) {
-      await activateSingleSubscription(order.client_id, item.subscription_id, item.entity_type, item.entity_id, orderId);
+      await activateSingleSubscription(order.client_id, item.subscription_id, item.entity_type, item.entity_id, orderId, item.start_date);
     }
     // Mark cart as checked out
     await db.query("UPDATE carts SET status='checked_out', updated_at=NOW() WHERE id=$1", [order.cart_id]);
   } else {
     // SINGLE ORDER
-    await activateSingleSubscription(order.client_id, order.subscription_id, order.entity_type, order.entity_id, orderId);
+    await activateSingleSubscription(order.client_id, order.subscription_id, order.entity_type, order.entity_id, orderId, order.start_date);
   }
 
   console.log(`✅ Payment finalized for order: ${orderId} (type: ${order.order_type})`);
@@ -106,11 +110,25 @@ const finalizeSuccessfulPayment = async (orderId) => {
  * @route POST /api/client/payment/initiate
  */
 exports.initiatePayment = catchAsync(async (req, res, next) => {
-  const { subscriptionId, entityType, entityId, redirectUrl: customRedirect } = req.body;
+  const { subscriptionId, entityType, entityId, startDate, redirectUrl: customRedirect } = req.body;
   const clientId = req.user.id;
 
   if (!subscriptionId || !entityType || !entityId)
     return next(new AppError('subscriptionId, entityType and entityId are required', 400));
+
+  let effectiveStartDate = new Date();
+  if (startDate) {
+    effectiveStartDate = new Date(startDate);
+    if (isNaN(effectiveStartDate.getTime())) {
+      return next(new AppError('Invalid startDate format', 400));
+    }
+    // ensure start date is not in the past (allow today)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (effectiveStartDate < today) {
+      return next(new AppError('startDate cannot be in the past', 400));
+    }
+  }
 
   const owned = await validateEntityOwnership(entityType, entityId, clientId);
   if (!owned) return next(new AppError(`${entityType} profile not found or unauthorized`, 404));
@@ -122,8 +140,8 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
   const entityName = await resolveEntityName(entityType, entityId);
 
   const orderResult = await db.query(
-    'INSERT INTO orders (client_id,subscription_id,entity_type,entity_id,amount,status,order_type) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-    [clientId, subscriptionId, entityType, entityId, subscription.price, 'pending', 'single']
+    'INSERT INTO orders (client_id,subscription_id,entity_type,entity_id,amount,status,order_type,start_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
+    [clientId, subscriptionId, entityType, entityId, subscription.price, 'pending', 'single', effectiveStartDate.toISOString().split('T')[0]]
   );
   const order = orderResult.rows[0];
 
@@ -134,13 +152,14 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
   );
 
   const clientData = await db.query('SELECT phone_number FROM clients WHERE id=$1', [clientId]);
-  const finalRedirectUrl = customRedirect || process.env.PHONEPE_REDIRECT_URL;
+  const finalRedirectUrl = customRedirect || process.env.PHONEPE_REDIRECT_URL || 'https://yourdomain.com/payment-result';
+  const backendCallbackUrl = `${req.protocol}://${req.get('host')}/api/client/payment/callback?tid=${merchantTransactionId}&frontendUrl=${encodeURIComponent(finalRedirectUrl)}`;
 
   const response = await phonepe.initiatePayment({
     transactionId: merchantTransactionId,
     userId: clientId,
     amount: subscription.price,
-    redirectUrl: `${finalRedirectUrl}?tid=${merchantTransactionId}`,
+    redirectUrl: backendCallbackUrl,
     mobileNumber: clientData.rows[0].phone_number.replace(/\D/g, '').slice(-10),
   });
 
@@ -196,13 +215,14 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
   );
 
   const clientData = await db.query('SELECT phone_number FROM clients WHERE id=$1', [clientId]);
-  const finalRedirectUrl = customRedirect || process.env.PHONEPE_REDIRECT_URL;
+  const finalRedirectUrl = customRedirect || process.env.PHONEPE_REDIRECT_URL || 'https://yourdomain.com/payment-result';
+  const backendCallbackUrl = `${req.protocol}://${req.get('host')}/api/client/payment/callback?tid=${merchantTransactionId}&frontendUrl=${encodeURIComponent(finalRedirectUrl)}`;
 
   const response = await phonepe.initiatePayment({
     transactionId: merchantTransactionId,
     userId: clientId,
     amount: totalAmount,
-    redirectUrl: `${finalRedirectUrl}?tid=${merchantTransactionId}`,
+    redirectUrl: backendCallbackUrl,
     mobileNumber: clientData.rows[0].phone_number.replace(/\D/g, '').slice(-10),
   });
 
@@ -222,7 +242,7 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
   });
 });
 
-// ─── WEBHOOK ────────────────────────────────────────────────────────────────
+// ─── WEBHOOK & REDIRECT CALLBACK ──────────────────────────────────────────
 
 /**
  * @desc  PhonePe async webhook — DO NOT authenticate this route
@@ -259,6 +279,54 @@ exports.handleWebhook = catchAsync(async (req, res) => {
   }
 
   res.status(200).send('OK');
+});
+
+/**
+ * @desc  Instant Callback Redirect: PhonePe redirects user here first.
+ *        We sync status instantly, then redirect user to their frontend.
+ * @route POST /api/client/payment/callback
+ *        GET /api/client/payment/callback
+ */
+exports.handleRedirectCallback = catchAsync(async (req, res) => {
+  // PhonePe usually sends a POST request with transactionId, code, etc.
+  const txnId = (req.body && req.body.transactionId) || req.query.tid || req.query.transactionId;
+  const frontendUrl = req.query.frontendUrl || 'https://yourdomain.com/payment-result';
+
+  if (!txnId) return res.redirect(`${frontendUrl}?status=error&message=NoTransactionId`);
+
+  try {
+    // 1. Instantly check status with PhonePe
+    const gwRes = await phonepe.checkStatus(txnId);
+    
+    // 2. Update DB locally
+    if (gwRes.success && gwRes.data) {
+      const rawState = gwRes.data.state || gwRes.data.status || gwRes.data.paymentState || '';
+      const gwState = rawState.toString().toUpperCase();
+      const isSuccess = ['COMPLETED', 'SUCCESS', 'PAYMENT_SUCCESS'].includes(gwState);
+      const isFailure = ['FAILED', 'FAILURE', 'ERROR'].includes(gwState);
+
+      const txnRes = await db.query('SELECT * FROM transactions WHERE merchant_transaction_id=$1 AND status=$2', [txnId, 'pending']);
+      
+      if (txnRes.rows.length > 0) {
+        const localTxn = txnRes.rows[0];
+        if (isSuccess) {
+          await db.query(
+            'UPDATE transactions SET status=$1,gateway_transaction_id=$2,gateway_response=$3,updated_at=NOW() WHERE merchant_transaction_id=$4',
+            ['success', gwRes.data.transactionId, gwRes.data, txnId]
+          );
+          await finalizeSuccessfulPayment(localTxn.order_id);
+        } else if (isFailure) {
+          await db.query('UPDATE transactions SET status=$1,updated_at=NOW() WHERE merchant_transaction_id=$2', ['failure', txnId]);
+          await db.query('UPDATE orders SET status=$1,updated_at=NOW() WHERE id=$2', ['failed', localTxn.order_id]);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Instant Sync Error:', err.message);
+  }
+
+  // 3. Send user to the frontend exactly as requested!
+  res.redirect(`${frontendUrl}?tid=${txnId}`);
 });
 
 // ─── STATUS SYNC ─────────────────────────────────────────────────────────────
@@ -594,4 +662,5 @@ exports.forceSync = catchAsync(async (req, res, next) => {
     return res.status(200).json({ success: true, message: `Payment still ${gwState}. Not finalized yet.`, gatewayState: gwState });
   }
 });
+
 

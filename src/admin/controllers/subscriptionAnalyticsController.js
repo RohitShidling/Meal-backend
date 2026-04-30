@@ -606,7 +606,7 @@ exports.getUnsubscribedMembers = catchAsync(async (req, res) => {
     LEFT JOIN schools sc ON ch.school_id = sc.id
     WHERE NOT EXISTS (
       SELECT 1 FROM client_subscriptions cs
-      WHERE cs.entity_type = 'child' AND cs.entity_id = ch.id
+      WHERE cs.entity_type = 'child' AND cs.entity_id = ch.id AND cs.is_active = true
     )
     ${schoolId ? `AND ch.school_id = '${schoolId}'` : ''}
   `;
@@ -619,7 +619,7 @@ exports.getUnsubscribedMembers = catchAsync(async (req, res) => {
     JOIN clients c ON tp.client_id = c.id
     WHERE NOT EXISTS (
       SELECT 1 FROM client_subscriptions cs
-      WHERE cs.entity_type = 'teacher' AND cs.entity_id = tp.id
+      WHERE cs.entity_type = 'teacher' AND cs.entity_id = tp.id AND cs.is_active = true
     )
   `;
 
@@ -632,7 +632,7 @@ exports.getUnsubscribedMembers = catchAsync(async (req, res) => {
     LEFT JOIN corporate_locations cl ON pp.corporate_location_id = cl.id
     WHERE NOT EXISTS (
       SELECT 1 FROM client_subscriptions cs
-      WHERE cs.entity_type = 'professional' AND cs.entity_id = pp.id
+      WHERE cs.entity_type = 'professional' AND cs.entity_id = pp.id AND cs.is_active = true
     )
   `;
 
