@@ -32,6 +32,9 @@ const adminAuth = require('../middlewares/authMiddleware');
  *               password:
  *                 type: string
  *                 example: "adminpassword"
+ *               username:
+ *                 type: string
+ *                 example: "Admin Rohit"
  *     responses:
  *       200:
  *         description: Credentials verified, OTP sent
@@ -100,6 +103,9 @@ router.post('/login', loginController);
  *                         id:
  *                           type: integer
  *                           example: 1
+ *                         username:
+ *                           type: string
+ *                           example: "Admin Rohit"
  *                         phoneNumber:
  *                           type: string
  *                           example: "+911234567890"

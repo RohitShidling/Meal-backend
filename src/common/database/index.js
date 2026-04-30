@@ -129,6 +129,42 @@ const initDB = async () => {
     );
   `;
 
+  const createStatesTable = `
+    CREATE TABLE IF NOT EXISTS states (
+      id            SERIAL PRIMARY KEY,
+      name          VARCHAR(100) UNIQUE NOT NULL,
+      is_active     BOOLEAN NOT NULL DEFAULT true,
+      created_by    INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  const createCitiesTable = `
+    CREATE TABLE IF NOT EXISTS cities (
+      id            SERIAL PRIMARY KEY,
+      state_id      INTEGER NOT NULL REFERENCES states(id) ON DELETE CASCADE,
+      name          VARCHAR(120) NOT NULL,
+      is_active     BOOLEAN NOT NULL DEFAULT true,
+      created_by    INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(state_id, name)
+    );
+  `;
+
+  const createCompaniesTable = `
+    CREATE TABLE IF NOT EXISTS companies (
+      id            SERIAL PRIMARY KEY,
+      city_id       INTEGER REFERENCES cities(id) ON DELETE SET NULL,
+      name          VARCHAR(255) UNIQUE NOT NULL,
+      is_active     BOOLEAN NOT NULL DEFAULT true,
+      created_by    INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
   const createDailyMenusTable = `
     CREATE TABLE IF NOT EXISTS daily_menus (
       id              VARCHAR(20) PRIMARY KEY DEFAULT 'MN-' || nextval('menu_id_seq')::TEXT,
@@ -350,10 +386,12 @@ const initDB = async () => {
     await pool.query(createAdminsTable);
 
     // Add columns to existing tables if they do not exist
+    await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS username VARCHAR(120);`);
     await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS is_logged_in BOOLEAN DEFAULT false;`);
     await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_login TIMESTAMP;`);
     await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS refresh_token TEXT;`);
 
+    await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS username VARCHAR(120);`);
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS is_logged_in BOOLEAN DEFAULT false;`);
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS last_login TIMESTAMP;`);
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS refresh_token TEXT;`);
@@ -362,6 +400,9 @@ const initDB = async () => {
     await pool.query(createSchoolsTable);
     await pool.query(createMealSizesTable);
     await pool.query(createStandardsTable);
+    await pool.query(createStatesTable);
+    await pool.query(createCitiesTable);
+    await pool.query(createCompaniesTable);
     await pool.query(createDailyMenusTable);
     await pool.query(createChildrenTable);
     await pool.query(createSubscriptionsTable);

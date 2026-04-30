@@ -13,10 +13,13 @@ const clientAuthRoutes = require('./client/routes/authRoutes');
 const clientChildRoutes = require('./client/routes/childRoutes');
 const adminAuthRoutes = require('./admin/routes/authRoutes');
 const adminSchoolRoutes = require('./admin/routes/schoolRoutes');
-const adminLookupRoutes = require('./admin/routes/lookupRoutes');
+const adminMasterDataRoutes = require('./admin/routes/masterDataRoutes');
+const adminMasterDataReadRoutes = require('./admin/routes/masterDataReadRoutes');
 const adminMenuRoutes = require('./admin/routes/menuRoutes');
 const commonMenuRoutes = require('./common/routes/menuRoutes');
 const commonRoutes = require('./common/routes/commonRoutes');
+const commonMasterDataRoutes = require('./common/routes/masterDataRoutes');
+const commonProfileRoutes = require('./common/routes/profileRoutes');
 const adminSubscriptionRoutes = require('./admin/routes/subscriptionRoutes');
 const adminSubscriptionAnalyticsRoutes = require('./admin/routes/subscriptionAnalyticsRoutes');
 const commonSubscriptionRoutes = require('./common/routes/subscriptionRoutes');
@@ -33,6 +36,8 @@ const adminHomepageRoutes = require('./admin/routes/homepageRoutes');
 const commonHomepageRoutes = require('./common/routes/homepageRoutes');
 const clientMealRoutes = require('./client/routes/mealRoutes');
 const adminMealRoutes = require('./admin/routes/mealRoutes');
+const adminDashboardRoutes = require('./admin/routes/dashboardRoutes');
+const adminTrialPlanRoutes = require('./admin/routes/trialPlanRoutes');
 
 const app = express();
 
@@ -49,23 +54,18 @@ if (process.env.NODE_ENV === 'development') {
   app.use(morgan('combined'));
 }
 
-// ─── Rate Limiting ───────────────────────────────────────────────────────────
-// Admin: NO rate limit — admins are trusted internal users
-// Client: 500 requests per 15 minutes (generous for mobile/web apps)
-const clientLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 500,
-  message: {
-    success: false,
-    message: 'Too many requests. Please try again after 15 minutes.'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
+// Global Rate Limiting (Industrial Standard)
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // Limit each IP to 1000 requests per `window` (here, per 15 minutes)
+  message: { success: false, message: 'Too many requests from this IP, please try again after 15 minutes' },
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
 });
 
-// Apply only to client routes (not admin)
-app.use('/api/client', clientLimiter);
-app.use('/api/common', clientLimiter);
+// Apply rate limiting to client and common routes
+app.use('/api/client', limiter);
+app.use('/api/common', limiter);
 
 // Swagger Documentation
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
@@ -86,13 +86,18 @@ app.use('/api/client/children', clientChildRoutes);
 app.use('/api/admin/auth', adminAuthRoutes);
 app.use('/api/common', commonRoutes);
 app.use('/api/admin/schools', adminSchoolRoutes);
-app.use('/api/admin/lookup', adminLookupRoutes);
+app.use('/api/admin/lookup', adminMasterDataRoutes);
+app.use('/api/admin/lookup', adminMasterDataReadRoutes);
 app.use('/api/admin/menu', adminMenuRoutes);
 app.use('/api/common/menu', commonMenuRoutes);
 app.use('/api/admin/subscriptions', adminSubscriptionRoutes);
 app.use('/api/admin/subscriptions', adminSubscriptionAnalyticsRoutes);
 app.use('/api/common/subscriptions', commonSubscriptionRoutes);
 app.use('/api/client/subscriptions', clientSubscriptionRoutes);
+app.use('/api/admin/trial-plans', adminTrialPlanRoutes);
+app.use('/api/common/subscriptions', commonSubscriptionRoutes);
+app.use('/api/common/lookup', commonMasterDataRoutes);
+app.use('/api/common/profile', commonProfileRoutes);
 app.use('/api/admin/corporate-locations', adminCorporateLocationRoutes);
 app.use('/api/common/corporate-locations', commonCorporateLocationRoutes);
 app.use('/api/client/professional', clientProfessionalRoutes);
@@ -105,6 +110,7 @@ app.use('/api/admin/meals', adminMealRoutes);
 app.use('/api/admin/payment', adminPaymentRoutes);
 app.use('/api/admin/homepage', adminHomepageRoutes);
 app.use('/api/common/homepage', commonHomepageRoutes);
+app.use('/api/admin/dashboard', adminDashboardRoutes);
 
 // 404 Handler
 app.use((req, res) => {
