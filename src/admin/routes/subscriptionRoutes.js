@@ -6,12 +6,84 @@ const adminAuthMiddleware = require('../middlewares/authMiddleware');
 /**
  * @swagger
  * tags:
- *   name: Admin Subscriptions
- *   description: Admin Subscription Management
+ *   name: Admin - Subscriptions
+ *   description: Admin Subscription Plan Management
  */
 
-// All subscription modification routes require admin authentication
 router.use(adminAuthMiddleware);
+
+/**
+ * @swagger
+ * /api/admin/subscriptions:
+ *   get:
+ *     summary: Get all subscription plans (including inactive)
+ *     tags: [Admin - Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: All subscription plans
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 count:
+ *                   type: integer
+ *                   example: 3
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id: { type: string, example: "SUB-1" }
+ *                       plan_name: { type: string, example: "Monthly Plan" }
+ *                       price: { type: number, example: 800.00 }
+ *                       billing_cycle: { type: string, example: "monthly" }
+ *                       trial_days: { type: integer, example: 0 }
+ *                       display_order: { type: integer, example: 1 }
+ *                       is_active: { type: boolean, example: true }
+ *                       created_at: { type: string, format: date-time }
+ */
+router.get('/', subscriptionController.getAllSubscriptions);
+
+/**
+ * @swagger
+ * /api/admin/subscriptions/{id}:
+ *   get:
+ *     summary: Get a single subscription plan by ID
+ *     tags: [Admin - Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string, example: "SUB-1" }
+ *     responses:
+ *       200:
+ *         description: Subscription plan found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id: { type: string, example: "SUB-1" }
+ *                     plan_name: { type: string, example: "Monthly Plan" }
+ *                     price: { type: number, example: 800.00 }
+ *                     billing_cycle: { type: string, example: "monthly" }
+ *                     is_active: { type: boolean, example: true }
+ *       404:
+ *         description: Subscription not found
+ */
+router.get('/:id', subscriptionController.getSubscriptionById);
 
 /**
  * @swagger
@@ -174,10 +246,62 @@ router.put('/:id', subscriptionController.updateSubscription);
 
 /**
  * @swagger
+ * /api/admin/subscriptions/client-subscription/{subscriptionId}:
+ *   delete:
+ *     summary: Cancel/deactivate a client's subscription (admin action)
+ *     description: >
+ *       Admin can cancel any client's active subscription by its client_subscriptions ID.
+ *       One phone number can have multiple subscriptions (child, teacher, professional).
+ *       This deactivates the specific one identified by its ID.
+ *       Sets is_active=false and cancels any future meal skips for that entity.
+ *       Data is preserved for audit — NOT hard-deleted.
+ *     tags: [Admin - Subscriptions]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: subscriptionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "CT-SUB-1"
+ *         description: The client_subscriptions ID (e.g. CT-SUB-1, CT-SUB-2)
+ *     responses:
+ *       200:
+ *         description: Client subscription deactivated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Client subscription deactivated successfully." }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     subscription_id: { type: string, example: "CT-SUB-1" }
+ *                     client_phone: { type: string, example: "+919876543210" }
+ *                     entity_type: { type: string, example: "child" }
+ *                     entity_name: { type: string, example: "Raju" }
+ *                     total_meals: { type: integer, example: 30 }
+ *                     used_meals: { type: integer, example: 12 }
+ *                     remaining_at_deletion: { type: integer, example: 18 }
+ *                     was_active_until: { type: string, format: date-time }
+ *       400:
+ *         description: Subscription already inactive
+ *       404:
+ *         description: Client subscription not found
+ *       401:
+ *         description: Unauthorized
+ */
+router.delete('/client-subscription/:subscriptionId', subscriptionController.deleteClientSubscription);
+
+/**
+ * @swagger
  * /api/admin/subscriptions/{id}:
  *   delete:
- *     summary: Delete a subscription plan
- *     tags: [Admin Subscriptions]
+ *     summary: Delete a subscription plan (admin plan management)
+ *     tags: [Admin - Subscriptions]
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -187,27 +311,21 @@ router.put('/:id', subscriptionController.updateSubscription);
  *         schema:
  *           type: string
  *           example: "SUB-1"
- *         description: Subscription ID
+ *         description: Subscription plan ID
  *     responses:
  *       200:
- *         description: Subscription deleted successfully
+ *         description: Subscription plan deleted successfully
  *         content:
  *           application/json:
  *             schema:
  *               type: object
  *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: "Subscription deleted successfully"
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Subscription deleted successfully" }
  *                 data:
  *                   type: object
  *                   properties:
- *                     id:
- *                       type: string
- *                       example: "SUB-1"
+ *                     id: { type: string, example: "SUB-1" }
  *       401:
  *         description: Unauthorized
  *       404:
@@ -215,4 +333,30 @@ router.put('/:id', subscriptionController.updateSubscription);
  */
 router.delete('/:id', subscriptionController.deleteSubscription);
 
+/**
+ * @swagger
+ * /api/admin/subscriptions/client-subscription/{subscriptionId}:
+ *   delete:
+ *     summary: Cancel/Deactivate a specific client's active subscription
+ *     tags: [Admin - Subscription Management]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: subscriptionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID of the client_subscription (e.g., CT-SUB-1)
+ *     responses:
+ *       200:
+ *         description: Subscription successfully deactivated
+ *       400:
+ *         description: Subscription already inactive
+ *       404:
+ *         description: Subscription not found
+ */
+router.delete('/client-subscription/:subscriptionId', subscriptionController.deleteClientSubscription);
+
 module.exports = router;
+

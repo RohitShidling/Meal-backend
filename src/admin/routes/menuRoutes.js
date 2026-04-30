@@ -85,6 +85,41 @@ router.post('/upload', upload.single('image'), menuController.uploadMenu);
 
 /**
  * @swagger
+ * /api/admin/menu/bulk-upload:
+ *   post:
+ *     tags: [Admin Menu]
+ *     summary: Upload multiple daily menus in bulk
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               menus:
+ *                 type: string
+ *                 description: JSON stringified array of menu objects [{ menu_date, items, image_url (optional) }]
+ *                 example: '[{"menu_date": "2023-11-01", "items": "Dal, Rice"}, {"menu_date": "2023-11-02", "items": "Paneer, Roti"}]'
+ *               images:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                   format: binary
+ *                 description: Array of image files (must match length of menus array)
+ *     responses:
+ *       201:
+ *         description: Menus uploaded successfully
+ *       400:
+ *         description: Bad Request
+ *       401:
+ *         description: Unauthorized
+ */
+router.post('/bulk-upload', upload.array('images', 30), menuController.uploadBulkMenu);
+
+/**
+ * @swagger
  * /api/admin/menu/{date}:
  *   put:
  *     tags: [Admin Menu]

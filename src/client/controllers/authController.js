@@ -17,10 +17,10 @@ const generateTokens = (id, phoneNumber) => {
 
 /**
  * POST /api/client/auth/send-otp
- * Body: { phoneNumber }
+ * Body: { phoneNumber, action?, username? }
  */
 const sendOtpController = catchAsync(async (req, res, next) => {
-  const { phoneNumber } = req.body;
+  const { phoneNumber, action, username } = req.body;
 
   if (!phoneNumber) {
     return next(new AppError('phoneNumber is required.', 400));
@@ -34,9 +34,30 @@ const sendOtpController = catchAsync(async (req, res, next) => {
     return next(new AppError(`Failed to send OTP: ${firebaseMsg}`, 400));
   }
 
+  const normalizedAction = action ? String(action).toLowerCase().trim() : null;
+  const trimmedUsername = typeof username === 'string' ? username.trim() : null;
+
+  // If this is a login initiation, keep username in sync at OTP stage.
+  if (normalizedAction === 'login' && trimmedUsername) {
+    await db.query(
+      `
+        INSERT INTO clients (phone_number, username)
+        VALUES ($1, $2)
+        ON CONFLICT (phone_number)
+        DO UPDATE SET username = EXCLUDED.username
+      `,
+      [phoneNumber, trimmedUsername]
+    );
+  }
+
   return res.status(200).json({
     success: true,
     message: `OTP sent to ${phoneNumber}.`,
+    data: {
+      phoneNumber,
+      action: normalizedAction,
+      username: normalizedAction === 'login' ? trimmedUsername : null
+    }
   });
 });
 

@@ -21,16 +21,23 @@ const commonRoutes = require('./common/routes/commonRoutes');
 const commonMasterDataRoutes = require('./common/routes/masterDataRoutes');
 const commonProfileRoutes = require('./common/routes/profileRoutes');
 const adminSubscriptionRoutes = require('./admin/routes/subscriptionRoutes');
-const adminTrialPlanRoutes = require('./admin/routes/trialPlanRoutes');
+const adminSubscriptionAnalyticsRoutes = require('./admin/routes/subscriptionAnalyticsRoutes');
 const commonSubscriptionRoutes = require('./common/routes/subscriptionRoutes');
+const clientSubscriptionRoutes = require('./client/routes/subscriptionRoutes');
 const adminCorporateLocationRoutes = require('./admin/routes/corporateLocationRoutes');
 const commonCorporateLocationRoutes = require('./common/routes/corporateLocationRoutes');
 const clientProfessionalRoutes = require('./client/routes/professionalRoutes');
 const clientParentRoutes = require('./client/routes/parentRoutes');
 const clientTeacherRoutes = require('./client/routes/teacherRoutes');
 const clientPaymentRoutes = require('./client/routes/paymentRoutes');
+const clientCartRoutes = require('./client/routes/cartRoutes');
 const adminPaymentRoutes = require('./admin/routes/paymentRoutes');
+const adminHomepageRoutes = require('./admin/routes/homepageRoutes');
+const commonHomepageRoutes = require('./common/routes/homepageRoutes');
+const clientMealRoutes = require('./client/routes/mealRoutes');
+const adminMealRoutes = require('./admin/routes/mealRoutes');
 const adminDashboardRoutes = require('./admin/routes/dashboardRoutes');
+const adminTrialPlanRoutes = require('./admin/routes/trialPlanRoutes');
 
 const app = express();
 
@@ -55,7 +62,10 @@ const limiter = rateLimit({
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
 });
-app.use('/api', limiter);
+
+// Apply rate limiting to client and common routes
+app.use('/api/client', limiter);
+app.use('/api/common', limiter);
 
 // Swagger Documentation
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
@@ -81,6 +91,9 @@ app.use('/api/admin/lookup', adminMasterDataReadRoutes);
 app.use('/api/admin/menu', adminMenuRoutes);
 app.use('/api/common/menu', commonMenuRoutes);
 app.use('/api/admin/subscriptions', adminSubscriptionRoutes);
+app.use('/api/admin/subscriptions', adminSubscriptionAnalyticsRoutes);
+app.use('/api/common/subscriptions', commonSubscriptionRoutes);
+app.use('/api/client/subscriptions', clientSubscriptionRoutes);
 app.use('/api/admin/trial-plans', adminTrialPlanRoutes);
 app.use('/api/common/subscriptions', commonSubscriptionRoutes);
 app.use('/api/common/lookup', commonMasterDataRoutes);
@@ -91,7 +104,12 @@ app.use('/api/client/professional', clientProfessionalRoutes);
 app.use('/api/client/parent', clientParentRoutes);
 app.use('/api/client/teacher', clientTeacherRoutes);
 app.use('/api/client/payment', clientPaymentRoutes);
+app.use('/api/client/cart', clientCartRoutes);
+app.use('/api/client/meals', clientMealRoutes);
+app.use('/api/admin/meals', adminMealRoutes);
 app.use('/api/admin/payment', adminPaymentRoutes);
+app.use('/api/admin/homepage', adminHomepageRoutes);
+app.use('/api/common/homepage', commonHomepageRoutes);
 app.use('/api/admin/dashboard', adminDashboardRoutes);
 
 // 404 Handler
@@ -106,13 +124,19 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   err.statusCode = err.statusCode || 500;
   err.status = err.status || 'error';
+  
+  const normalizedErrors =
+    Array.isArray(err.details) ? err.details
+    : (typeof err.message === 'string' && err.message.includes(' | ')) ? err.message.split(' | ').map(s => s.trim()).filter(Boolean)
+    : undefined;
 
   if (process.env.NODE_ENV === 'development') {
     console.error('Error:', err.message);
     res.status(err.statusCode).json({
       success: false,
       status: err.status,
-      message: err.message
+      message: err.message,
+      ...(normalizedErrors ? { errors: normalizedErrors } : {})
     });
   } else {
     // Production
@@ -120,7 +144,8 @@ app.use((err, req, res, next) => {
       res.status(err.statusCode).json({
         success: false,
         status: err.status,
-        message: err.message
+        message: err.message,
+        ...(normalizedErrors ? { errors: normalizedErrors } : {})
       });
     } else {
       // Programming or other unknown error: don't leak error details

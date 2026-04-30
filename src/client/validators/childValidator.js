@@ -8,15 +8,15 @@ const validateAddChildren = (req, res, next) => {
   const { children } = req.body;
 
   if (!children || !Array.isArray(children)) {
-    return next(new AppError('children must be an array.', 400));
+    return next(new AppError('Validation failed.', 400, ['children must be an array.']));
   }
 
   if (children.length === 0) {
-    return next(new AppError('At least one child is required.', 400));
+    return next(new AppError('Validation failed.', 400, ['At least one child is required.']));
   }
 
   if (children.length > 3) {
-    return next(new AppError('Maximum 3 children are allowed per parent.', 400));
+    return next(new AppError('Validation failed.', 400, ['Maximum 3 children are allowed per parent.']));
   }
 
   const errors = [];
@@ -45,7 +45,7 @@ const validateAddChildren = (req, res, next) => {
   });
 
   if (errors.length > 0) {
-    return next(new AppError(errors.join(' | '), 400));
+    return next(new AppError('Validation failed.', 400, errors));
   }
 
   next();

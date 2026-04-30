@@ -37,6 +37,9 @@ const initDB = async () => {
     CREATE SEQUENCE IF NOT EXISTS teacher_id_seq;
     CREATE SEQUENCE IF NOT EXISTS order_id_seq;
     CREATE SEQUENCE IF NOT EXISTS transaction_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS homepage_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS cart_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS client_subscription_id_seq;
   `;
 
   // ──────────────────────────────────────────────
@@ -270,6 +273,7 @@ const initDB = async () => {
       entity_id       VARCHAR(20) NOT NULL, -- ID of the child/teacher/professional
       amount          DECIMAL(10, 2) NOT NULL,
       status          VARCHAR(20) NOT NULL DEFAULT 'pending', -- 'pending', 'completed', 'failed', 'cancelled'
+      start_date      DATE, -- User selected start date for the subscription
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -292,7 +296,7 @@ const initDB = async () => {
 
   const createClientSubscriptionsTable = `
     CREATE TABLE IF NOT EXISTS client_subscriptions (
-      id              SERIAL PRIMARY KEY,
+      id              VARCHAR(20) PRIMARY KEY DEFAULT 'CT-SUB-' || nextval('client_subscription_id_seq')::TEXT,
       client_id       VARCHAR(20) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
       subscription_id VARCHAR(20) NOT NULL REFERENCES subscriptions(id),
       entity_type     VARCHAR(20) NOT NULL,
@@ -304,6 +308,53 @@ const initDB = async () => {
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(client_id, entity_id, entity_type)
+    );
+  `;
+
+  // ──────────────────────────────────────────────
+  // CART TABLE (for multi-entity payments)
+  // ──────────────────────────────────────────────
+  const createCartsTable = `
+    CREATE TABLE IF NOT EXISTS carts (
+      id              VARCHAR(20) PRIMARY KEY DEFAULT 'CART-' || nextval('cart_id_seq')::TEXT,
+      client_id       VARCHAR(20) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      status          VARCHAR(20) NOT NULL DEFAULT 'active', -- 'active', 'checked_out', 'abandoned'
+      total_amount    DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(client_id, status) -- Only one active cart per client
+    );
+  `;
+
+  const createCartItemsTable = `
+    CREATE TABLE IF NOT EXISTS cart_items (
+      id              SERIAL PRIMARY KEY,
+      cart_id         VARCHAR(20) NOT NULL REFERENCES carts(id) ON DELETE CASCADE,
+      subscription_id VARCHAR(20) NOT NULL REFERENCES subscriptions(id),
+      entity_type     VARCHAR(20) NOT NULL, -- 'child', 'teacher', 'professional'
+      entity_id       VARCHAR(20) NOT NULL,
+      entity_name     VARCHAR(255),
+      unit_price      DECIMAL(10, 2) NOT NULL,
+      start_date      DATE, -- User selected start date for this cart item
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(cart_id, entity_id, entity_type) -- Cannot add same entity twice to cart
+    );
+  `;
+
+  // ──────────────────────────────────────────────
+  // HOMEPAGES TABLE
+  // ──────────────────────────────────────────────
+  const createHomepagesTable = `
+    CREATE TABLE IF NOT EXISTS homepages (
+      id              VARCHAR(20) PRIMARY KEY DEFAULT 'HP-' || nextval('homepage_id_seq')::TEXT,
+      name            VARCHAR(255) NOT NULL,
+      description     TEXT NOT NULL,
+      display_order   INTEGER UNIQUE NOT NULL,
+      is_active       BOOLEAN NOT NULL DEFAULT true,
+      created_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      updated_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `;
 
@@ -362,6 +413,109 @@ const initDB = async () => {
     await pool.query(createOrdersTable);
     await pool.query(createTransactionsTable);
     await pool.query(createClientSubscriptionsTable);
+    await pool.query(createHomepagesTable);
+    await pool.query(createCartsTable);
+    await pool.query(createCartItemsTable);
+
+    // ──────────────────────────────────────────────
+    // MEAL SKIPS TABLE (client-initiated meal pauses)
+    // ──────────────────────────────────────────────
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS meal_skips (
+        id              SERIAL PRIMARY KEY,
+        client_id       VARCHAR(20) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+        entity_type     VARCHAR(20) NOT NULL,
+        entity_id       VARCHAR(20) NOT NULL,
+        skip_start_date DATE NOT NULL,
+        skip_end_date   DATE NOT NULL,
+        total_skip_days INTEGER NOT NULL DEFAULT 0,
+        status          VARCHAR(20) NOT NULL DEFAULT 'approved', -- 'approved', 'cancelled'
+        created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // ──────────────────────────────────────────────
+    // MEAL REDUCTIONS LOG TABLE (admin audit trail)
+    // ──────────────────────────────────────────────
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS meal_reductions (
+        id              SERIAL PRIMARY KEY,
+        reduced_by      INTEGER REFERENCES admins(id),
+        reduction_date  DATE NOT NULL,
+        affected_count  INTEGER NOT NULL DEFAULT 0,
+        skipped_count   INTEGER NOT NULL DEFAULT 0,
+        details         JSONB,
+        created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(reduction_date)
+      );
+    `);
+
+    // ──────────────────────────────────────────────
+    // DAILY MEAL LOG TABLE (per-entity, per-date truth)
+    // ──────────────────────────────────────────────
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS daily_meal_log (
+        id                  SERIAL PRIMARY KEY,
+        subscription_id     VARCHAR(20) NOT NULL REFERENCES client_subscriptions(id) ON DELETE CASCADE,
+        entity_type         VARCHAR(20) NOT NULL,
+        entity_id           VARCHAR(20) NOT NULL,
+        meal_date           DATE NOT NULL,
+        reduction_id        INTEGER REFERENCES meal_reductions(id),
+        created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(subscription_id, meal_date)
+      );
+    `);
+
+    // ──────────────────────────────────────────────
+    // MIGRATIONS: Add meal tracking columns
+    // ──────────────────────────────────────────────
+    await pool.query(`ALTER TABLE client_subscriptions ADD COLUMN IF NOT EXISTS total_meals INTEGER DEFAULT 30;`);
+    await pool.query(`ALTER TABLE client_subscriptions ADD COLUMN IF NOT EXISTS used_meals INTEGER DEFAULT 0;`);
+    // Drop old remaining_meals column if it exists (we now compute remaining = total - used)
+    await pool.query(`ALTER TABLE client_subscriptions DROP COLUMN IF EXISTS remaining_meals;`);
+
+    // ──────────────────────────────────────────────
+    // MIGRATION: Convert client_subscriptions.id from INTEGER to CT-SUB-X
+    // ──────────────────────────────────────────────
+    const csColCheck = await pool.query(`
+      SELECT data_type FROM information_schema.columns 
+      WHERE table_name='client_subscriptions' AND column_name='id'
+    `);
+    if (csColCheck.rows.length > 0 && csColCheck.rows[0].data_type === 'integer') {
+      console.log('Migrating client_subscriptions.id to CT-SUB-X format...');
+      // Drop dependent tables/constraints first
+      await pool.query(`DROP TABLE IF EXISTS daily_meal_log CASCADE;`);
+      // Convert existing integer IDs to CT-SUB-X
+      await pool.query(`ALTER TABLE client_subscriptions ALTER COLUMN id TYPE VARCHAR(20) USING 'CT-SUB-' || id::TEXT;`);
+      await pool.query(`ALTER TABLE client_subscriptions ALTER COLUMN id SET DEFAULT 'CT-SUB-' || nextval('client_subscription_id_seq')::TEXT;`);
+      // Set sequence to max existing value
+      await pool.query(`
+        SELECT setval('client_subscription_id_seq', COALESCE(
+          (SELECT MAX(REPLACE(id, 'CT-SUB-', '')::INTEGER) FROM client_subscriptions), 0
+        ));
+      `);
+      // Recreate daily_meal_log with correct FK type
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS daily_meal_log (
+          id                  SERIAL PRIMARY KEY,
+          subscription_id     VARCHAR(20) NOT NULL REFERENCES client_subscriptions(id) ON DELETE CASCADE,
+          entity_type         VARCHAR(20) NOT NULL,
+          entity_id           VARCHAR(20) NOT NULL,
+          meal_date           DATE NOT NULL,
+          reduction_id        INTEGER REFERENCES meal_reductions(id),
+          created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(subscription_id, meal_date)
+        );
+      `);
+      console.log('Migration complete: client_subscriptions now uses CT-SUB-X format.');
+    }
+
+    // Migration: Add order_type to orders table if it doesn't exist
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_type VARCHAR(20) NOT NULL DEFAULT 'single';`);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cart_id VARCHAR(20) REFERENCES carts(id);`);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS start_date DATE;`);
+    await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS start_date DATE;`);
 
     // Migration: Force CH- prefix for children and set as default for existing tables
     await pool.query("ALTER TABLE children ALTER COLUMN id SET DEFAULT 'CH-' || nextval('child_id_seq')::TEXT;");

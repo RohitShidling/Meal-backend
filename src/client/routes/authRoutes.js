@@ -9,7 +9,7 @@ const {
   getMe
 } = require('../controllers/authController');
 const clientAuthMiddleware = require('../middlewares/authMiddleware');
-const { validateLoginSendOtp } = require('../validators/authValidator');
+const { validateLoginSendOtp, validateSendOtp } = require('../validators/authValidator');
 
 /**
  * @swagger
@@ -22,7 +22,7 @@ const { validateLoginSendOtp } = require('../validators/authValidator');
  * @swagger
  * /api/client/auth/send-otp:
  *   post:
- *     summary: Send OTP to a phone number
+ *     summary: Send OTP to a phone number (supports login action with username)
  *     tags: [Client Auth]
  *     requestBody:
  *       required: true
@@ -36,6 +36,15 @@ const { validateLoginSendOtp } = require('../validators/authValidator');
  *               phoneNumber:
  *                 type: string
  *                 example: "+911234567890"
+ *               action:
+ *                 type: string
+ *                 description: Optional. Use "login" to require username.
+ *                 enum: ["login", "register"]
+ *                 example: "login"
+ *               username:
+ *                 type: string
+ *                 description: Mandatory when action is "login". Minimum 2 characters.
+ *                 example: "Moni"
  *     responses:
  *       200:
  *         description: OTP sent successfully
@@ -50,10 +59,22 @@ const { validateLoginSendOtp } = require('../validators/authValidator');
  *                 message:
  *                   type: string
  *                   example: "OTP sent to +911234567890."
+ *                 data:
+ *                   type: object
+ *                   nullable: true
+ *                   properties:
+ *                     phoneNumber:
+ *                       type: string
+ *                     action:
+ *                       type: string
+ *                       nullable: true
+ *                     username:
+ *                       type: string
+ *                       nullable: true
  *       400:
  *         description: Bad Request
  */
-router.post('/send-otp', sendOtpController);
+router.post('/send-otp', validateSendOtp, sendOtpController);
 
 /**
  * @swagger
