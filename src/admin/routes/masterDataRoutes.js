@@ -30,6 +30,35 @@ router.use(adminAuthMiddleware);
  *     summary: Create state
  *     tags: [Admin Master Data]
  *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [name]
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: "Maharashtra"
+ *               isActive:
+ *                 type: boolean
+ *                 example: true
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.post('/states', validateCreateState, masterDataController.createState);
 /**
@@ -39,6 +68,38 @@ router.post('/states', validateCreateState, masterDataController.createState);
  *     summary: Update state
  *     tags: [Admin Master Data]
  *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: stateId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               isActive:
+ *                 type: boolean
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.put('/states/:stateId', validateIdParam('stateId'), validateUpdateState, masterDataController.updateState);
 /**
@@ -48,6 +109,27 @@ router.put('/states/:stateId', validateIdParam('stateId'), validateUpdateState, 
  *     summary: Delete state
  *     tags: [Admin Master Data]
  *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: stateId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.delete('/states/:stateId', validateIdParam('stateId'), masterDataController.deleteState);
 
@@ -58,6 +140,38 @@ router.delete('/states/:stateId', validateIdParam('stateId'), masterDataControll
  *     summary: Create city
  *     tags: [Admin Master Data]
  *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [name, stateId]
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: "Pune"
+ *               stateId:
+ *                 type: integer
+ *                 example: 1
+ *               isActive:
+ *                 type: boolean
+ *                 example: true
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.post('/cities', validateCreateCity, masterDataController.createCity);
 /**
@@ -67,6 +181,40 @@ router.post('/cities', validateCreateCity, masterDataController.createCity);
  *     summary: Update city
  *     tags: [Admin Master Data]
  *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: cityId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               stateId:
+ *                 type: integer
+ *               isActive:
+ *                 type: boolean
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.put('/cities/:cityId', validateIdParam('cityId'), validateUpdateCity, masterDataController.updateCity);
 /**
@@ -76,6 +224,27 @@ router.put('/cities/:cityId', validateIdParam('cityId'), validateUpdateCity, mas
  *     summary: Delete city
  *     tags: [Admin Master Data]
  *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: cityId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.delete('/cities/:cityId', validateIdParam('cityId'), masterDataController.deleteCity);
 
@@ -86,6 +255,38 @@ router.delete('/cities/:cityId', validateIdParam('cityId'), masterDataController
  *     summary: Create company
  *     tags: [Admin Master Data]
  *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [name]
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: "Infosys"
+ *               cityId:
+ *                 type: integer
+ *                 example: 1
+ *               isActive:
+ *                 type: boolean
+ *                 example: true
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.post('/companies', validateCreateCompany, masterDataController.createCompany);
 /**
@@ -95,6 +296,40 @@ router.post('/companies', validateCreateCompany, masterDataController.createComp
  *     summary: Update company
  *     tags: [Admin Master Data]
  *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: companyId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               cityId:
+ *                 type: integer
+ *               isActive:
+ *                 type: boolean
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.put('/companies/:companyId', validateIdParam('companyId'), validateUpdateCompany, masterDataController.updateCompany);
 /**
@@ -104,6 +339,27 @@ router.put('/companies/:companyId', validateIdParam('companyId'), validateUpdate
  *     summary: Delete company
  *     tags: [Admin Master Data]
  *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: companyId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.delete('/companies/:companyId', validateIdParam('companyId'), masterDataController.deleteCompany);
 
@@ -114,6 +370,41 @@ router.delete('/companies/:companyId', validateIdParam('companyId'), masterDataC
  *     summary: Create meal size
  *     tags: [Admin Master Data]
  *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [name, displayName]
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: "extra_large"
+ *               displayName:
+ *                 type: string
+ *                 example: "Extra Large"
+ *               sortOrder:
+ *                 type: integer
+ *                 example: 4
+ *               isActive:
+ *                 type: boolean
+ *                 example: true
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.post('/meal-sizes', validateCreateMealSize, masterDataController.createMealSize);
 /**
@@ -123,6 +414,42 @@ router.post('/meal-sizes', validateCreateMealSize, masterDataController.createMe
  *     summary: Update meal size
  *     tags: [Admin Master Data]
  *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: mealSizeId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               displayName:
+ *                 type: string
+ *               sortOrder:
+ *                 type: integer
+ *               isActive:
+ *                 type: boolean
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.put('/meal-sizes/:mealSizeId', validateIdParam('mealSizeId'), validateUpdateMealSize, masterDataController.updateMealSize);
 /**
@@ -132,6 +459,27 @@ router.put('/meal-sizes/:mealSizeId', validateIdParam('mealSizeId'), validateUpd
  *     summary: Delete meal size
  *     tags: [Admin Master Data]
  *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: mealSizeId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.delete('/meal-sizes/:mealSizeId', validateIdParam('mealSizeId'), masterDataController.deleteMealSize);
 

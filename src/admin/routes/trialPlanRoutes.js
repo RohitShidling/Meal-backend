@@ -42,9 +42,21 @@ router.use(adminAuthMiddleware);
  *               is_active: { type: boolean, example: true }
  *     responses:
  *       201:
- *         description: Trial plan created successfully
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Trial plan created successfully." }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
  *       409:
  *         description: Duplicate trial plan
+ *       500:
+ *         description: Server Error
  */
 router.post('/', validateCreateTrialPlan, trialPlanController.createTrialPlan);
 
@@ -58,7 +70,19 @@ router.post('/', validateCreateTrialPlan, trialPlanController.createTrialPlan);
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Trial plans fetched successfully
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.get('/', trialPlanController.getTrialPlans);
 
@@ -78,9 +102,19 @@ router.get('/', trialPlanController.getTrialPlans);
  *           type: string
  *     responses:
  *       200:
- *         description: Trial plan fetched successfully
- *       404:
- *         description: Trial plan not found
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.get('/:id', validateTrialPlanId, trialPlanController.getTrialPlanById);
 
@@ -113,7 +147,21 @@ router.get('/:id', validateTrialPlanId, trialPlanController.getTrialPlanById);
  *               is_active: { type: boolean, example: true }
  *     responses:
  *       200:
- *         description: Trial plan updated successfully
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Trial plan updated successfully." }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       404:
+ *         description: Trial plan not found
+ *       500:
+ *         description: Server Error
  */
 router.put('/:id', validateTrialPlanId, validateUpdateTrialPlan, trialPlanController.updateTrialPlan);
 
@@ -142,7 +190,21 @@ router.put('/:id', validateTrialPlanId, validateUpdateTrialPlan, trialPlanContro
  *               is_active: { type: boolean, example: false }
  *     responses:
  *       200:
- *         description: Trial plan status updated successfully
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Trial plan status updated successfully." }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       404:
+ *         description: Trial plan not found
+ *       500:
+ *         description: Server Error
  */
 router.patch('/:id/status', validateTrialPlanId, validateSetActive, trialPlanController.setTrialPlanActive);
 
@@ -162,7 +224,19 @@ router.patch('/:id/status', validateTrialPlanId, validateSetActive, trialPlanCon
  *           type: string
  *     responses:
  *       200:
- *         description: Trial plan deleted successfully
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Success" }
+ *                 data: { type: object }
+ *       400:
+ *         description: Bad Request
+ *       500:
+ *         description: Server Error
  */
 router.delete('/:id', validateTrialPlanId, trialPlanController.deleteTrialPlan);
 
