@@ -2,30 +2,44 @@ const db = require('../../common/database');
 const catchAsync = require('../../common/utils/catchAsync');
 
 /**
- * @desc    Get all payments with advanced filters
+ * @desc    Get all payments with advanced filters — fixed count query
  * @route   GET /api/admin/payment/all
- * @access  Private (Admin only)
  */
 exports.getAllPayments = catchAsync(async (req, res) => {
   const { schoolId, entityType, status, startDate, endDate, page = 1, limit = 10 } = req.query;
-  const offset = (page - 1) * limit;
+  const offset = (parseInt(page) - 1) * parseInt(limit);
 
-  let queryStr = `
-    SELECT 
-      o.*, 
-      c.phone_number as client_phone,
-      s.plan_name as subscription_name,
-      CASE 
-        WHEN o.entity_type = 'child' THEN ch.name
-        WHEN o.entity_type = 'teacher' THEN t.name
-        WHEN o.entity_type = 'professional' THEN p.name
-      END as entity_name,
-      CASE 
-        WHEN o.entity_type = 'child' THEN sch_ch.name
-        WHEN o.entity_type = 'teacher' THEN sch_t.name
-        ELSE NULL
-      END as school_name,
-      cl.name as corporate_location_name
+  const params = [];
+  let paramCount = 1;
+  let whereClause = 'WHERE 1=1';
+
+  if (entityType) {
+    whereClause += ` AND o.entity_type = $${paramCount}`;
+    params.push(entityType);
+    paramCount++;
+  }
+  if (status) {
+    whereClause += ` AND o.status = $${paramCount}`;
+    params.push(status);
+    paramCount++;
+  }
+  if (startDate) {
+    whereClause += ` AND o.created_at >= $${paramCount}`;
+    params.push(startDate);
+    paramCount++;
+  }
+  if (endDate) {
+    whereClause += ` AND o.created_at <= $${paramCount}`;
+    params.push(endDate);
+    paramCount++;
+  }
+  if (schoolId) {
+    whereClause += ` AND sch_ch.id = $${paramCount}`;
+    params.push(schoolId);
+    paramCount++;
+  }
+
+  const baseJoins = `
     FROM orders o
     LEFT JOIN clients c ON o.client_id = c.id
     LEFT JOIN subscriptions s ON o.subscription_id = s.id
@@ -33,91 +47,109 @@ exports.getAllPayments = catchAsync(async (req, res) => {
     LEFT JOIN teacher_profiles t ON o.entity_type = 'teacher' AND o.entity_id = t.id
     LEFT JOIN professional_profiles p ON o.entity_type = 'professional' AND o.entity_id = p.id
     LEFT JOIN schools sch_ch ON ch.school_id = sch_ch.id
-    LEFT JOIN schools sch_t ON t.school_college_name = sch_t.name -- Simplified link
     LEFT JOIN corporate_locations cl ON p.corporate_location_id = cl.id
-    WHERE 1=1
+    ${whereClause}
   `;
 
-  const params = [];
-  let paramCount = 1;
+  // Count query — separate, clean
+  const countRes = await db.query(`SELECT COUNT(*) ${baseJoins}`, params);
+  const total = parseInt(countRes.rows[0].count);
 
-  if (schoolId) {
-    queryStr += ` AND (sch_ch.id = $${paramCount} OR sch_t.id = $${paramCount})`;
-    params.push(schoolId);
-    paramCount++;
-  }
-
-  if (entityType) {
-    queryStr += ` AND o.entity_type = $${paramCount}`;
-    params.push(entityType);
-    paramCount++;
-  }
-
-  if (status) {
-    queryStr += ` AND o.status = $${paramCount}`;
-    params.push(status);
-    paramCount++;
-  }
-
-  if (startDate) {
-    queryStr += ` AND o.created_at >= $${paramCount}`;
-    params.push(startDate);
-    paramCount++;
-  }
-
-  if (endDate) {
-    queryStr += ` AND o.created_at <= $${paramCount}`;
-    params.push(endDate);
-    paramCount++;
-  }
-
-  queryStr += ` ORDER BY o.created_at DESC LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
-  params.push(limit, offset);
-
-  const result = await db.query(queryStr, params);
-
-  // Get total count for pagination
-  const countQuery = queryStr.split('FROM')[1].split('ORDER BY')[0];
-  const totalCountResult = await db.query(`SELECT COUNT(*) FROM ${countQuery}`, params.slice(0, -2));
+  // Data query
+  const dataParams = [...params, parseInt(limit), offset];
+  const result = await db.query(`
+    SELECT
+      o.id AS order_id,
+      o.status AS order_status,
+      o.order_type,
+      o.amount,
+      o.entity_type,
+      o.entity_id,
+      o.created_at,
+      c.phone_number AS client_phone,
+      s.plan_name AS subscription_name,
+      t.merchant_transaction_id,
+      t.status AS payment_status,
+      CASE
+        WHEN o.entity_type = 'child' THEN ch.name
+        WHEN o.entity_type = 'teacher' THEN t2.name
+        WHEN o.entity_type = 'professional' THEN p.name
+        ELSE 'Cart Order'
+      END AS entity_name,
+      sch_ch.name AS school_name,
+      cl.name AS corporate_location_name
+    FROM orders o
+    LEFT JOIN clients c ON o.client_id = c.id
+    LEFT JOIN subscriptions s ON o.subscription_id = s.id
+    LEFT JOIN transactions t ON t.order_id = o.id
+    LEFT JOIN children ch ON o.entity_type = 'child' AND o.entity_id = ch.id
+    LEFT JOIN teacher_profiles t2 ON o.entity_type = 'teacher' AND o.entity_id = t2.id
+    LEFT JOIN professional_profiles p ON o.entity_type = 'professional' AND o.entity_id = p.id
+    LEFT JOIN schools sch_ch ON ch.school_id = sch_ch.id
+    LEFT JOIN corporate_locations cl ON p.corporate_location_id = cl.id
+    ${whereClause}
+    ORDER BY o.created_at DESC
+    LIMIT $${paramCount} OFFSET $${paramCount + 1}
+  `, dataParams);
 
   res.status(200).json({
     success: true,
-    data: result.rows,
     pagination: {
-      totalItems: parseInt(totalCountResult.rows[0].count),
-      currentPage: parseInt(page),
-      totalPages: Math.ceil(parseInt(totalCountResult.rows[0].count) / limit)
-    }
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+      totalPages: Math.ceil(total / parseInt(limit))
+    },
+    data: result.rows
   });
 });
 
 /**
  * @desc    Get payment statistics
  * @route   GET /api/admin/payment/stats
- * @access  Private (Admin only)
  */
 exports.getPaymentStats = catchAsync(async (req, res) => {
   const stats = await db.query(`
-    SELECT 
-      COUNT(*) as total_orders,
-      SUM(CASE WHEN status = 'completed' THEN amount ELSE 0 END) as total_revenue,
-      SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_orders,
-      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_orders
+    SELECT
+      COUNT(*)                                                        AS total_orders,
+      COALESCE(SUM(CASE WHEN status='completed' THEN amount END), 0) AS total_revenue,
+      COUNT(CASE WHEN status='pending'   THEN 1 END)                 AS pending_orders,
+      COUNT(CASE WHEN status='failed'    THEN 1 END)                 AS failed_orders,
+      COUNT(CASE WHEN status='completed' THEN 1 END)                 AS completed_orders
     FROM orders
   `);
 
   const revenueByEntity = await db.query(`
-    SELECT entity_type, SUM(amount) as revenue
+    SELECT entity_type, COUNT(*) AS order_count, COALESCE(SUM(amount), 0) AS revenue
     FROM orders
     WHERE status = 'completed'
     GROUP BY entity_type
+    ORDER BY entity_type
+  `);
+
+  const recentPayments = await db.query(`
+    SELECT o.id, o.amount, o.status, o.created_at, c.phone_number,
+           CASE
+             WHEN o.entity_type='child' THEN ch.name
+             WHEN o.entity_type='teacher' THEN tp.name
+             WHEN o.entity_type='professional' THEN pp.name
+             ELSE 'Cart Order'
+           END AS entity_name
+    FROM orders o
+    LEFT JOIN clients c ON o.client_id = c.id
+    LEFT JOIN children ch ON o.entity_type='child' AND o.entity_id=ch.id
+    LEFT JOIN teacher_profiles tp ON o.entity_type='teacher' AND o.entity_id=tp.id
+    LEFT JOIN professional_profiles pp ON o.entity_type='professional' AND o.entity_id=pp.id
+    WHERE o.status = 'completed'
+    ORDER BY o.created_at DESC LIMIT 10
   `);
 
   res.status(200).json({
     success: true,
     data: {
       overall: stats.rows[0],
-      byEntity: revenueByEntity.rows
+      byEntityType: revenueByEntity.rows,
+      recentPayments: recentPayments.rows
     }
   });
 });

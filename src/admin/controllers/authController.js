@@ -8,10 +8,10 @@ const AppError = require('../../common/utils/AppError');
 // Helper to generate Admin Tokens
 const generateTokens = (id, phoneNumber) => {
   const accessToken = jwt.sign({ id, phoneNumber, role: 'admin' }, process.env.ADMIN_JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN || '1h',
+    expiresIn: process.env.ADMIN_JWT_EXPIRES_IN || '30d',   // ← 30 days for admin
   });
   const refreshToken = jwt.sign({ id, phoneNumber, role: 'admin' }, process.env.ADMIN_REFRESH_SECRET || 'admin_refresh_secret', {
-    expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || '7d',
+    expiresIn: process.env.ADMIN_REFRESH_TOKEN_EXPIRES_IN || '90d',  // ← 90 days refresh
   });
   return { accessToken, refreshToken };
 };

@@ -324,4 +324,176 @@ router.get('/analytics/professionals', analytics.getProfessionalSubscriptions);
  */
 router.get('/analytics/expiring-soon', analytics.getExpiringSoon);
 
+/**
+ * @swagger
+ * /api/admin/subscriptions/analytics/all-members:
+ *   get:
+ *     summary: Full subscription status for ALL members — subscribed, expired, and never subscribed
+ *     tags: [Admin - Subscription Analytics]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: entityType
+ *         schema:
+ *           type: string
+ *           enum: [child, teacher, professional]
+ *         description: Filter by member type (leave blank for all)
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [active, expired, never_subscribed, subscribed]
+ *         description: >
+ *           active = currently active subscription,
+ *           expired = had subscription but it ended,
+ *           never_subscribed = never subscribed at all,
+ *           subscribed = active + expired combined
+ *       - in: query
+ *         name: schoolId
+ *         schema:
+ *           type: string
+ *         description: Filter children by school ID
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20 }
+ *     responses:
+ *       200:
+ *         description: Complete member subscription status list
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 summary:
+ *                   type: object
+ *                   properties:
+ *                     total_members: { type: integer, example: 120 }
+ *                     active_subscriptions: { type: integer, example: 80 }
+ *                     expired_subscriptions: { type: integer, example: 25 }
+ *                     never_subscribed: { type: integer, example: 15 }
+ *                 pagination:
+ *                   type: object
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       entity_type: { type: string, example: "child" }
+ *                       entity_name: { type: string, example: "Raju" }
+ *                       identifier: { type: string, example: "ROL-001" }
+ *                       institution_name: { type: string, example: "Delhi Public School" }
+ *                       client_phone: { type: string, example: "+919876543210" }
+ *                       status: { type: string, example: "active" }
+ *                       start_date: { type: string, format: date-time }
+ *                       end_date: { type: string, format: date-time }
+ *                       days_remaining: { type: integer, example: 22 }
+ *                       plan_name: { type: string, example: "Monthly Plan" }
+ *                       amount_paid: { type: number, example: 800.00 }
+ */
+router.get('/analytics/all-members', analytics.getAllMembersSubscriptionStatus);
+
+/**
+ * @swagger
+ * /api/admin/subscriptions/analytics/not-subscribed:
+ *   get:
+ *     summary: List ALL members who have NEVER subscribed
+ *     tags: [Admin - Subscription Analytics]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: entityType
+ *         schema:
+ *           type: string
+ *           enum: [child, teacher, professional]
+ *       - in: query
+ *         name: schoolId
+ *         schema: { type: string }
+ *         description: Filter unsubscribed children by school
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20 }
+ *     responses:
+ *       200:
+ *         description: Members who never subscribed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 total_unsubscribed: { type: integer, example: 15 }
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       entity_type: { type: string, example: "child" }
+ *                       entity_name: { type: string, example: "Ananya" }
+ *                       identifier: { type: string, example: "ROL-005" }
+ *                       institution_name: { type: string, example: "Ryan International" }
+ *                       client_phone: { type: string, example: "+919876543210" }
+ *                       registered_on: { type: string, format: date-time }
+ */
+router.get('/analytics/not-subscribed', analytics.getUnsubscribedMembers);
+
+/**
+ * @swagger
+ * /api/admin/subscriptions/analytics/active-meal-status:
+ *   get:
+ *     summary: Detailed list of all ACTIVE subscriptions with meal counts (total, used, remaining)
+ *     tags: [Admin - Subscription Analytics]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: entityType
+ *         schema:
+ *           type: string
+ *           enum: [child, teacher, professional]
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 50 }
+ *     responses:
+ *       200:
+ *         description: Active subscriptions with meal counts
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 pagination:
+ *                   type: object
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       subscription_id: { type: string, example: "CT-SUB-1" }
+ *                       client_phone: { type: string, example: "+919876543210" }
+ *                       entity_type: { type: string, example: "child" }
+ *                       entity_name: { type: string, example: "Raju" }
+ *                       institution_name: { type: string, example: "Delhi Public School" }
+ *                       total_meals: { type: integer, example: 30 }
+ *                       used_meals: { type: integer, example: 12 }
+ *                       remaining_meals: { type: integer, example: 18 }
+ *                       start_date: { type: string, format: date-time }
+ *                       end_date: { type: string, format: date-time }
+ *                       plan_name: { type: string, example: "Monthly Plan" }
+ */
+router.get('/analytics/active-meal-status', analytics.getActiveSubscriptionsWithMeals);
+
 module.exports = router;
+

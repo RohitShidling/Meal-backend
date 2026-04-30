@@ -31,6 +31,8 @@ const clientCartRoutes = require('./client/routes/cartRoutes');
 const adminPaymentRoutes = require('./admin/routes/paymentRoutes');
 const adminHomepageRoutes = require('./admin/routes/homepageRoutes');
 const commonHomepageRoutes = require('./common/routes/homepageRoutes');
+const clientMealRoutes = require('./client/routes/mealRoutes');
+const adminMealRoutes = require('./admin/routes/mealRoutes');
 
 const app = express();
 
@@ -47,15 +49,23 @@ if (process.env.NODE_ENV === 'development') {
   app.use(morgan('combined'));
 }
 
-// Global Rate Limiting (Industrial Standard)
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
-  message: { success: false, message: 'Too many requests from this IP, please try again after 15 minutes' },
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+// ─── Rate Limiting ───────────────────────────────────────────────────────────
+// Admin: NO rate limit — admins are trusted internal users
+// Client: 500 requests per 15 minutes (generous for mobile/web apps)
+const clientLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 500,
+  message: {
+    success: false,
+    message: 'Too many requests. Please try again after 15 minutes.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
-app.use('/api', limiter);
+
+// Apply only to client routes (not admin)
+app.use('/api/client', clientLimiter);
+app.use('/api/common', clientLimiter);
 
 // Swagger Documentation
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
@@ -90,6 +100,8 @@ app.use('/api/client/parent', clientParentRoutes);
 app.use('/api/client/teacher', clientTeacherRoutes);
 app.use('/api/client/payment', clientPaymentRoutes);
 app.use('/api/client/cart', clientCartRoutes);
+app.use('/api/client/meals', clientMealRoutes);
+app.use('/api/admin/meals', adminMealRoutes);
 app.use('/api/admin/payment', adminPaymentRoutes);
 app.use('/api/admin/homepage', adminHomepageRoutes);
 app.use('/api/common/homepage', commonHomepageRoutes);

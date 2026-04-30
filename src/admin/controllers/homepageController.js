@@ -100,3 +100,28 @@ exports.updateHomepage = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * @desc    Delete a homepage entry
+ * @route   DELETE /api/admin/homepage/:id
+ * @access  Private (Admin)
+ */
+exports.deleteHomepage = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const check = await pool.query('SELECT id FROM homepages WHERE id=$1', [id]);
+    if (check.rows.length === 0) return next(new AppError('Homepage entry not found.', 404));
+
+    await pool.query('DELETE FROM homepages WHERE id=$1', [id]);
+
+    res.status(200).json({
+      success: true,
+      message: 'Homepage entry deleted successfully.',
+      data: { id }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
