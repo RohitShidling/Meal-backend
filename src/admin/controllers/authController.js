@@ -23,15 +23,16 @@ const generateTokens = (id, phoneNumber) => {
 const loginController = catchAsync(async (req, res, next) => {
   const { phoneNumber, password, username } = req.body;
 
-  if (!phoneNumber || !password) {
-    return next(new AppError('phoneNumber and password are required.', 400));
+  if (!phoneNumber || !password || !username) {
+    return next(new AppError('phoneNumber, password and username are required.', 400));
   }
 
   // Check if admin exists in DB
-  const result = await db.query('SELECT * FROM admins WHERE phone_number = $1', [phoneNumber]);
+  // Check if admin exists in DB with matching phone AND username (Case-Sensitive)
+  const result = await db.query('SELECT * FROM admins WHERE phone_number = $1 AND username = $2', [phoneNumber, username]);
 
   if (result.rows.length === 0) {
-    return next(new AppError('Invalid phone number or password.', 401));
+    return next(new AppError('Invalid credentials.', 401));
   }
 
   const adminUser = result.rows[0];
@@ -40,14 +41,10 @@ const loginController = catchAsync(async (req, res, next) => {
   const isMatch = await bcrypt.compare(password, adminUser.password);
   
   if (!isMatch) {
-    return next(new AppError('Invalid phone number or password.', 401));
+    return next(new AppError('Invalid credentials.', 401));
   }
 
-  // Update username if provided
-  if (username) {
-    const trimmedUsername = String(username).trim();
-    await db.query('UPDATE admins SET username = $1 WHERE id = $2', [trimmedUsername, adminUser.id]);
-  }
+
 
   // Credentials are correct, send OTP via Firebase
   try {
