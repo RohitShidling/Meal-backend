@@ -17,7 +17,7 @@ exports.getSubscriptions = async (req, res, next) => {
       sqlQuery = `
         SELECT id, plan_name, price, billing_cycle, trial_days, display_order 
         FROM subscriptions 
-        WHERE is_active = true 
+        WHERE is_active = true AND (trial_days = 0 OR trial_days IS NULL)
         ORDER BY display_order ASC, created_at DESC;
       `;
     } else {
@@ -25,6 +25,7 @@ exports.getSubscriptions = async (req, res, next) => {
       sqlQuery = `
         SELECT * 
         FROM subscriptions 
+        WHERE trial_days = 0 OR trial_days IS NULL
         ORDER BY display_order ASC, created_at DESC;
       `;
     }

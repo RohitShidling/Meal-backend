@@ -139,7 +139,7 @@ exports.deleteSubscription = async (req, res, next) => {
 exports.getAllSubscriptions = async (req, res, next) => {
   try {
     const result = await query(
-      'SELECT * FROM subscriptions ORDER BY display_order ASC, created_at DESC'
+      'SELECT * FROM subscriptions WHERE trial_days = 0 OR trial_days IS NULL ORDER BY display_order ASC, created_at DESC'
     );
     res.status(200).json({
       success: true,
