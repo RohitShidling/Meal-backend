@@ -395,6 +395,7 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS is_logged_in BOOLEAN DEFAULT false;`);
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS last_login TIMESTAMP;`);
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS refresh_token TEXT;`);
+    await pool.query(`UPDATE admins SET username = 'admin' WHERE username IS NULL;`);
 
     // Create new feature tables
     await pool.query(createSchoolsTable);
@@ -550,8 +551,8 @@ const initDB = async () => {
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash('adminpassword', salt);
       await pool.query(
-        'INSERT INTO admins (phone_number, password) VALUES ($1, $2)',
-        ['+911234567890', hashedPassword]
+        'INSERT INTO admins (phone_number, password, username) VALUES ($1, $2, $3)',
+        ['+911234567890', hashedPassword, 'admin']
       );
       console.log('Default admin seeded: +911234567890 / adminpassword');
     }
