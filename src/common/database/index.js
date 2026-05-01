@@ -40,6 +40,7 @@ const initDB = async () => {
     CREATE SEQUENCE IF NOT EXISTS homepage_id_seq;
     CREATE SEQUENCE IF NOT EXISTS cart_id_seq;
     CREATE SEQUENCE IF NOT EXISTS client_subscription_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS entity_id_seq;
   `;
 
   // ──────────────────────────────────────────────
@@ -342,19 +343,36 @@ const initDB = async () => {
   `;
 
   // ──────────────────────────────────────────────
-  // HOMEPAGES TABLE
+  // ENTITIES TABLE
   // ──────────────────────────────────────────────
-  const createHomepagesTable = `
-    CREATE TABLE IF NOT EXISTS homepages (
-      id              VARCHAR(20) PRIMARY KEY DEFAULT 'HP-' || nextval('homepage_id_seq')::TEXT,
-      name            VARCHAR(255) NOT NULL,
-      description     TEXT NOT NULL,
-      display_order   INTEGER UNIQUE NOT NULL,
+  const createEntitiesTable = `
+    CREATE TABLE IF NOT EXISTS entities (
+      id              VARCHAR(20) PRIMARY KEY DEFAULT 'ENT-' || nextval('entity_id_seq')::TEXT,
+      name            VARCHAR(100) UNIQUE NOT NULL,
       is_active       BOOLEAN NOT NULL DEFAULT true,
       created_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
       updated_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  // ──────────────────────────────────────────────
+  // HOMEPAGES TABLE
+  // ──────────────────────────────────────────────
+  const createHomepagesTable = `
+    CREATE TABLE IF NOT EXISTS homepages (
+      id              VARCHAR(20) PRIMARY KEY DEFAULT 'HP-' || nextval('homepage_id_seq')::TEXT,
+      entity_id       VARCHAR(20) REFERENCES entities(id),
+      name            VARCHAR(255) NOT NULL,
+      description     TEXT NOT NULL,
+      display_order   INTEGER NOT NULL,
+      is_active       BOOLEAN NOT NULL DEFAULT true,
+      created_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      updated_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(entity_id, display_order)
     );
   `;
 
@@ -413,6 +431,7 @@ const initDB = async () => {
     await pool.query(createOrdersTable);
     await pool.query(createTransactionsTable);
     await pool.query(createClientSubscriptionsTable);
+    await pool.query(createEntitiesTable);
     await pool.query(createHomepagesTable);
     await pool.query(createCartsTable);
     await pool.query(createCartItemsTable);
@@ -516,6 +535,17 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cart_id VARCHAR(20) REFERENCES carts(id);`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS start_date DATE;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS start_date DATE;`);
+
+    // Migration: Add entity_id to homepages and handle unique constraints
+    await pool.query(`ALTER TABLE homepages ADD COLUMN IF NOT EXISTS entity_id VARCHAR(20) REFERENCES entities(id);`);
+    try {
+      // Try to drop old constraint if it exists
+      await pool.query(`ALTER TABLE homepages DROP CONSTRAINT IF EXISTS homepages_display_order_key;`);
+      // Add new constraint
+      await pool.query(`ALTER TABLE homepages ADD CONSTRAINT homepages_entity_id_display_order_key UNIQUE(entity_id, display_order);`);
+    } catch(e) {
+      // Ignore if constraint already dropped or added
+    }
 
     // Migration: Force CH- prefix for children and set as default for existing tables
     await pool.query("ALTER TABLE children ALTER COLUMN id SET DEFAULT 'CH-' || nextval('child_id_seq')::TEXT;");

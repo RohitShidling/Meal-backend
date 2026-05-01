@@ -1,15 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const {
-  sendOtpController,
-  loginSendOtpController,
-  verifyOtpController,
+  registerSendOtp,
+  registerVerifyOtp,
+  loginSendOtp,
+  loginVerifyOtp,
   logoutController,
   refreshTokenController,
   getMe
 } = require('../controllers/authController');
 const clientAuthMiddleware = require('../middlewares/authMiddleware');
-const { validateLoginSendOtp, validateSendOtp } = require('../validators/authValidator');
+const { 
+  validateRegister, 
+  validateLogin, 
+  validateVerifyOtp 
+} = require('../validators/authValidator');
 
 /**
  * @swagger
@@ -20,67 +25,9 @@ const { validateLoginSendOtp, validateSendOtp } = require('../validators/authVal
 
 /**
  * @swagger
- * /api/client/auth/send-otp:
+ * /api/client/auth/register/send-otp:
  *   post:
- *     summary: Send OTP to a phone number (supports login action with username)
- *     tags: [Client Auth]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - phoneNumber
- *             properties:
- *               phoneNumber:
- *                 type: string
- *                 example: "+911234567890"
- *               action:
- *                 type: string
- *                 description: Optional. Use "login" to require username.
- *                 enum: ["login", "register"]
- *                 example: "login"
- *               username:
- *                 type: string
- *                 description: Mandatory when action is "login". Minimum 2 characters.
- *                 example: "Moni"
- *     responses:
- *       200:
- *         description: OTP sent successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: "OTP sent to +911234567890."
- *                 data:
- *                   type: object
- *                   nullable: true
- *                   properties:
- *                     phoneNumber:
- *                       type: string
- *                     action:
- *                       type: string
- *                       nullable: true
- *                     username:
- *                       type: string
- *                       nullable: true
- *       400:
- *         description: Bad Request
- */
-router.post('/send-otp', validateSendOtp, sendOtpController);
-
-/**
- * @swagger
- * /api/client/auth/login/send-otp:
- *   post:
- *     summary: Send OTP for client login with username
+ *     summary: Send OTP for NEW client registration
  *     tags: [Client Auth]
  *     requestBody:
  *       required: true
@@ -100,37 +47,74 @@ router.post('/send-otp', validateSendOtp, sendOtpController);
  *                 example: "Rohit"
  *     responses:
  *       200:
- *         description: Login OTP sent successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: "Login OTP sent to +911234567890."
- *                 data:
- *                   type: object
- *                   properties:
- *                     phoneNumber:
- *                       type: string
- *                       example: "+911234567890"
- *                     username:
- *                       type: string
- *                       example: "Rohit"
+ *         description: OTP sent successfully
  *       400:
- *         description: Validation or OTP provider error
+ *         description: User already registered or validation error
  */
-router.post('/login/send-otp', validateLoginSendOtp, loginSendOtpController);
+router.post('/register/send-otp', validateRegister, registerSendOtp);
 
 /**
  * @swagger
- * /api/client/auth/verify-otp:
+ * /api/client/auth/register/verify-otp:
  *   post:
- *     summary: Verify OTP and Login/Register
+ *     summary: Verify OTP and complete registration
+ *     tags: [Client Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - phoneNumber
+ *               - username
+ *               - code
+ *             properties:
+ *               phoneNumber:
+ *                 type: string
+ *               username:
+ *                 type: string
+ *               code:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Registration successful, returns tokens
+ *       400:
+ *         description: Invalid OTP or already registered
+ */
+router.post('/register/verify-otp', validateRegister, validateVerifyOtp, registerVerifyOtp);
+
+/**
+ * @swagger
+ * /api/client/auth/login/send-otp:
+ *   post:
+ *     summary: Send OTP for EXISTING client login
+ *     tags: [Client Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - phoneNumber
+ *             properties:
+ *               phoneNumber:
+ *                 type: string
+ *                 example: "+911234567890"
+ *     responses:
+ *       200:
+ *         description: OTP sent successfully
+ *       404:
+ *         description: User not registered
+ */
+router.post('/login/send-otp', validateLogin, loginSendOtp);
+
+/**
+ * @swagger
+ * /api/client/auth/login/verify-otp:
+ *   post:
+ *     summary: Verify OTP and login existing client
  *     tags: [Client Auth]
  *     requestBody:
  *       required: true
@@ -144,54 +128,17 @@ router.post('/login/send-otp', validateLoginSendOtp, loginSendOtpController);
  *             properties:
  *               phoneNumber:
  *                 type: string
- *                 example: "+911234567890"
  *               code:
  *                 type: string
- *                 example: "123456"
  *     responses:
  *       200:
- *         description: Login successful
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: "Authentication successful."
- *                 data:
- *                   type: object
- *                   properties:
- *                     accessToken:
- *                       type: string
- *                     refreshToken:
- *                       type: string
- *                     user:
- *                       type: object
- *                       properties:
- *                         id:
- *                           type: string
- *                           example: "P-1"
- *                         username:
- *                           type: string
- *                           nullable: true
- *                           example: "Rohit"
- *                         phoneNumber:
- *                           type: string
- *                           example: "+911234567890"
- *                         isLoggedIn:
- *                           type: boolean
- *                           example: true
- *                         lastLogin:
- *                           type: string
- *                           format: date-time
+ *         description: Login successful, returns tokens
  *       400:
  *         description: Invalid OTP
+ *       404:
+ *         description: User not found
  */
-router.post('/verify-otp', verifyOtpController);
+router.post('/login/verify-otp', validateLogin, validateVerifyOtp, loginVerifyOtp);
 
 /**
  * @swagger
@@ -204,17 +151,6 @@ router.post('/verify-otp', verifyOtpController);
  *     responses:
  *       200:
  *         description: Logout successful
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: "Logged out successfully."
  */
 router.post('/logout', clientAuthMiddleware, logoutController);
 
@@ -238,24 +174,6 @@ router.post('/logout', clientAuthMiddleware, logoutController);
  *     responses:
  *       200:
  *         description: Token refreshed
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: "Tokens refreshed successfully."
- *                 data:
- *                   type: object
- *                   properties:
- *                     accessToken:
- *                       type: string
- *                     refreshToken:
- *                       type: string
  */
 router.post('/refresh', refreshTokenController);
 
@@ -263,61 +181,15 @@ router.post('/refresh', refreshTokenController);
  * @swagger
  * /api/client/auth/me:
  *   get:
- *     summary: Get current client profile status (Parent/Professional/Both)
+ *     summary: Get current client profile status
  *     tags: [Client Auth]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
  *         description: Profile status fetched successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 data:
- *                   type: object
- *                   properties:
- *                     user:
- *                       type: object
- *                       properties:
- *                         id:
- *                           type: string
- *                           example: "P-1"
- *                         username:
- *                           type: string
- *                           nullable: true
- *                           example: "Rohit"
- *                         phone_number:
- *                           type: string
- *                           example: "+911234567890"
- *                         last_login:
- *                           type: string
- *                           format: date-time
- *                     profiles:
- *                       type: object
- *                       properties:
- *                         isParent:
- *                           type: boolean
- *                         parentProfile:
- *                           type: object
- *                           nullable: true
- *                         childrenCount:
- *                           type: integer
- *                         isProfessional:
- *                           type: boolean
- *                         professionalProfile:
- *                           type: object
- *                           nullable: true
- *                         isTeacher:
- *                           type: boolean
- *                         teacherProfile:
- *                           type: object
- *                           nullable: true
  */
 router.get('/me', clientAuthMiddleware, getMe);
 
 module.exports = router;
+

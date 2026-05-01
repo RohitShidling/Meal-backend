@@ -15,6 +15,12 @@ const homepageController = require('../controllers/homepageController');
  *   get:
  *     summary: Get all active homepage entries ordered by display_order
  *     tags: [Common - Homepage]
+ *     parameters:
+ *       - in: query
+ *         name: entity_id
+ *         schema:
+ *           type: string
+ *         description: Optional entity ID to filter homepage entries
  *     responses:
  *       200:
  *         description: Homepage entries retrieved successfully
@@ -34,7 +40,12 @@ const homepageController = require('../controllers/homepageController');
  *                   items:
  *                     type: object
  *                     properties:
- *                       id: { type: string, example: "HP-1" }
+ *                       id:
+ *                         type: string
+ *                         example: "HP-1"
+ *                       entity_id:
+ *                         type: string
+ *                         example: "ENT-1"
  *                       name: { type: string, example: "Welcome Section" }
  *                       description: { type: string, example: "Main welcome banner." }
  *                       display_order: { type: integer, example: 1 }
@@ -59,6 +70,11 @@ router.get('/', homepageController.getHomepage);
  *           type: integer
  *           example: 1
  *         description: The display_order value to look up
+ *       - in: query
+ *         name: entity_id
+ *         schema:
+ *           type: string
+ *         description: Optional entity ID to filter homepage entries by entity
  *     responses:
  *       200:
  *         description: Homepage entry retrieved
@@ -73,7 +89,12 @@ router.get('/', homepageController.getHomepage);
  *                 data:
  *                   type: object
  *                   properties:
- *                     id: { type: string, example: "HP-1" }
+ *                     id:
+ *                       type: string
+ *                       example: "HP-1"
+ *                     entity_id:
+ *                       type: string
+ *                       example: "ENT-1"
  *                     name: { type: string, example: "Welcome Section" }
  *                     description: { type: string, example: "Main welcome banner." }
  *                     display_order: { type: integer, example: 1 }
