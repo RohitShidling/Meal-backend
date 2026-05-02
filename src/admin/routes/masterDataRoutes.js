@@ -5,7 +5,6 @@ const masterDataController = require('../controllers/masterDataController');
 const {
   validateCreateState,
   validateCreateCity,
-  validateCreateCompany,
   validateCreateMealSize,
   validateIdParam,
   validateUpdateState,
@@ -296,7 +295,7 @@ router.delete('/cities/:cityId', validateIdParam('cityId'), masterDataController
  *       500:
  *         description: Server Error
  */
-router.post('/companies', validateCreateCompany, masterDataController.createCompany);
+
 
 /**
  * @swagger
@@ -340,7 +339,7 @@ router.post('/companies', validateCreateCompany, masterDataController.createComp
  *       500:
  *         description: Server Error
  */
-router.put('/companies/:companyId', validateIdParam('companyId'), validateUpdateCompany, masterDataController.updateCompany);
+
 
 /**
  * @swagger
@@ -371,7 +370,7 @@ router.put('/companies/:companyId', validateIdParam('companyId'), validateUpdate
  *       500:
  *         description: Server Error
  */
-router.delete('/companies/:companyId', validateIdParam('companyId'), masterDataController.deleteCompany);
+
 
 
 /**

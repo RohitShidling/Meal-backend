@@ -136,6 +136,9 @@ router.get('/', corporateLocationController.getAllLocations);
  *         description: Unauthorized
  */
 router.post('/', corporateLocationController.createLocation);
+router.put('/:id', corporateLocationController.updateLocation);
+router.delete('/:id', corporateLocationController.deleteLocation);
+router.patch('/:id/status', corporateLocationController.updateLocationStatus);
 
 /**
  * @swagger

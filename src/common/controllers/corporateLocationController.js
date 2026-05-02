@@ -11,7 +11,7 @@ exports.getLocations = async (req, res, next) => {
     const isClient = req.user.role === 'client';
     
     let sqlQuery = `
-      SELECT id, name, address, city, state 
+      SELECT id, name, address, city, state, is_active 
       FROM corporate_locations 
     `;
 
