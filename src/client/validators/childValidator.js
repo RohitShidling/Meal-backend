@@ -26,9 +26,14 @@ const validateAddChildren = (req, res, next) => {
 
     if (!name || name.trim().length < 2) {
       errors.push(`Child ${index + 1}: Name is required.`);
+    } else if (/^\d+$/.test(name.trim())) {
+      errors.push(`Child ${index + 1}: Name cannot be just a numerical value.`);
     }
+
     if (!rollNumber || rollNumber.trim().length < 1) {
       errors.push(`Child ${index + 1}: Roll number/Register number is required.`);
+    } else if (!/\d/.test(rollNumber.trim())) {
+      errors.push(`Child ${index + 1}: Roll number must contain at least one numerical digit.`);
     }
     if (!schoolId) {
       errors.push(`Child ${index + 1}: School selection is required.`);
@@ -51,4 +56,38 @@ const validateAddChildren = (req, res, next) => {
   next();
 };
 
-module.exports = { validateAddChildren };
+/**
+ * Validator for updating a child
+ */
+const validateUpdateChild = (req, res, next) => {
+  const { name, rollNumber, schoolId, standardId, mealSizeId, mealTime } = req.body;
+  const errors = [];
+
+  if (name !== undefined) {
+    if (name.trim().length < 2) {
+      errors.push('Name must be at least 2 characters.');
+    } else if (/^\d+$/.test(name.trim())) {
+      errors.push('Name cannot be just a numerical value.');
+    }
+  }
+
+  if (rollNumber !== undefined) {
+    if (rollNumber.trim().length < 1) {
+      errors.push('Roll number/Register number is required.');
+    } else if (!/\d/.test(rollNumber.trim())) {
+      errors.push('Roll number must contain at least one numerical digit.');
+    }
+  }
+
+  if (mealTime !== undefined && !/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(mealTime)) {
+    errors.push('Valid meal time (HH:mm) is required.');
+  }
+
+  if (errors.length > 0) {
+    return next(new AppError('Validation failed.', 400, errors));
+  }
+
+  next();
+};
+
+module.exports = { validateAddChildren, validateUpdateChild };

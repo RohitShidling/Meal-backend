@@ -7,7 +7,9 @@ const {
   validateUpdateState,
   validateUpdateCity,
   validateUpdateCompany,
-  validateUpdateMealSize
+  validateUpdateMealSize,
+  validateCreateStandard,
+  validateUpdateStandard
 } = require('./lookupValidator');
 
 module.exports = {
@@ -19,5 +21,7 @@ module.exports = {
   validateUpdateState,
   validateUpdateCity,
   validateUpdateCompany,
-  validateUpdateMealSize
+  validateUpdateMealSize,
+  validateCreateStandard,
+  validateUpdateStandard
 };

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const professionalController = require('../controllers/professionalController');
 const authMiddleware = require('../../common/middlewares/commonAuthMiddleware');
+const { validateProfessionalProfile } = require('../validators/profileValidator');
 
 /**
  * @swagger
@@ -81,6 +82,7 @@ router.use(authMiddleware);
  *             properties:
  *               name:
  *                 type: string
+ *                 description: Full name of the professional. Cannot be purely numerical.
  *                 example: "John Doe"
  *               company_name:
  *                 type: string
@@ -117,7 +119,7 @@ router.use(authMiddleware);
  *       400:
  *         description: Bad Request (missing fields or invalid location)
  */
-router.post('/profile', professionalController.saveProfessionalProfile);
+router.post('/profile', validateProfessionalProfile, professionalController.saveProfessionalProfile);
 
 /**
  * @swagger
@@ -136,6 +138,7 @@ router.post('/profile', professionalController.saveProfessionalProfile);
  *             properties:
  *               name:
  *                 type: string
+ *                 description: Full name of the professional. Cannot be purely numerical.
  *                 example: "John Doe"
  *               company_name:
  *                 type: string
@@ -170,7 +173,7 @@ router.post('/profile', professionalController.saveProfessionalProfile);
  *                 data:
  *                   $ref: '#/components/schemas/ProfessionalProfile'
  */
-router.put('/profile', professionalController.saveProfessionalProfile);
+router.put('/profile', validateProfessionalProfile, professionalController.saveProfessionalProfile);
 
 /**
  * @swagger
@@ -232,6 +235,8 @@ router.get('/profile', professionalController.getProfessionalProfile);
  *                   example: "Professional profile deleted successfully"
  *                 data:
  *                   $ref: '#/components/schemas/ProfessionalProfile'
+ *       400:
+ *         description: Cannot delete profile due to active subscriptions
  *       404:
  *         description: Profile not found
  */

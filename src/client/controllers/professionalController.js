@@ -120,6 +120,27 @@ exports.deleteProfessionalProfile = async (req, res, next) => {
   try {
     const clientId = (req.user.role === 'admin' && req.query.clientId) ? req.query.clientId : req.user.id;
 
+    const profileRes = await query(`SELECT id FROM professional_profiles WHERE client_id = $1`, [clientId]);
+    if (profileRes.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No professional profile found to delete'
+      });
+    }
+    const profileId = profileRes.rows[0].id;
+
+    const subCheck = await query(
+      `SELECT id FROM client_subscriptions WHERE client_id = $1 AND entity_id = $2 AND entity_type = 'professional' AND is_active = true`,
+      [clientId, profileId]
+    );
+
+    if (subCheck.rows.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete professional profile. Please wait until your active subscription ends.'
+      });
+    }
+
     const deleteQuery = `DELETE FROM professional_profiles WHERE client_id = $1 RETURNING *`;
     const result = await query(deleteQuery, [clientId]);
 

@@ -160,6 +160,41 @@ const deleteMealSize = catchAsync(async (req, res, next) => {
   return res.status(200).json({ success: true, message: 'Meal size deleted successfully.', data: result.rows[0] });
 });
 
+const createStandard = catchAsync(async (req, res, next) => {
+  const name = req.body.name.trim();
+  const displayName = req.body.displayName.trim();
+  const numericValue = req.body.numericValue !== undefined ? Number(req.body.numericValue) : 1;
+  const existing = await db.query('SELECT id FROM standards WHERE LOWER(name) = LOWER($1)', [name]);
+  if (existing.rows.length > 0) return next(new AppError('Standard already exists.', 409));
+  const result = await db.query(
+    `INSERT INTO standards (name, display_name, numeric_value, is_active) VALUES ($1, $2, $3, true) RETURNING id, name, display_name, numeric_value, is_active, created_at`,
+    [name, displayName, numericValue]
+  );
+  return res.status(201).json({ success: true, message: 'Standard created successfully.', data: result.rows[0] });
+});
+
+const updateStandard = catchAsync(async (req, res, next) => {
+  const standardId = Number(req.params.standardId);
+  const { name, displayName, numericValue, isActive } = req.body;
+  if (name !== undefined) {
+    const duplicate = await db.query('SELECT id FROM standards WHERE LOWER(name) = LOWER($1) AND id <> $2', [name.trim(), standardId]);
+    if (duplicate.rows.length > 0) return next(new AppError('Standard already exists.', 409));
+  }
+  const result = await db.query(
+    `UPDATE standards SET name = COALESCE($1, name), display_name = COALESCE($2, display_name), numeric_value = COALESCE($3, numeric_value), is_active = COALESCE($4, is_active) WHERE id = $5 RETURNING id, name, display_name, numeric_value, is_active, created_at`,
+    [name ? name.trim() : null, displayName ? displayName.trim() : null, numericValue !== undefined ? Number(numericValue) : null, isActive ?? null, standardId]
+  );
+  if (result.rows.length === 0) return next(new AppError('Standard not found.', 404));
+  return res.status(200).json({ success: true, message: 'Standard updated successfully.', data: result.rows[0] });
+});
+
+const deleteStandard = catchAsync(async (req, res, next) => {
+  const standardId = Number(req.params.standardId);
+  const result = await db.query('DELETE FROM standards WHERE id = $1 RETURNING id, name', [standardId]);
+  if (result.rows.length === 0) return next(new AppError('Standard not found.', 404));
+  return res.status(200).json({ success: true, message: 'Standard deleted successfully.', data: result.rows[0] });
+});
+
 module.exports = {
   createState,
   updateState,
@@ -172,5 +207,8 @@ module.exports = {
   deleteCompany,
   createMealSize,
   updateMealSize,
-  deleteMealSize
+  deleteMealSize,
+  createStandard,
+  updateStandard,
+  deleteStandard
 };

@@ -13,6 +13,44 @@ const adminAuth = require('../middlewares/authMiddleware');
 /**
  * @swagger
  * /api/admin/homepage:
+ *   get:
+ *     summary: Get all homepage section entries (Admin)
+ *     description: Returns both active and inactive homepage sections for all entities or a specific entity.
+ *     tags: [Admin - Homepage]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: entity_id
+ *         schema:
+ *           type: string
+ *         description: Filter by entity ID
+ *     responses:
+ *       200:
+ *         description: List of all homepage sections
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 count: { type: integer, example: 5 }
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id: { type: string, example: "HP-1" }
+ *                       entity_id: { type: string, example: "ENT-1" }
+ *                       entity_name: { type: string, example: "Children" }
+ *                       name: { type: string, example: "Welcome Section" }
+ *                       description: { type: string, example: "Main welcome banner." }
+ *                       display_order: { type: integer, example: 1 }
+ *                       is_active: { type: boolean, example: true }
+ *                       created_at: { type: string, format: date-time }
+ *                       updated_at: { type: string, format: date-time }
+ *       401:
+ *         description: Unauthorized
  *   post:
  *     summary: Create a new homepage section entry
  *     tags: [Admin - Homepage]
@@ -24,8 +62,11 @@ const adminAuth = require('../middlewares/authMiddleware');
  *         application/json:
  *           schema:
  *             type: object
- *             required: [name, description, display_order]
+ *             required: [entity_id, name, description, display_order]
  *             properties:
+ *               entity_id:
+ *                 type: string
+ *                 example: "ENT-1"
  *               name:
  *                 type: string
  *                 example: "Welcome Section"
@@ -49,6 +90,7 @@ const adminAuth = require('../middlewares/authMiddleware');
  *                   type: object
  *                   properties:
  *                     id: { type: string, example: "HP-1" }
+ *                     entity_id: { type: string, example: "ENT-1" }
  *                     name: { type: string, example: "Welcome Section" }
  *                     description: { type: string, example: "Main welcome banner." }
  *                     display_order: { type: integer, example: 1 }
@@ -66,6 +108,7 @@ const adminAuth = require('../middlewares/authMiddleware');
  *       401:
  *         description: Unauthorized
  */
+router.get('/', adminAuth, homepageController.getHomepages);
 router.post('/', adminAuth, homepageController.createHomepage);
 
 /**
@@ -89,6 +132,7 @@ router.post('/', adminAuth, homepageController.createHomepage);
  *           schema:
  *             type: object
  *             properties:
+ *               entity_id: { type: string, example: "ENT-1" }
  *               name: { type: string, example: "Updated Welcome Section" }
  *               description: { type: string, example: "Updated description." }
  *               display_order: { type: integer, example: 2 }
@@ -107,6 +151,7 @@ router.post('/', adminAuth, homepageController.createHomepage);
  *                   type: object
  *                   properties:
  *                     id: { type: string, example: "HP-1" }
+ *                     entity_id: { type: string, example: "ENT-1" }
  *                     name: { type: string, example: "Updated Welcome Section" }
  *                     description: { type: string, example: "Updated description." }
  *                     display_order: { type: integer, example: 2 }

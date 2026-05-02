@@ -3,6 +3,7 @@ const router = express.Router();
 const teacherController = require('../controllers/teacherController');
 const clientAuthMiddleware = require('../middlewares/authMiddleware');
 const commonAuthMiddleware = require('../../common/middlewares/commonAuthMiddleware');
+const { validateTeacherProfile } = require('../validators/profileValidator');
 
 /**
  * @swagger
@@ -69,6 +70,7 @@ const commonAuthMiddleware = require('../../common/middlewares/commonAuthMiddlew
  *             properties:
  *               name:
  *                 type: string
+ *                 description: Full name of the teacher. Cannot be purely numerical.
  *                 example: "Mrs. Sarah Smith"
  *               school_college_name:
  *                 type: string
@@ -103,7 +105,7 @@ const commonAuthMiddleware = require('../../common/middlewares/commonAuthMiddlew
  *       401:
  *         description: Unauthorized
  */
-router.post('/profile', clientAuthMiddleware, teacherController.saveTeacherProfile);
+router.post('/profile', clientAuthMiddleware, validateTeacherProfile, teacherController.saveTeacherProfile);
 
 /**
  * @swagger
@@ -122,6 +124,7 @@ router.post('/profile', clientAuthMiddleware, teacherController.saveTeacherProfi
  *             properties:
  *               name:
  *                 type: string
+ *                 description: Full name of the teacher. Cannot be purely numerical.
  *                 example: "Mrs. Sarah Smith"
  *               school_college_name:
  *                 type: string
@@ -152,7 +155,7 @@ router.post('/profile', clientAuthMiddleware, teacherController.saveTeacherProfi
  *                 data:
  *                   $ref: '#/components/schemas/TeacherProfile'
  */
-router.put('/profile', clientAuthMiddleware, teacherController.saveTeacherProfile);
+router.put('/profile', clientAuthMiddleware, validateTeacherProfile, teacherController.saveTeacherProfile);
 
 /**
  * @swagger
@@ -214,6 +217,8 @@ router.get('/profile', commonAuthMiddleware, teacherController.getTeacherProfile
  *                   example: "Teacher profile deleted successfully"
  *                 data:
  *                   $ref: '#/components/schemas/TeacherProfile'
+ *       400:
+ *         description: Cannot delete profile due to active subscriptions
  *       404:
  *         description: Profile not found
  */

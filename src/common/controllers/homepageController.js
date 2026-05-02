@@ -8,13 +8,28 @@ const AppError = require('../utils/AppError');
  */
 exports.getHomepage = async (req, res, next) => {
   try {
-    const query = `
-      SELECT id, name, description, display_order, is_active, created_at, updated_at
+    const { entity_id } = req.query;
+
+    let query = `
+      SELECT id, entity_id, name, description, display_order, is_active, created_at, updated_at
       FROM homepages
       WHERE is_active = true
-      ORDER BY display_order ASC;
     `;
-    const result = await pool.query(query);
+    const params = [];
+
+    if (entity_id) {
+      // Validate entity_id
+      const checkEntity = await pool.query('SELECT id FROM entities WHERE id = $1 AND is_active = true', [entity_id]);
+      if (checkEntity.rows.length === 0) {
+        return next(new AppError('Invalid or inactive entity selected.', 400));
+      }
+      query += ` AND entity_id = $1`;
+      params.push(entity_id);
+    }
+
+    query += ` ORDER BY display_order ASC;`;
+
+    const result = await pool.query(query, params);
 
     res.status(200).json({
       success: true,
@@ -34,20 +49,33 @@ exports.getHomepage = async (req, res, next) => {
 exports.getHomepageByOrder = async (req, res, next) => {
   try {
     const { order } = req.params;
+    const { entity_id } = req.query;
 
     if (isNaN(order)) {
       return next(new AppError('Invalid display order.', 400));
     }
 
-    const query = `
-      SELECT id, name, description, display_order, is_active, created_at, updated_at
+    let query = `
+      SELECT id, entity_id, name, description, display_order, is_active, created_at, updated_at
       FROM homepages
-      WHERE is_active = true AND display_order = $1;
+      WHERE is_active = true AND display_order = $1
     `;
-    const result = await pool.query(query, [parseInt(order, 10)]);
+    const params = [parseInt(order, 10)];
+
+    if (entity_id) {
+      // Validate entity_id
+      const checkEntity = await pool.query('SELECT id FROM entities WHERE id = $1 AND is_active = true', [entity_id]);
+      if (checkEntity.rows.length === 0) {
+        return next(new AppError('Invalid or inactive entity selected.', 400));
+      }
+      query += ` AND entity_id = $2`;
+      params.push(entity_id);
+    }
+
+    const result = await pool.query(query, params);
 
     if (result.rowCount === 0) {
-      return next(new AppError(`No homepage entry found for order ${order}.`, 404));
+      return next(new AppError(`No homepage entry found for order ${order}${entity_id ? ' for the specified entity' : ''}.`, 404));
     }
 
     res.status(200).json({

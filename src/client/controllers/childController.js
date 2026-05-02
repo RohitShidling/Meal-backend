@@ -161,6 +161,15 @@ const deleteChild = catchAsync(async (req, res, next) => {
   const { childId } = req.params;
   const clientId = req.user.id;
 
+  const subCheck = await db.query(
+    `SELECT id FROM client_subscriptions WHERE client_id = $1 AND entity_id = $2 AND entity_type = 'child' AND is_active = true`,
+    [clientId, childId]
+  );
+
+  if (subCheck.rows.length > 0) {
+    return next(new AppError('Cannot delete child profile. Please wait until the active subscription ends.', 400));
+  }
+
   const result = await db.query(
     'DELETE FROM children WHERE id = $1 AND parent_id = $2 RETURNING *',
     [childId, clientId]

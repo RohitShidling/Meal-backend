@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const clientAuthMiddleware = require('../middlewares/authMiddleware');
 const { addChildren, getMyChildren, updateChild, deleteChild } = require('../controllers/childController');
-const { validateAddChildren } = require('../validators/childValidator');
+const { validateAddChildren, validateUpdateChild } = require('../validators/childValidator');
 
 // All child routes require client JWT
 router.use(clientAuthMiddleware);
@@ -77,9 +77,11 @@ router.use(clientAuthMiddleware);
  *             properties:
  *               name:
  *                 type: string
+ *                 description: Full name of the child. Cannot be purely numerical.
  *                 example: "Rahul Kumar"
  *               rollNumber:
  *                 type: string
+ *                 description: Student roll number or register number. Must contain at least one numerical digit.
  *                 example: "STU12345"
  *               schoolId:
  *                 type: string
@@ -195,9 +197,11 @@ router.get('/', getMyChildren);
  *             properties:
  *               name:
  *                 type: string
+ *                 description: Full name of the child. Cannot be purely numerical.
  *                 example: "Rahul Kumar"
  *               rollNumber:
  *                 type: string
+ *                 description: Student roll number or register number. Must contain at least one numerical digit.
  *                 example: "STU12345"
  *               schoolId:
  *                 type: string
@@ -230,7 +234,7 @@ router.get('/', getMyChildren);
  *       404:
  *         description: Child not found or unauthorized
  */
-router.put('/:childId', updateChild);
+router.put('/:childId', validateUpdateChild, updateChild);
 
 /**
  * @swagger
@@ -263,6 +267,8 @@ router.put('/:childId', updateChild);
  *                   example: "Child deleted successfully."
  *                 data:
  *                   $ref: '#/components/schemas/Child'
+ *       400:
+ *         description: Cannot delete child profile due to active subscriptions
  *       404:
  *         description: Child not found or unauthorized
  */

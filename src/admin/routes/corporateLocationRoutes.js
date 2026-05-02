@@ -15,6 +15,44 @@ router.use(adminAuthMiddleware);
 /**
  * @swagger
  * /api/admin/corporate-locations:
+ *   get:
+ *     summary: Get all corporate delivery locations (active and inactive)
+ *     tags: [Admin Corporate Locations]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of all corporate locations fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 count:
+ *                   type: integer
+ *                   example: 5
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id: { type: string, example: "CL-1" }
+ *                       name: { type: string, example: "Main Tech Hub" }
+ *                       address: { type: string, example: "123 Business Park" }
+ *                       city: { type: string, example: "Bangalore" }
+ *                       state: { type: string, example: "Karnataka" }
+ *                       is_active: { type: boolean, example: true }
+ *                       created_by_name: { type: string, example: "admin_user" }
+ *                       created_at: { type: string, format: date-time }
+ */
+router.get('/', corporateLocationController.getAllLocations);
+
+/**
+ * @swagger
+ * /api/admin/corporate-locations:
  *   post:
  *     summary: Create a new corporate delivery location
  *     tags: [Admin Corporate Locations]
@@ -101,5 +139,79 @@ router.post('/', corporateLocationController.createLocation);
 router.put('/:id', corporateLocationController.updateLocation);
 router.delete('/:id', corporateLocationController.deleteLocation);
 router.patch('/:id/status', corporateLocationController.updateLocationStatus);
+
+/**
+ * @swagger
+ * /api/admin/corporate-locations/{id}:
+ *   put:
+ *     summary: Update an existing corporate delivery location
+ *     tags: [Admin Corporate Locations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: The corporate location ID (e.g., CL-1)
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: "Updated Tech Hub"
+ *               address:
+ *                 type: string
+ *                 example: "456 New Plaza, Tech Park"
+ *               city:
+ *                 type: string
+ *                 example: "Bangalore"
+ *               state:
+ *                 type: string
+ *                 example: "Karnataka"
+ *               is_active:
+ *                 type: boolean
+ *                 example: false
+ *     responses:
+ *       200:
+ *         description: Location updated successfully
+ *       404:
+ *         description: Location not found
+ *       401:
+ *         description: Unauthorized
+ */
+router.put('/:id', corporateLocationController.updateLocation);
+
+/**
+ * @swagger
+ * /api/admin/corporate-locations/{id}:
+ *   delete:
+ *     summary: Delete a corporate delivery location
+ *     tags: [Admin Corporate Locations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: The corporate location ID to delete
+ *     responses:
+ *       200:
+ *         description: Location deleted successfully
+ *       400:
+ *         description: Bad Request (location in use)
+ *       404:
+ *         description: Location not found
+ *       401:
+ *         description: Unauthorized
+ */
+router.delete('/:id', corporateLocationController.deleteLocation);
 
 module.exports = router;
