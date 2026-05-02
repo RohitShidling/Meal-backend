@@ -21,7 +21,13 @@ exports.createHomepage = async (req, res, next) => {
       return next(new AppError('Invalid entity_id.', 400));
     }
 
-    // Validation: Check if display_order already exists for this entity
+    // Validation: Check if a homepage entry already exists for this entity
+    const checkEntityExists = await pool.query('SELECT id FROM homepages WHERE entity_id = $1', [entity_id]);
+    if (checkEntityExists.rows.length > 0) {
+      return next(new AppError('A homepage entry already exists for this entity. Please update the existing entry instead.', 400));
+    }
+
+    // Validation: Check if display_order already exists for this entity (though with the above check, this is now redundant but kept for safety if multi-section is ever re-enabled)
     const checkQuery = 'SELECT id FROM homepages WHERE entity_id = $1 AND display_order = $2';
     const checkResult = await pool.query(checkQuery, [entity_id, display_order]);
 
@@ -72,6 +78,14 @@ exports.updateHomepage = async (req, res, next) => {
       const checkEntity = await pool.query('SELECT id FROM entities WHERE id = $1', [entity_id]);
       if (checkEntity.rows.length === 0) {
         return next(new AppError('Invalid entity_id.', 400));
+      }
+    }
+
+    // Validation: Check if another homepage entry already exists for the target entity (if changing entity)
+    if (entity_id && entity_id !== currentEntry.entity_id) {
+      const checkOtherEntityResult = await pool.query('SELECT id FROM homepages WHERE entity_id = $1 AND id != $2', [entity_id, id]);
+      if (checkOtherEntityResult.rows.length > 0) {
+        return next(new AppError('A homepage entry already exists for this entity. Please update that entry instead.', 400));
       }
     }
 

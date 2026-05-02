@@ -61,6 +61,9 @@ router.get('/', adminAuth, entityController.getAllEntities);
  *               name:
  *                 type: string
  *                 example: "child"
+ *               is_active:
+ *                 type: boolean
+ *                 example: true
  *     responses:
  *       201:
  *         description: Entity created successfully

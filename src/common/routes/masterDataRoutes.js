@@ -96,5 +96,32 @@ router.get('/cities', getCities);
  *         description: Server Error
  */
 router.get('/companies', getCompanies);
+const { getMealSizes, getStandards } = require('../controllers/lookupController');
+
+/**
+ * @swagger
+ * /api/common/lookup/meal-sizes:
+ *   get:
+ *     summary: Get active meal sizes
+ *     tags: [Common Master Data]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get('/meal-sizes', getMealSizes);
+
+/**
+ * @swagger
+ * /api/common/lookup/standards:
+ *   get:
+ *     summary: Get active standards
+ *     tags: [Common Master Data]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get('/standards', getStandards);
 
 module.exports = router;

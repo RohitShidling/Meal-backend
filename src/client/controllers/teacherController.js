@@ -106,6 +106,27 @@ exports.deleteTeacherProfile = async (req, res, next) => {
   try {
     const clientId = (req.user.role === 'admin' && req.query.clientId) ? req.query.clientId : req.user.id;
 
+    const profileRes = await query(`SELECT id FROM teacher_profiles WHERE client_id = $1`, [clientId]);
+    if (profileRes.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No teacher profile found to delete'
+      });
+    }
+    const profileId = profileRes.rows[0].id;
+
+    const subCheck = await query(
+      `SELECT id FROM client_subscriptions WHERE client_id = $1 AND entity_id = $2 AND entity_type = 'teacher' AND is_active = true`,
+      [clientId, profileId]
+    );
+
+    if (subCheck.rows.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete teacher profile. Please wait until your active subscription ends.'
+      });
+    }
+
     const deleteQuery = `DELETE FROM teacher_profiles WHERE client_id = $1 RETURNING *`;
     const result = await query(deleteQuery, [clientId]);
 

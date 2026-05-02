@@ -11,6 +11,7 @@ const { swaggerUi, specs } = require('./docs/swagger');
 // Import routes
 const clientAuthRoutes = require('./client/routes/authRoutes');
 const clientChildRoutes = require('./client/routes/childRoutes');
+const clientSchoolRoutes = require('./client/routes/schoolRoutes');
 const adminAuthRoutes = require('./admin/routes/authRoutes');
 const adminSchoolRoutes = require('./admin/routes/schoolRoutes');
 const adminMasterDataRoutes = require('./admin/routes/masterDataRoutes');
@@ -85,6 +86,7 @@ app.get('/', (req, res) => {
 // Routes Mounting
 app.use('/api/client/auth', clientAuthRoutes);
 app.use('/api/client/children', clientChildRoutes);
+app.use('/api/client/schools', clientSchoolRoutes);
 app.use('/api/admin/auth', adminAuthRoutes);
 app.use('/api/common', commonRoutes);
 app.use('/api/admin/schools', adminSchoolRoutes);
@@ -179,13 +181,13 @@ app.get('/health', (req,res)=>{
 
 // Graceful Shutdown (Industrial Standard)
 const gracefulShutdown = () => {
-  console.log('\n🔄 Received kill signal, shutting down gracefully...');
+  console.log('\nReceived kill signal, shutting down gracefully...');
   server.close(() => {
-    console.log('🛑 Closed out remaining HTTP connections.');
+    console.log('Closed out remaining HTTP connections.');
     const { pool } = require('./common/database');
     if (pool) {
       pool.end(() => {
-        console.log('🔌 PostgreSQL pool has ended.');
+        console.log('PostgreSQL pool has ended.');
         process.exit(0);
       });
     } else {
@@ -195,7 +197,7 @@ const gracefulShutdown = () => {
 
   // Force close if it takes too long (e.g., 10 seconds)
   setTimeout(() => {
-    console.error('🚨 Could not close connections in time, forcefully shutting down');
+    console.error('Could not close connections in time, forcefully shutting down');
     process.exit(1);
   }, 10000);
 };

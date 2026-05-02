@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const parentController = require('../controllers/parentController');
 const authMiddleware = require('../../common/middlewares/commonAuthMiddleware');
+const { validateParentProfile } = require('../validators/profileValidator');
 
 /**
  * @swagger
@@ -55,6 +56,7 @@ router.use(authMiddleware);
  *             properties:
  *               name:
  *                 type: string
+ *                 description: Full name of the parent. Cannot be purely numerical.
  *                 example: "Jane Doe"
  *     responses:
  *       200:
@@ -73,7 +75,7 @@ router.use(authMiddleware);
  *                 data:
  *                   $ref: '#/components/schemas/ParentProfile'
  */
-router.post('/profile', parentController.saveParentProfile);
+router.post('/profile', validateParentProfile, parentController.saveParentProfile);
 
 /**
  * @swagger
@@ -92,6 +94,7 @@ router.post('/profile', parentController.saveParentProfile);
  *             properties:
  *               name:
  *                 type: string
+ *                 description: Full name of the parent. Cannot be purely numerical.
  *                 example: "Jane Doe"
  *     responses:
  *       200:
@@ -110,7 +113,7 @@ router.post('/profile', parentController.saveParentProfile);
  *                 data:
  *                   $ref: '#/components/schemas/ParentProfile'
  */
-router.put('/profile', parentController.saveParentProfile);
+router.put('/profile', validateParentProfile, parentController.saveParentProfile);
 
 /**
  * @swagger
@@ -172,6 +175,10 @@ router.get('/profile', parentController.getParentProfile);
  *                   example: "Parent profile deleted successfully"
  *                 data:
  *                   $ref: '#/components/schemas/ParentProfile'
+ *       400:
+ *         description: Cannot delete profile due to active subscriptions
+ *       404:
+ *         description: Profile not found
  */
 router.delete('/profile', parentController.deleteParentProfile);
 

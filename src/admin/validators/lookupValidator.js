@@ -120,14 +120,50 @@ const validateUpdateMealSize = (req, res, next) => {
   next();
 };
 
+const validateCreateStandard = (req, res, next) => {
+  const { name, displayName, numericValue } = req.body;
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return next(new AppError('Validation failed.', 400, ['name is required.']));
+  }
+  if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
+    return next(new AppError('Validation failed.', 400, ['displayName is required.']));
+  }
+  if (numericValue !== undefined && Number.isNaN(Number(numericValue))) {
+    return next(new AppError('Validation failed.', 400, ['numericValue must be a number when provided.']));
+  }
+  next();
+};
+
+const validateUpdateStandard = (req, res, next) => {
+  const { name, displayName, numericValue, isActive } = req.body;
+  if (name === undefined && displayName === undefined && numericValue === undefined && isActive === undefined) {
+    return next(new AppError('Validation failed.', 400, ['At least one field (name, displayName, numericValue, isActive) is required.']));
+  }
+  if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
+    return next(new AppError('Validation failed.', 400, ['name must be a non-empty string.']));
+  }
+  if (displayName !== undefined && (typeof displayName !== 'string' || !displayName.trim())) {
+    return next(new AppError('Validation failed.', 400, ['displayName must be a non-empty string.']));
+  }
+  if (numericValue !== undefined && Number.isNaN(Number(numericValue))) {
+    return next(new AppError('Validation failed.', 400, ['numericValue must be a number.']));
+  }
+  if (isActive !== undefined && typeof isActive !== 'boolean') {
+    return next(new AppError('Validation failed.', 400, ['isActive must be boolean.']));
+  }
+  next();
+};
+
 module.exports = {
   validateCreateState,
   validateCreateCity,
   validateCreateCompany,
   validateCreateMealSize,
+  validateCreateStandard,
   validateIdParam,
   validateUpdateState,
   validateUpdateCity,
   validateUpdateCompany,
-  validateUpdateMealSize
+  validateUpdateMealSize,
+  validateUpdateStandard
 };

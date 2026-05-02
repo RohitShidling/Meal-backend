@@ -32,13 +32,16 @@ exports.getAllEntities = async (req, res, next) => {
  */
 exports.createEntity = async (req, res, next) => {
   try {
-    let { name } = req.body;
+    let { name, is_active } = req.body;
     const adminId = req.user.id;
 
     if (!name || typeof name !== 'string' || name.trim() === '') {
       return next(new AppError('Please provide a valid entity name.', 400));
     }
     
+    // Default is_active to true if not provided
+    if (is_active === undefined) is_active = true;
+
     // Convert name to lowercase and trim
     name = name.toLowerCase().trim();
 
@@ -50,11 +53,11 @@ exports.createEntity = async (req, res, next) => {
     }
 
     const insertQuery = `
-      INSERT INTO entities (name, created_by, updated_by)
-      VALUES ($1, $2, $2)
+      INSERT INTO entities (name, is_active, created_by, updated_by)
+      VALUES ($1, $2, $3, $3)
       RETURNING id, name, is_active, created_at;
     `;
-    const result = await pool.query(insertQuery, [name, adminId]);
+    const result = await pool.query(insertQuery, [name, is_active, adminId]);
 
     res.status(201).json({
       success: true,

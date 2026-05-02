@@ -11,7 +11,9 @@ const {
   validateUpdateState,
   validateUpdateCity,
   validateUpdateCompany,
-  validateUpdateMealSize
+  validateUpdateMealSize,
+  validateCreateStandard,
+  validateUpdateStandard
 } = require('../validators/masterDataValidator');
 
 /**
@@ -494,5 +496,86 @@ router.put('/meal-sizes/:mealSizeId', validateIdParam('mealSizeId'), validateUpd
  */
 router.delete('/meal-sizes/:mealSizeId', validateIdParam('mealSizeId'), masterDataController.deleteMealSize);
 
+/**
+ * @swagger
+ * /api/admin/lookup/standards:
+ *   post:
+ *     summary: Create standard
+ *     tags: [Admin Master Data]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [name, displayName]
+ *             properties:
+ *               name:
+ *                 type: string
+ *               displayName:
+ *                 type: string
+ *               numericValue:
+ *                 type: integer
+ *               isActive:
+ *                 type: boolean
+ *     responses:
+ *       201:
+ *         description: Success
+ */
+router.post('/standards', validateCreateStandard, masterDataController.createStandard);
+
+/**
+ * @swagger
+ * /api/admin/lookup/standards/{standardId}:
+ *   put:
+ *     summary: Update standard
+ *     tags: [Admin Master Data]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: standardId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               displayName:
+ *                 type: string
+ *               numericValue:
+ *                 type: integer
+ *               isActive:
+ *                 type: boolean
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.put('/standards/:standardId', validateIdParam('standardId'), validateUpdateStandard, masterDataController.updateStandard);
+
+/**
+ * @swagger
+ * /api/admin/lookup/standards/{standardId}:
+ *   delete:
+ *     summary: Delete standard
+ *     tags: [Admin Master Data]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: standardId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.delete('/standards/:standardId', validateIdParam('standardId'), masterDataController.deleteStandard);
 
 module.exports = router;

@@ -372,7 +372,7 @@ const initDB = async () => {
       updated_by      INTEGER REFERENCES admins(id) ON DELETE SET NULL,
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(entity_id, display_order)
+      UNIQUE(entity_id)
     );
   `;
 
@@ -539,12 +539,10 @@ const initDB = async () => {
     // Migration: Add entity_id to homepages and handle unique constraints
     await pool.query(`ALTER TABLE homepages ADD COLUMN IF NOT EXISTS entity_id VARCHAR(20) REFERENCES entities(id);`);
     try {
-      // Try to drop old constraint if it exists
-      await pool.query(`ALTER TABLE homepages DROP CONSTRAINT IF EXISTS homepages_display_order_key;`);
-      // Add new constraint
-      await pool.query(`ALTER TABLE homepages ADD CONSTRAINT homepages_entity_id_display_order_key UNIQUE(entity_id, display_order);`);
+      // Add new constraint: Ensure only one homepage entry per entity
+      await pool.query(`ALTER TABLE homepages ADD CONSTRAINT homepages_entity_id_key UNIQUE(entity_id);`);
     } catch(e) {
-      // Ignore if constraint already dropped or added
+      // Ignore if constraint already added
     }
 
     // Migration: Force CH- prefix for children and set as default for existing tables

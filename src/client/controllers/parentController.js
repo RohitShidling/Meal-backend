@@ -86,6 +86,18 @@ exports.deleteParentProfile = async (req, res, next) => {
   try {
     const clientId = (req.user.role === 'admin' && req.query.clientId) ? req.query.clientId : req.user.id;
 
+    const subCheck = await query(
+      `SELECT id FROM client_subscriptions WHERE client_id = $1 AND is_active = true`,
+      [clientId]
+    );
+
+    if (subCheck.rows.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete parent profile. Please wait until all active subscriptions for your children end.'
+      });
+    }
+
     const deleteQuery = `DELETE FROM parent_profiles WHERE client_id = $1 RETURNING *`;
     const result = await query(deleteQuery, [clientId]);
 
