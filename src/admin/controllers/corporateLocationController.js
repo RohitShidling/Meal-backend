@@ -148,3 +148,40 @@ exports.deleteLocation = async (req, res, next) => {
     next(new AppError(error.message || 'Error deleting corporate location', 500));
   }
 };
+
+/**
+ * @desc    Toggle corporate location status (active/inactive)
+ * @route   PATCH /api/admin/corporate-locations/:id/status
+ * @access  Private (Admin only)
+ */
+exports.updateLocationStatus = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { is_active } = req.body;
+
+    if (is_active === undefined) {
+      return next(new AppError('is_active status is required', 400));
+    }
+
+    const updateQuery = `
+      UPDATE corporate_locations
+      SET is_active = $1, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $2
+      RETURNING *;
+    `;
+    const result = await query(updateQuery, [is_active, id]);
+
+    if (result.rows.length === 0) {
+      return next(new AppError('Corporate location not found', 404));
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Corporate location ${is_active ? 'activated' : 'deactivated'} successfully`,
+      data: result.rows[0],
+    });
+  } catch (error) {
+    next(new AppError(error.message || 'Error updating location status', 500));
+  }
+};
+

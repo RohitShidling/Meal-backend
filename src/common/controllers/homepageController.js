@@ -11,9 +11,10 @@ exports.getHomepage = async (req, res, next) => {
     const { entity_id } = req.query;
 
     let query = `
-      SELECT id, entity_id, name, description, display_order, is_active, created_at, updated_at
-      FROM homepages
-      WHERE is_active = true
+      SELECT h.id, h.entity_id, e.name as entity_name, h.name, h.description, h.display_order, h.is_active, h.created_at, h.updated_at
+      FROM homepages h
+      LEFT JOIN entities e ON h.entity_id = e.id
+      WHERE h.is_active = true
     `;
     const params = [];
 
@@ -23,11 +24,11 @@ exports.getHomepage = async (req, res, next) => {
       if (checkEntity.rows.length === 0) {
         return next(new AppError('Invalid or inactive entity selected.', 400));
       }
-      query += ` AND entity_id = $1`;
+      query += ` AND h.entity_id = $1`;
       params.push(entity_id);
     }
 
-    query += ` ORDER BY display_order ASC;`;
+    query += ` ORDER BY h.display_order ASC;`;
 
     const result = await pool.query(query, params);
 
@@ -56,9 +57,10 @@ exports.getHomepageByOrder = async (req, res, next) => {
     }
 
     let query = `
-      SELECT id, entity_id, name, description, display_order, is_active, created_at, updated_at
-      FROM homepages
-      WHERE is_active = true AND display_order = $1
+      SELECT h.id, h.entity_id, e.name as entity_name, h.name, h.description, h.display_order, h.is_active, h.created_at, h.updated_at
+      FROM homepages h
+      LEFT JOIN entities e ON h.entity_id = e.id
+      WHERE h.is_active = true AND h.display_order = $1
     `;
     const params = [parseInt(order, 10)];
 
@@ -68,7 +70,7 @@ exports.getHomepageByOrder = async (req, res, next) => {
       if (checkEntity.rows.length === 0) {
         return next(new AppError('Invalid or inactive entity selected.', 400));
       }
-      query += ` AND entity_id = $2`;
+      query += ` AND h.entity_id = $2`;
       params.push(entity_id);
     }
 
