@@ -28,23 +28,38 @@ const validateEntityOwnership = async (entityType, entityId, clientId) => {
  * Core function: finalize ONE subscription after successful payment
  */
 const activateSingleSubscription = async (clientId, subscriptionId, entityType, entityId, orderId, requestedStartDate) => {
-  const subRes = await db.query('SELECT billing_cycle FROM subscriptions WHERE id=$1', [subscriptionId]);
-  const billingCycle = subRes.rows[0].billing_cycle.toLowerCase();
+  const subRes = await db.query('SELECT billing_cycle, trial_days FROM subscriptions WHERE id=$1', [subscriptionId]);
+  const subscription = subRes.rows[0];
+  const billingCycle = (subscription.billing_cycle || '').toLowerCase();
+  const trialDays = subscription.trial_days;
 
-  // Calculate total meal days from billing cycle
+  // Calculate total meal days
   let totalMeals = 30; // default
-  if (billingCycle.includes('month')) totalMeals = 30;
-  else if (billingCycle.includes('quarter')) totalMeals = 90;
-  else if (billingCycle.includes('year')) totalMeals = 365;
-  else if (billingCycle.includes('week')) totalMeals = 7;
+  if (trialDays && trialDays > 0) {
+    totalMeals = trialDays;
+  } else if (billingCycle.includes('month')) {
+    totalMeals = 30;
+  } else if (billingCycle.includes('quarter')) {
+    totalMeals = 90;
+  } else if (billingCycle.includes('year')) {
+    totalMeals = 365;
+  } else if (billingCycle.includes('week')) {
+    totalMeals = 7;
+  }
 
   const existingSub = await db.query(
-    'SELECT end_date, total_meals, used_meals FROM client_subscriptions WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true',
+    `SELECT cs.end_date, cs.total_meals, cs.used_meals
+     FROM client_subscriptions cs
+     JOIN orders o ON cs.order_id = o.id
+     WHERE cs.client_id=$1 AND cs.entity_id=$2 AND cs.entity_type=$3
+       AND cs.is_active=true
+       AND o.status='completed'`,
     [clientId, entityId, entityType]
   );
 
   let baseDate = requestedStartDate ? new Date(requestedStartDate) : new Date();
   let carryOverMeals = 0;
+  let currentUsedMeals = 0;
   if (existingSub.rows.length > 0 && new Date(existingSub.rows[0].end_date) > new Date()) {
     const currentEnd = new Date(existingSub.rows[0].end_date);
     // If existing subscription is still active and ends after requested start date, extend from current end
@@ -54,26 +69,35 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
     // Carry over UNUSED meals: remaining = total - used
     const oldTotal = existingSub.rows[0].total_meals || 0;
     const oldUsed = existingSub.rows[0].used_meals || 0;
+    currentUsedMeals = oldUsed;
     carryOverMeals = Math.max(0, oldTotal - oldUsed);
   }
 
   let endDate = new Date(baseDate);
-  if (billingCycle.includes('month')) endDate.setMonth(endDate.getMonth() + 1);
-  else if (billingCycle.includes('quarter')) endDate.setMonth(endDate.getMonth() + 3);
-  else if (billingCycle.includes('year')) endDate.setFullYear(endDate.getFullYear() + 1);
-  else if (billingCycle.includes('week')) endDate.setDate(endDate.getDate() + 7);
-  else endDate.setDate(endDate.getDate() + 30);
+  if (trialDays && trialDays > 0) {
+    endDate.setDate(endDate.getDate() + trialDays);
+  } else if (billingCycle.includes('month')) {
+    endDate.setMonth(endDate.getMonth() + 1);
+  } else if (billingCycle.includes('quarter')) {
+    endDate.setMonth(endDate.getMonth() + 3);
+  } else if (billingCycle.includes('year')) {
+    endDate.setFullYear(endDate.getFullYear() + 1);
+  } else if (billingCycle.includes('week')) {
+    endDate.setDate(endDate.getDate() + 7);
+  } else {
+    endDate.setDate(endDate.getDate() + 30);
+  }
 
   const finalTotalMeals = totalMeals + carryOverMeals;
 
   await db.query(
     `INSERT INTO client_subscriptions (client_id,subscription_id,entity_type,entity_id,start_date,end_date,order_id,is_active,total_meals,used_meals)
-     VALUES ($1,$2,$3,$4,$8,$5,$6,true,$7,0)
+     VALUES ($1,$2,$3,$4,$8,$5,$6,true,$7,$9)
      ON CONFLICT (client_id,entity_id,entity_type) DO UPDATE SET
        start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date, subscription_id=EXCLUDED.subscription_id,
        order_id=EXCLUDED.order_id, is_active=true, updated_at=NOW(),
-       total_meals=EXCLUDED.total_meals, used_meals=0`,
-    [clientId, subscriptionId, entityType, entityId, endDate, orderId, finalTotalMeals, baseDate]
+       total_meals=EXCLUDED.total_meals, used_meals=EXCLUDED.used_meals`,
+    [clientId, subscriptionId, entityType, entityId, endDate, orderId, finalTotalMeals, baseDate, currentUsedMeals]
   );
 };
 
