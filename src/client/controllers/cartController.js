@@ -117,6 +117,56 @@ exports.addToCart = catchAsync(async (req, res, next) => {
 });
 
 /**
+ * @desc  Update cart item start date (before checkout)
+ * @route PATCH /api/client/cart/item/:itemId
+ */
+exports.updateCartItem = catchAsync(async (req, res, next) => {
+  const clientId = req.user.id;
+  const itemId = parseInt(req.params.itemId, 10);
+  const { startDate } = req.body;
+
+  if (!Number.isFinite(itemId)) {
+    return next(new AppError('Invalid cart item id', 400));
+  }
+  if (!startDate) {
+    return next(new AppError('startDate is required', 400));
+  }
+
+  const effectiveStartDate = new Date(startDate);
+  if (isNaN(effectiveStartDate.getTime())) {
+    return next(new AppError('Invalid startDate format', 400));
+  }
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (effectiveStartDate < today) {
+    return next(new AppError('startDate cannot be in the past', 400));
+  }
+
+  const item = await db.query(
+    'SELECT ci.* FROM cart_items ci JOIN carts c ON ci.cart_id=c.id WHERE ci.id=$1 AND c.client_id=$2 AND c.status=\'active\'',
+    [itemId, clientId]
+  );
+  if (item.rows.length === 0) return next(new AppError('Cart item not found', 404));
+
+  const cartId = item.rows[0].cart_id;
+  const dateStr = effectiveStartDate.toISOString().split('T')[0];
+
+  await db.query('UPDATE cart_items SET start_date=$1 WHERE id=$2', [dateStr, itemId]);
+
+  const items = await db.query(
+    'SELECT ci.*, s.plan_name, s.billing_cycle FROM cart_items ci JOIN subscriptions s ON ci.subscription_id=s.id WHERE ci.cart_id=$1 ORDER BY ci.created_at ASC',
+    [cartId]
+  );
+  const cart = await db.query('SELECT * FROM carts WHERE id=$1', [cartId]);
+
+  res.status(200).json({
+    success: true,
+    message: 'Start date updated',
+    data: { cart: cart.rows[0], items: items.rows },
+  });
+});
+
+/**
  * @desc  Remove item from cart
  * @route DELETE /api/client/cart/item/:itemId
  */

@@ -97,6 +97,40 @@ router.post('/add', cartController.addToCart);
 /**
  * @swagger
  * /api/client/cart/item/{itemId}:
+ *   patch:
+ *     summary: Update start date for a cart line item
+ *     tags: [Client - Cart]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: itemId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [startDate]
+ *             properties:
+ *               startDate:
+ *                 type: string
+ *                 format: date
+ *                 example: "2026-05-15"
+ *     responses:
+ *       200:
+ *         description: Start date updated
+ *       404:
+ *         description: Cart item not found
+ */
+router.patch('/item/:itemId', cartController.updateCartItem);
+
+/**
+ * @swagger
+ * /api/client/cart/item/{itemId}:
  *   delete:
  *     summary: Remove a specific item from the cart
  *     tags: [Client - Cart]
