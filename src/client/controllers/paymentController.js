@@ -28,15 +28,24 @@ const validateEntityOwnership = async (entityType, entityId, clientId) => {
  * Core function: finalize ONE subscription after successful payment
  */
 const activateSingleSubscription = async (clientId, subscriptionId, entityType, entityId, orderId, requestedStartDate) => {
-  const subRes = await db.query('SELECT billing_cycle FROM subscriptions WHERE id=$1', [subscriptionId]);
-  const billingCycle = subRes.rows[0].billing_cycle.toLowerCase();
+  const subRes = await db.query('SELECT billing_cycle, trial_days FROM subscriptions WHERE id=$1', [subscriptionId]);
+  const subscription = subRes.rows[0];
+  const billingCycle = (subscription.billing_cycle || '').toLowerCase();
+  const trialDays = subscription.trial_days;
 
-  // Calculate total meal days from billing cycle
+  // Calculate total meal days
   let totalMeals = 30; // default
-  if (billingCycle.includes('month')) totalMeals = 30;
-  else if (billingCycle.includes('quarter')) totalMeals = 90;
-  else if (billingCycle.includes('year')) totalMeals = 365;
-  else if (billingCycle.includes('week')) totalMeals = 7;
+  if (trialDays && trialDays > 0) {
+    totalMeals = trialDays;
+  } else if (billingCycle.includes('month')) {
+    totalMeals = 30;
+  } else if (billingCycle.includes('quarter')) {
+    totalMeals = 90;
+  } else if (billingCycle.includes('year')) {
+    totalMeals = 365;
+  } else if (billingCycle.includes('week')) {
+    totalMeals = 7;
+  }
 
   const existingSub = await db.query(
     'SELECT end_date, total_meals, used_meals FROM client_subscriptions WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true',
@@ -58,11 +67,19 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
   }
 
   let endDate = new Date(baseDate);
-  if (billingCycle.includes('month')) endDate.setMonth(endDate.getMonth() + 1);
-  else if (billingCycle.includes('quarter')) endDate.setMonth(endDate.getMonth() + 3);
-  else if (billingCycle.includes('year')) endDate.setFullYear(endDate.getFullYear() + 1);
-  else if (billingCycle.includes('week')) endDate.setDate(endDate.getDate() + 7);
-  else endDate.setDate(endDate.getDate() + 30);
+  if (trialDays && trialDays > 0) {
+    endDate.setDate(endDate.getDate() + trialDays);
+  } else if (billingCycle.includes('month')) {
+    endDate.setMonth(endDate.getMonth() + 1);
+  } else if (billingCycle.includes('quarter')) {
+    endDate.setMonth(endDate.getMonth() + 3);
+  } else if (billingCycle.includes('year')) {
+    endDate.setFullYear(endDate.getFullYear() + 1);
+  } else if (billingCycle.includes('week')) {
+    endDate.setDate(endDate.getDate() + 7);
+  } else {
+    endDate.setDate(endDate.getDate() + 30);
+  }
 
   const finalTotalMeals = totalMeals + carryOverMeals;
 
