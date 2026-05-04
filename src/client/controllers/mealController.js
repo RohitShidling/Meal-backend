@@ -332,10 +332,18 @@ exports.cancelMealSkip = catchAsync(async (req, res, next) => {
     return next(new AppError('Cannot cancel a skip that has already started or is in the past.', 400));
   }
 
+  // Revert subscription end_date extension
+  await db.query(
+    `UPDATE client_subscriptions 
+     SET end_date = end_date - INTERVAL '${skipData.total_skip_days} days', updated_at=NOW()
+     WHERE client_id=$1 AND entity_type=$2 AND entity_id=$3 AND is_active=true`,
+    [clientId, skipData.entity_type, skipData.entity_id]
+  );
+
   await db.query("UPDATE meal_skips SET status='cancelled', updated_at=NOW() WHERE id=$1", [skipId]);
 
   res.status(200).json({
     success: true,
-    message: 'Meal skip cancelled successfully.'
+    message: 'Meal skip cancelled successfully and subscription expiry reverted.'
   });
 });
