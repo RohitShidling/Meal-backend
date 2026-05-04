@@ -1,10 +1,11 @@
 const jwt = require('jsonwebtoken');
+const db = require('../database');
 const AppError = require('../utils/AppError');
 
 /**
  * Middleware to allow both Admin and Client access
  */
-const commonAuthMiddleware = (req, res, next) => {
+const commonAuthMiddleware = async (req, res, next) => {
   try {
     let token;
     const authHeader = req.headers.authorization;
@@ -25,7 +26,10 @@ const commonAuthMiddleware = (req, res, next) => {
     try {
       decoded = jwt.verify(token, process.env.ADMIN_JWT_SECRET);
       if (decoded.role === 'admin') {
-        authenticated = true;
+        const adminCheck = await db.query('SELECT id FROM admins WHERE id = $1', [decoded.id]);
+        if (adminCheck.rows.length > 0) {
+          authenticated = true;
+        }
       }
     } catch (err) {
       // Ignore and try client secret
@@ -36,7 +40,10 @@ const commonAuthMiddleware = (req, res, next) => {
       try {
         decoded = jwt.verify(token, process.env.CLIENT_JWT_SECRET);
         if (decoded.role === 'client') {
-          authenticated = true;
+          const clientCheck = await db.query('SELECT id FROM clients WHERE id = $1', [decoded.id]);
+          if (clientCheck.rows.length > 0) {
+            authenticated = true;
+          }
         }
       } catch (err) {
         // Both failed
@@ -44,7 +51,7 @@ const commonAuthMiddleware = (req, res, next) => {
     }
 
     if (!authenticated) {
-      return next(new AppError('Invalid or expired token.', 401));
+      return next(new AppError('Invalid, expired, or deleted user session.', 401));
     }
 
     req.user = decoded;
