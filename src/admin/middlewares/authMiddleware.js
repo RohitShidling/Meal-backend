@@ -1,7 +1,8 @@
 const jwt = require('jsonwebtoken');
+const db = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
 
-const adminAuthMiddleware = (req, res, next) => {
+const adminAuthMiddleware = async (req, res, next) => {
   try {
     let token;
     const authHeader = req.headers.authorization;
@@ -18,6 +19,12 @@ const adminAuthMiddleware = (req, res, next) => {
     
     if (decoded.role !== 'admin') {
        return next(new AppError('Forbidden. Invalid role.', 403));
+    }
+
+    // Verify admin still exists in DB
+    const adminCheck = await db.query('SELECT id FROM admins WHERE id = $1', [decoded.id]);
+    if (adminCheck.rows.length === 0) {
+      return next(new AppError('Admin session invalid or user deleted. Please login again.', 401));
     }
 
     req.user = decoded;

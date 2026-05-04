@@ -230,13 +230,19 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
 
   // Verify active subscription exists (remaining > 0 computed)
   const subCheck = await db.query(
-    `SELECT id FROM client_subscriptions
+    `SELECT id, end_date FROM client_subscriptions
      WHERE client_id=$1 AND entity_type=$2 AND entity_id=$3
        AND is_active=true AND end_date > NOW()
        AND (total_meals - used_meals) > 0`,
     [clientId, entityType, entityId]
   );
   if (subCheck.rows.length === 0) return next(new AppError('No active subscription found for this entity.', 400));
+
+  const sub = subCheck.rows[0];
+  const subEndDate = new Date(sub.end_date);
+  if (skipEnd > subEndDate) {
+    return next(new AppError(`Cannot schedule skip beyond your subscription expiry date (${subEndDate.toISOString().split('T')[0]}).`, 400));
+  }
 
   // Check for overlapping skips
   const overlap = await db.query(
@@ -254,19 +260,17 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
     [clientId, entityType, entityId, startDate, endDate, totalDays]
   );
 
-  // Extend the subscription end_date by the number of skipped days
+  // Extend subscription end_date
   await db.query(
     `UPDATE client_subscriptions
-     SET end_date = end_date + ($1 || ' days')::interval,
-         updated_at = NOW()
-     WHERE client_id=$2 AND entity_type=$3 AND entity_id=$4
-       AND is_active=true AND end_date > NOW()`,
-    [totalDays, clientId, entityType, entityId]
+     SET end_date = end_date + INTERVAL '${totalDays} days', updated_at=NOW()
+     WHERE id=$1`,
+    [sub.id]
   );
 
   res.status(201).json({
     success: true,
-    message: `Meal skip approved for ${totalDays} days (${startDate} to ${endDate}). Your subscription expiry has been extended by ${totalDays} day(s).`,
+    message: `Meal skip approved for ${totalDays} days (${startDate} to ${endDate}). Your subscription end date has been extended by ${totalDays} days.`,
     data: result.rows[0]
   });
 });
@@ -330,18 +334,8 @@ exports.cancelMealSkip = catchAsync(async (req, res, next) => {
 
   await db.query("UPDATE meal_skips SET status='cancelled', updated_at=NOW() WHERE id=$1", [skipId]);
 
-  // Revert the end_date extension that was added when skip was created
-  await db.query(
-    `UPDATE client_subscriptions
-     SET end_date = end_date - ($1 || ' days')::interval,
-         updated_at = NOW()
-     WHERE client_id=$2 AND entity_type=$3 AND entity_id=$4
-       AND is_active=true`,
-    [skipData.total_skip_days, clientId, skipData.entity_type, skipData.entity_id]
-  );
-
   res.status(200).json({
     success: true,
-    message: `Meal skip cancelled. Your subscription expiry has been reduced back by ${skipData.total_skip_days} day(s).`
+    message: 'Meal skip cancelled successfully.'
   });
 });
