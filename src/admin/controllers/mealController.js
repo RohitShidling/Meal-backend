@@ -759,7 +759,7 @@ exports.getKitchenReport = catchAsync(async (req, res, next) => {
         COUNT(*)::int AS count,
         COALESCE(ms.sort_order, 9999) AS sort_order
       FROM client_subscriptions cs
-      JOIN subscriptions s ON s.id = cs.subscription_plan_id
+      JOIN subscriptions s ON s.id = cs.subscription_id
       LEFT JOIN meal_sizes ms ON ms.id = s.meal_size_id
       WHERE cs.id = ANY($1)
       GROUP BY COALESCE(ms.display_name, 'Unassigned'), COALESCE(ms.sort_order, 9999)
