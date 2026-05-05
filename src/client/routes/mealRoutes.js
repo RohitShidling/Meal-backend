@@ -161,11 +161,11 @@ router.get('/status', mealController.getMealStatus);
  * @swagger
  * /api/client/meals/skip:
  *   post:
- *     summary: Request a meal skip (min 3 consecutive days, 1 day advance required)
+ *     summary: Request a meal skip (policy-driven minimum days and advance notice)
  *     description: >
  *       User can skip meals for a date range. Rules:
- *       - Start date must be at least tomorrow
- *       - Minimum 3 consecutive days required (1 or 2 days NOT allowed)
+ *       - Start date must satisfy admin-configured advance notice policy
+ *       - Minimum consecutive days follow admin-configured skip policy
  *       - During skip, remaining meals will NOT be reduced
  *     tags: [Client - Meals]
  *     security:

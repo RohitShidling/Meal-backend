@@ -27,7 +27,7 @@ exports.getMySubscriptionStatus = async (req, res, next) => {
       LEFT JOIN teacher_profiles tp ON cs.entity_type='teacher' AND cs.entity_id=tp.id
       LEFT JOIN professional_profiles pp ON cs.entity_type='professional' AND cs.entity_id=pp.id
       WHERE cs.client_id = $1
-      ORDER BY cs.created_at DESC;
+      ORDER BY (cs.total_meals - cs.used_meals) ASC, cs.end_date ASC, cs.created_at DESC;
     `;
     
     const result = await pool.query(query, [clientId]);

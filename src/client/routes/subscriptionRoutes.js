@@ -16,7 +16,7 @@ router.use(clientAuthMiddleware);
  * @swagger
  * /api/client/subscriptions/status:
  *   get:
- *     summary: Get subscription status for the logged-in client
+ *     summary: Get subscription status for the logged-in client (ordered by remaining meals)
  *     tags: [Client - Subscription]
  *     security:
  *       - bearerAuth: []
