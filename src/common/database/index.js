@@ -188,6 +188,10 @@ const initDB = async () => {
       id              VARCHAR(20) PRIMARY KEY DEFAULT 'SUB-' || nextval('subscription_id_seq')::TEXT,
       plan_name       VARCHAR(255) NOT NULL,
       price           DECIMAL(10, 2) NOT NULL,
+      price_with_saturday DECIMAL(10, 2),
+      price_without_saturday DECIMAL(10, 2),
+      saturday_option_enabled BOOLEAN NOT NULL DEFAULT true,
+      meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL,
       billing_cycle   VARCHAR(50) NOT NULL,
       duration_days   INTEGER NOT NULL DEFAULT 30,
       trial_days      INTEGER NOT NULL DEFAULT 0,
@@ -274,6 +278,7 @@ const initDB = async () => {
       entity_type     VARCHAR(20) NOT NULL, -- 'child', 'teacher', 'professional'
       entity_id       VARCHAR(20) NOT NULL, -- ID of the child/teacher/professional
       amount          DECIMAL(10, 2) NOT NULL,
+      include_saturday BOOLEAN NOT NULL DEFAULT true,
       status          VARCHAR(20) NOT NULL DEFAULT 'pending', -- 'pending', 'completed', 'failed', 'cancelled'
       start_date      DATE, -- User selected start date for the subscription
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -306,6 +311,7 @@ const initDB = async () => {
       start_date      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       end_date        TIMESTAMP NOT NULL,
       is_active       BOOLEAN NOT NULL DEFAULT true,
+      include_saturday BOOLEAN NOT NULL DEFAULT true,
       order_id        VARCHAR(20) REFERENCES orders(id),
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -357,6 +363,7 @@ const initDB = async () => {
       entity_id       VARCHAR(20) NOT NULL,
       entity_name     VARCHAR(255),
       unit_price      DECIMAL(10, 2) NOT NULL,
+      include_saturday BOOLEAN NOT NULL DEFAULT true,
       start_date      DATE, -- User selected start date for this cart item
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(cart_id, entity_id, entity_type) -- Cannot add same entity twice to cart
@@ -562,9 +569,18 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cart_id VARCHAR(20) REFERENCES carts(id);`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS start_date DATE;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS start_date DATE;`);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
+    await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
+    await pool.query(`ALTER TABLE client_subscriptions ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
 
     // Migration: Add explicit duration_days to subscriptions
     await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS duration_days INTEGER;`);
+    await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS price_with_saturday DECIMAL(10, 2);`);
+    await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS price_without_saturday DECIMAL(10, 2);`);
+    await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS saturday_option_enabled BOOLEAN NOT NULL DEFAULT true;`);
+    await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
+    await pool.query(`UPDATE subscriptions SET price_with_saturday = price WHERE price_with_saturday IS NULL;`);
+    await pool.query(`UPDATE subscriptions SET price_without_saturday = price WHERE price_without_saturday IS NULL;`);
     await pool.query(`
       UPDATE subscriptions
       SET duration_days = CASE LOWER(COALESCE(billing_cycle, ''))

@@ -51,11 +51,45 @@ const attachFeatures = async (plans) => {
 
 exports.createTrialPlan = async (req, res, next) => {
   try {
-    const { plan_name, price, billing_cycle, trial_days, display_order, is_active, features } = req.body;
+    const {
+      plan_name,
+      price,
+      price_with_saturday,
+      price_without_saturday,
+      saturday_option_enabled,
+      meal_size_id,
+      billing_cycle,
+      trial_days,
+      display_order,
+      is_active,
+      features,
+    } = req.body;
     const adminId = req.user.id;
 
-    if (!plan_name || price === undefined || !billing_cycle || trial_days === undefined) {
-      return next(new AppError('plan_name, price, billing_cycle and trial_days are required', 400));
+    if (!plan_name || !billing_cycle || trial_days === undefined) {
+      return next(new AppError('plan_name, billing_cycle and trial_days are required', 400));
+    }
+    if (meal_size_id === undefined || meal_size_id === null || meal_size_id === '') {
+      return next(new AppError('meal_size_id is required', 400));
+    }
+    const mealSizeCheck = await db.query(
+      'SELECT id FROM meal_sizes WHERE id = $1 AND is_active = true',
+      [Number(meal_size_id)]
+    );
+    if (mealSizeCheck.rows.length === 0) {
+      return next(new AppError('Selected meal size is invalid or inactive', 400));
+    }
+    const resolvedPriceWithSaturday = Number(
+      price_with_saturday !== undefined ? price_with_saturday : price
+    );
+    const resolvedPriceWithoutSaturday = Number(
+      price_without_saturday !== undefined ? price_without_saturday : price
+    );
+    if (!Number.isFinite(resolvedPriceWithSaturday) || resolvedPriceWithSaturday < 0) {
+      return next(new AppError('price_with_saturday (or price) must be a valid non-negative number', 400));
+    }
+    if (!Number.isFinite(resolvedPriceWithoutSaturday) || resolvedPriceWithoutSaturday < 0) {
+      return next(new AppError('price_without_saturday (or price) must be a valid non-negative number', 400));
     }
 
     const duplicate = await db.query(
@@ -75,7 +109,7 @@ exports.createTrialPlan = async (req, res, next) => {
       `,
       [
         plan_name.trim(),
-        Number(price),
+        resolvedPriceWithSaturday,
         String(billing_cycle).trim(),
         Number(trial_days),
         Number(trial_days),
@@ -85,6 +119,33 @@ exports.createTrialPlan = async (req, res, next) => {
         adminId,
       ]
     );
+    await db.query(
+      `
+      UPDATE subscriptions
+      SET
+        price_with_saturday = $1,
+        price_without_saturday = $2,
+        saturday_option_enabled = COALESCE($3, saturday_option_enabled)
+      WHERE id = $4
+      `,
+      [
+        resolvedPriceWithSaturday,
+        resolvedPriceWithoutSaturday,
+        saturday_option_enabled,
+        result.rows[0].id,
+      ]
+    );
+    await db.query(
+      'UPDATE subscriptions SET meal_size_id = $1 WHERE id = $2',
+      [Number(meal_size_id), result.rows[0].id]
+    );
+    result.rows[0].price = resolvedPriceWithSaturday;
+    result.rows[0].price_with_saturday = resolvedPriceWithSaturday;
+    result.rows[0].price_without_saturday = resolvedPriceWithoutSaturday;
+    result.rows[0].meal_size_id = Number(meal_size_id);
+    if (saturday_option_enabled !== undefined) {
+      result.rows[0].saturday_option_enabled = saturday_option_enabled;
+    }
 
     await writeFeatures(result.rows[0].id, normalizeFeatures(features));
     const hydrated = await attachFeatures([result.rows[0]]);
@@ -131,7 +192,19 @@ exports.getTrialPlanById = async (req, res, next) => {
 exports.updateTrialPlan = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { plan_name, price, billing_cycle, trial_days, display_order, is_active, features } = req.body;
+    const {
+      plan_name,
+      price,
+      price_with_saturday,
+      price_without_saturday,
+      saturday_option_enabled,
+      meal_size_id,
+      billing_cycle,
+      trial_days,
+      display_order,
+      is_active,
+      features,
+    } = req.body;
     const adminId = req.user.id;
 
     const existing = await db.query('SELECT * FROM subscriptions WHERE id = $1 AND trial_days > 0', [id]);
@@ -146,13 +219,35 @@ exports.updateTrialPlan = async (req, res, next) => {
     }
 
     const effectiveTrialDays = trial_days !== undefined ? Number(trial_days) : Number(existing.rows[0].trial_days);
+    const current = existing.rows[0];
+    if (meal_size_id !== undefined && meal_size_id !== null && meal_size_id !== '') {
+      const mealSizeCheck = await db.query(
+        'SELECT id FROM meal_sizes WHERE id = $1 AND is_active = true',
+        [Number(meal_size_id)]
+      );
+      if (mealSizeCheck.rows.length === 0) {
+        return next(new AppError('Selected meal size is invalid or inactive', 400));
+      }
+    }
+    const nextPriceWithSaturday = price_with_saturday !== undefined
+      ? Number(price_with_saturday)
+      : (price !== undefined ? Number(price) : Number(current.price_with_saturday ?? current.price));
+    const nextPriceWithoutSaturday = price_without_saturday !== undefined
+      ? Number(price_without_saturday)
+      : (price !== undefined ? Number(price) : Number(current.price_without_saturday ?? current.price));
+    if (!Number.isFinite(nextPriceWithSaturday) || nextPriceWithSaturday < 0) {
+      return next(new AppError('price_with_saturday (or price) must be a valid non-negative number', 400));
+    }
+    if (!Number.isFinite(nextPriceWithoutSaturday) || nextPriceWithoutSaturday < 0) {
+      return next(new AppError('price_without_saturday (or price) must be a valid non-negative number', 400));
+    }
 
     const result = await db.query(
       `
       UPDATE subscriptions
       SET
         plan_name = COALESCE($1, plan_name),
-        price = COALESCE($2, price),
+        price = $2,
         billing_cycle = COALESCE($3, billing_cycle),
         trial_days = $4,
         duration_days = $4,
@@ -165,7 +260,7 @@ exports.updateTrialPlan = async (req, res, next) => {
       `,
       [
         plan_name !== undefined ? plan_name.trim() : null,
-        price !== undefined ? Number(price) : null,
+        nextPriceWithSaturday,
         billing_cycle !== undefined ? String(billing_cycle).trim() : null,
         effectiveTrialDays,
         display_order !== undefined ? Number(display_order) : null,
@@ -174,6 +269,27 @@ exports.updateTrialPlan = async (req, res, next) => {
         id,
       ]
     );
+    await db.query(
+      `
+      UPDATE subscriptions
+      SET
+        price_with_saturday = $1,
+        price_without_saturday = $2,
+        saturday_option_enabled = COALESCE($3, saturday_option_enabled),
+        meal_size_id = COALESCE($4, meal_size_id)
+      WHERE id = $5
+      `,
+      [nextPriceWithSaturday, nextPriceWithoutSaturday, saturday_option_enabled, meal_size_id !== undefined ? Number(meal_size_id) : null, id]
+    );
+    result.rows[0].price = nextPriceWithSaturday;
+    result.rows[0].price_with_saturday = nextPriceWithSaturday;
+    result.rows[0].price_without_saturday = nextPriceWithoutSaturday;
+    if (meal_size_id !== undefined) {
+      result.rows[0].meal_size_id = Number(meal_size_id);
+    }
+    if (saturday_option_enabled !== undefined) {
+      result.rows[0].saturday_option_enabled = saturday_option_enabled;
+    }
 
     if (features !== undefined) {
       await writeFeatures(id, normalizeFeatures(features));

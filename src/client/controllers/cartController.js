@@ -2,6 +2,15 @@ const db = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
 const catchAsync = require('../../common/utils/catchAsync');
 
+const parseBoolean = (value, defaultValue = true) => {
+  if (value === undefined || value === null) return defaultValue;
+  if (typeof value === 'boolean') return value;
+  const raw = String(value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'y'].includes(raw)) return true;
+  if (['false', '0', 'no', 'n'].includes(raw)) return false;
+  return defaultValue;
+};
+
 // ─── HELPER ────────────────────────────────────────────────────────────────
 const resolveEntityName = async (entityType, entityId) => {
   if (entityType === 'child') {
@@ -64,7 +73,7 @@ const recalcCartTotal = async (cartId) => {
  */
 exports.addToCart = catchAsync(async (req, res, next) => {
   const clientId = req.user.id;
-  const { subscriptionId, entityType, entityId, startDate } = req.body;
+  const { subscriptionId, entityType, entityId, startDate, includeSaturday } = req.body;
 
   if (!subscriptionId || !entityType || !entityId) {
     return next(new AppError('subscriptionId, entityType and entityId are required', 400));
@@ -91,14 +100,22 @@ exports.addToCart = catchAsync(async (req, res, next) => {
 
   const sub = await db.query('SELECT * FROM subscriptions WHERE id=$1 AND is_active=true', [subscriptionId]);
   if (sub.rows.length === 0) return next(new AppError('Subscription plan not found', 404));
+  const includeSaturdayFlag = parseBoolean(includeSaturday, true);
+  const plan = sub.rows[0];
+  const selectedPrice = includeSaturdayFlag
+    ? Number(plan.price_with_saturday ?? plan.price)
+    : Number(plan.price_without_saturday ?? plan.price);
+  if (!Number.isFinite(selectedPrice) || selectedPrice < 0) {
+    return next(new AppError('Invalid plan pricing configuration', 500));
+  }
 
   const cart = await getOrCreateCart(clientId);
   const entityName = await resolveEntityName(entityType, entityId);
 
   try {
     await db.query(
-      'INSERT INTO cart_items (cart_id,subscription_id,entity_type,entity_id,entity_name,unit_price,start_date) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-      [cart.id, subscriptionId, entityType, entityId, entityName, sub.rows[0].price, effectiveStartDate.toISOString().split('T')[0]]
+      'INSERT INTO cart_items (cart_id,subscription_id,entity_type,entity_id,entity_name,unit_price,include_saturday,start_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+      [cart.id, subscriptionId, entityType, entityId, entityName, selectedPrice, includeSaturdayFlag, effectiveStartDate.toISOString().split('T')[0]]
     );
   } catch (e) {
     if (e.code === '23505') return next(new AppError(`${entityName || entityId} is already in your cart`, 400));
