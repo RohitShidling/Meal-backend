@@ -28,7 +28,7 @@ exports.getSubscriptionPlans = async (req, res, next) => {
     const isClient = req.user.role === 'client';
 
     let sql = `
-      SELECT id, plan_name, price, billing_cycle, duration_days, trial_days, display_order, is_active, created_at, updated_at
+      SELECT id, plan_name, price, price_with_saturday, price_without_saturday, saturday_option_enabled, meal_size_id, billing_cycle, duration_days, trial_days, display_order, is_active, created_at, updated_at
       FROM subscriptions
     `;
 
@@ -57,7 +57,7 @@ exports.getSubscriptionPlanById = async (req, res, next) => {
     const isClient = req.user.role === 'client';
 
     let sql = `
-      SELECT id, plan_name, price, billing_cycle, duration_days, trial_days, display_order, is_active, created_at, updated_at
+      SELECT id, plan_name, price, price_with_saturday, price_without_saturday, saturday_option_enabled, meal_size_id, billing_cycle, duration_days, trial_days, display_order, is_active, created_at, updated_at
       FROM subscriptions
       WHERE id = $1
     `;

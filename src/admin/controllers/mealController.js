@@ -731,7 +731,7 @@ exports.getKitchenReport = catchAsync(async (req, res, next) => {
   // 2. Active Today (People who need a meal TODAY)
   // Condition: active, remaining > 0, start_date <= today, not skipped today
   const activeTodayQuery = `
-    SELECT cs.entity_type, cs.entity_id 
+    SELECT cs.id, cs.entity_type, cs.entity_id 
     FROM client_subscriptions cs
     WHERE cs.is_active = true 
       AND cs.end_date > NOW() 
@@ -748,40 +748,30 @@ exports.getKitchenReport = catchAsync(async (req, res, next) => {
   const activeTodayRes = await db.query(activeTodayQuery, [today]);
   const activeTodayCount = activeTodayRes.rowCount;
 
-  // 3. Meal Sizes Breakdown (for children only, teachers/professionals can be grouped)
-  const mealSizes = {};
-
-  // For children, join with children table and meal_sizes table
-  const activeChildrenIds = activeTodayRes.rows
-    .filter(r => r.entity_type === 'child')
-    .map(r => r.entity_id);
-
-  if (activeChildrenIds.length > 0) {
-    const childrenSizesRes = await db.query(`
-      SELECT ms.display_name as size_name, COUNT(c.id) as count
-      FROM children c
-      JOIN meal_sizes ms ON c.meal_size_id = ms.id
-      WHERE c.id = ANY($1)
-      GROUP BY ms.display_name
-    `, [activeChildrenIds]);
-
-    childrenSizesRes.rows.forEach(r => {
-      mealSizes[r.size_name] = parseInt(r.count);
-    });
+  // 3. Meal size breakdown from subscription plan mapping (works for all entity types)
+  let formattedMealSizes = [];
+  const activeSubscriptionIds = activeTodayRes.rows.map((row) => row.id);
+  if (activeSubscriptionIds.length > 0) {
+    const mealSizeBreakdown = await db.query(
+      `
+      SELECT
+        COALESCE(ms.display_name, 'Unassigned') AS size,
+        COUNT(*)::int AS count,
+        COALESCE(ms.sort_order, 9999) AS sort_order
+      FROM client_subscriptions cs
+      JOIN subscriptions s ON s.id = cs.subscription_plan_id
+      LEFT JOIN meal_sizes ms ON ms.id = s.meal_size_id
+      WHERE cs.id = ANY($1)
+      GROUP BY COALESCE(ms.display_name, 'Unassigned'), COALESCE(ms.sort_order, 9999)
+      ORDER BY COALESCE(ms.sort_order, 9999), COALESCE(ms.display_name, 'Unassigned')
+      `,
+      [activeSubscriptionIds]
+    );
+    formattedMealSizes = mealSizeBreakdown.rows.map((row) => ({
+      size: row.size,
+      count: row.count
+    }));
   }
-
-  // Count teachers and professionals separately (since they don't have meal_size_id)
-  const teacherCount = activeTodayRes.rows.filter(r => r.entity_type === 'teacher').length;
-  const profCount = activeTodayRes.rows.filter(r => r.entity_type === 'professional').length;
-
-  if (teacherCount > 0) mealSizes['Teacher (Standard)'] = teacherCount;
-  if (profCount > 0) mealSizes['Professional (Standard)'] = profCount;
-
-  // Format the meal sizes object into an array for easier frontend parsing
-  const formattedMealSizes = Object.keys(mealSizes).map(key => ({
-    size: key,
-    count: mealSizes[key]
-  }));
 
   res.status(200).json({
     success: true,
