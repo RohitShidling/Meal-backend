@@ -13,9 +13,9 @@ exports.getMySubscriptionStatus = async (req, res, next) => {
 
     const query = `
       SELECT cs.id as client_subscription_id, cs.entity_type, cs.entity_id, 
-             cs.start_date, cs.end_date, cs.is_active as subscription_status,
+             cs.start_date, cs.end_date, cs.is_active as subscription_status, cs.include_saturday,
              cs.total_meals, cs.used_meals,
-             s.id as plan_id, s.plan_name, s.price, s.billing_cycle,
+             s.id as plan_id, s.plan_name, s.price, s.price_with_saturday, s.price_without_saturday, s.billing_cycle,
              CASE
                WHEN cs.entity_type='child' THEN ch.name
                WHEN cs.entity_type='teacher' THEN tp.name
@@ -48,7 +48,11 @@ exports.getMySubscriptionStatus = async (req, res, next) => {
           end_date: sub.end_date,
           message: `Your subscription for ${sub.entity_name} (${sub.plan_name}) is expiring in ${remainingMeals} day(s).`,
           renew_options: {
-            same_plan: { plan_id: sub.plan_id, price: sub.price },
+            same_plan: {
+              plan_id: sub.plan_id,
+              include_saturday: sub.include_saturday,
+              price: sub.include_saturday ? sub.price_with_saturday : sub.price_without_saturday,
+            },
             different_plan_url: '/api/client/subscriptions'
           }
         });
@@ -154,7 +158,7 @@ exports.getSubscriptionAlerts = catchAsync(async (req, res, next) => {
   const query = `
     SELECT cs.id as client_subscription_id, cs.entity_type, cs.entity_id, 
            cs.start_date, cs.end_date, cs.total_meals, cs.used_meals,
-           s.id as plan_id, s.plan_name, s.price,
+           cs.include_saturday, s.id as plan_id, s.plan_name, s.price, s.price_with_saturday, s.price_without_saturday,
            CASE
              WHEN cs.entity_type='child' THEN ch.name
              WHEN cs.entity_type='teacher' THEN tp.name
@@ -188,7 +192,8 @@ exports.getSubscriptionAlerts = catchAsync(async (req, res, next) => {
         message: `Your subscription for ${sub.entity_name} (${sub.plan_name}) is expiring in ${remainingMeals} day(s).`,
         renew_options: {
           same_plan_id: sub.plan_id,
-          price: sub.price
+          include_saturday: sub.include_saturday,
+          price: sub.include_saturday ? sub.price_with_saturday : sub.price_without_saturday
         }
       });
     }

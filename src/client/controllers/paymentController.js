@@ -24,19 +24,36 @@ const validateEntityOwnership = async (entityType, entityId, clientId) => {
   return r.rows.length > 0;
 };
 
+const parseBoolean = (value, defaultValue = true) => {
+  if (value === undefined || value === null) return defaultValue;
+  if (typeof value === 'boolean') return value;
+  const raw = String(value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'y'].includes(raw)) return true;
+  if (['false', '0', 'no', 'n'].includes(raw)) return false;
+  return defaultValue;
+};
+
+const computeMealCount = (startDate, durationDays, includeSaturday) => {
+  const safeDuration = Number(durationDays) > 0 ? Number(durationDays) : 30;
+  const base = new Date(startDate);
+  if (Number.isNaN(base.getTime())) return safeDuration;
+  let count = 0;
+  for (let i = 0; i < safeDuration; i += 1) {
+    const d = new Date(base);
+    d.setDate(base.getDate() + i);
+    if (includeSaturday || d.getDay() !== 6) {
+      count += 1;
+    }
+  }
+  return count;
+};
+
 /**
  * Core function: finalize ONE subscription after successful payment
  */
-const activateSingleSubscription = async (clientId, subscriptionId, entityType, entityId, orderId, requestedStartDate) => {
-  const subRes = await db.query('SELECT billing_cycle FROM subscriptions WHERE id=$1', [subscriptionId]);
-  const billingCycle = subRes.rows[0].billing_cycle.toLowerCase();
-
-  // Calculate total meal days from billing cycle
-  let totalMeals = 30; // default
-  if (billingCycle.includes('month')) totalMeals = 30;
-  else if (billingCycle.includes('quarter')) totalMeals = 90;
-  else if (billingCycle.includes('year')) totalMeals = 365;
-  else if (billingCycle.includes('week')) totalMeals = 7;
+const activateSingleSubscription = async (clientId, subscriptionId, entityType, entityId, orderId, requestedStartDate, includeSaturday) => {
+  const subRes = await db.query('SELECT duration_days FROM subscriptions WHERE id=$1', [subscriptionId]);
+  const durationDays = Number(subRes.rows[0]?.duration_days || 30);
 
   const existingSub = await db.query(
     'SELECT end_date, total_meals, used_meals FROM client_subscriptions WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true AND order_id != $4',
@@ -44,7 +61,7 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
   );
 
   let baseDate = requestedStartDate ? new Date(requestedStartDate) : new Date();
-  let newTotalMeals = totalMeals;
+  let newTotalMeals = computeMealCount(baseDate, durationDays, includeSaturday);
   let newUsedMeals = 0;
 
   if (existingSub.rows.length > 0 && new Date(existingSub.rows[0].end_date) > new Date()) {
@@ -57,25 +74,21 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
     const oldUsed = existingSub.rows[0].used_meals || 0;
     
     // Preserve old totals and used, just add new meals to total
-    newTotalMeals = oldTotal + totalMeals;
+    newTotalMeals = oldTotal + computeMealCount(baseDate, durationDays, includeSaturday);
     newUsedMeals = oldUsed;
   }
 
-  let endDate = new Date(baseDate);
-  if (billingCycle.includes('month')) endDate.setMonth(endDate.getMonth() + 1);
-  else if (billingCycle.includes('quarter')) endDate.setMonth(endDate.getMonth() + 3);
-  else if (billingCycle.includes('year')) endDate.setFullYear(endDate.getFullYear() + 1);
-  else if (billingCycle.includes('week')) endDate.setDate(endDate.getDate() + 7);
-  else endDate.setDate(endDate.getDate() + 30);
+  const endDate = new Date(baseDate);
+  endDate.setDate(endDate.getDate() + durationDays);
 
   await db.query(
-    `INSERT INTO client_subscriptions (client_id,subscription_id,entity_type,entity_id,start_date,end_date,order_id,is_active,total_meals,used_meals)
-     VALUES ($1,$2,$3,$4,$8,$5,$6,true,$7,$9)
+    `INSERT INTO client_subscriptions (client_id,subscription_id,entity_type,entity_id,start_date,end_date,order_id,is_active,total_meals,used_meals,include_saturday)
+     VALUES ($1,$2,$3,$4,$8,$5,$6,true,$7,$9,$10)
      ON CONFLICT (client_id,entity_id,entity_type) DO UPDATE SET
        start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date, subscription_id=EXCLUDED.subscription_id,
        order_id=EXCLUDED.order_id, is_active=true, updated_at=NOW(),
-       total_meals=EXCLUDED.total_meals, used_meals=EXCLUDED.used_meals`,
-    [clientId, subscriptionId, entityType, entityId, endDate, orderId, newTotalMeals, baseDate, newUsedMeals]
+       total_meals=EXCLUDED.total_meals, used_meals=EXCLUDED.used_meals, include_saturday=EXCLUDED.include_saturday`,
+    [clientId, subscriptionId, entityType, entityId, endDate, orderId, newTotalMeals, baseDate, newUsedMeals, includeSaturday]
   );
 };
 
@@ -93,13 +106,29 @@ const finalizeSuccessfulPayment = async (orderId) => {
     // CART ORDER — activate subscriptions for every cart item
     const cartItems = await db.query('SELECT * FROM cart_items WHERE cart_id=$1', [order.cart_id]);
     for (const item of cartItems.rows) {
-      await activateSingleSubscription(order.client_id, item.subscription_id, item.entity_type, item.entity_id, orderId, item.start_date);
+      await activateSingleSubscription(
+        order.client_id,
+        item.subscription_id,
+        item.entity_type,
+        item.entity_id,
+        orderId,
+        item.start_date,
+        item.include_saturday !== false
+      );
     }
     // Mark cart as checked out
     await db.query("UPDATE carts SET status='checked_out', updated_at=NOW() WHERE id=$1", [order.cart_id]);
   } else {
     // SINGLE ORDER
-    await activateSingleSubscription(order.client_id, order.subscription_id, order.entity_type, order.entity_id, orderId, order.start_date);
+    await activateSingleSubscription(
+      order.client_id,
+      order.subscription_id,
+      order.entity_type,
+      order.entity_id,
+      orderId,
+      order.start_date,
+      order.include_saturday !== false
+    );
   }
 
   console.log(`✅ Payment finalized for order: ${orderId} (type: ${order.order_type})`);
@@ -112,7 +141,7 @@ const finalizeSuccessfulPayment = async (orderId) => {
  * @route POST /api/client/payment/initiate
  */
 exports.initiatePayment = catchAsync(async (req, res, next) => {
-  const { subscriptionId, entityType, entityId, startDate, redirectUrl: customRedirect } = req.body;
+  const { subscriptionId, entityType, entityId, startDate, includeSaturday, redirectUrl: customRedirect } = req.body;
   const clientId = req.user.id;
 
   if (!subscriptionId || !entityType || !entityId)
@@ -139,18 +168,25 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
   if (subResult.rows.length === 0) return next(new AppError('Subscription plan not found', 404));
 
   const subscription = subResult.rows[0];
+  const includeSaturdayFlag = parseBoolean(includeSaturday, true);
+  const selectedPrice = includeSaturdayFlag
+    ? Number(subscription.price_with_saturday ?? subscription.price)
+    : Number(subscription.price_without_saturday ?? subscription.price);
+  if (!Number.isFinite(selectedPrice) || selectedPrice < 0) {
+    return next(new AppError('Invalid subscription pricing configuration', 500));
+  }
   const entityName = await resolveEntityName(entityType, entityId);
 
   const orderResult = await db.query(
-    'INSERT INTO orders (client_id,subscription_id,entity_type,entity_id,amount,status,order_type,start_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
-    [clientId, subscriptionId, entityType, entityId, subscription.price, 'pending', 'single', effectiveStartDate.toISOString().split('T')[0]]
+    'INSERT INTO orders (client_id,subscription_id,entity_type,entity_id,amount,include_saturday,status,order_type,start_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
+    [clientId, subscriptionId, entityType, entityId, selectedPrice, includeSaturdayFlag, 'pending', 'single', effectiveStartDate.toISOString().split('T')[0]]
   );
   const order = orderResult.rows[0];
 
   const merchantTransactionId = `TXN_${order.id.replace('ORD-', '')}_${Date.now()}`;
   await db.query(
     'INSERT INTO transactions (order_id,merchant_transaction_id,amount,status) VALUES ($1,$2,$3,$4)',
-    [order.id, merchantTransactionId, subscription.price, 'pending']
+    [order.id, merchantTransactionId, selectedPrice, 'pending']
   );
 
   const clientData = await db.query('SELECT phone_number FROM clients WHERE id=$1', [clientId]);
@@ -160,7 +196,7 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
   const response = await phonepe.initiatePayment({
     transactionId: merchantTransactionId,
     userId: clientId,
-    amount: subscription.price,
+    amount: selectedPrice,
     redirectUrl: backendCallbackUrl,
     mobileNumber: clientData.rows[0].phone_number.replace(/\D/g, '').slice(-10),
   });
@@ -173,7 +209,9 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
       orderId: order.id,
       merchantTransactionId,
       entityName,
-      amount: subscription.price,
+      amount: selectedPrice,
+      includeSaturday: includeSaturdayFlag,
+      planVariant: includeSaturdayFlag ? 'with_saturday' : 'without_saturday',
       planName: subscription.plan_name,
       paymentUrl: response.data.instrumentResponse.redirectInfo.url,
     }
@@ -239,6 +277,10 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
       totalAmount,
       itemCount: items.rows.length,
       items: items.rows.map(i => ({ entityName: i.entity_name, entityType: i.entity_type, plan: i.plan_name, price: i.unit_price })),
+      planVariants: items.rows.map(i => ({
+        entityName: i.entity_name,
+        includeSaturday: i.include_saturday !== false,
+      })),
       paymentUrl: response.data.instrumentResponse.redirectInfo.url,
     }
   });
@@ -345,7 +387,7 @@ exports.checkPaymentStatus = catchAsync(async (req, res, next) => {
   // Fetch transaction with full order and entity details
   const txnRes = await db.query(
     `SELECT t.*, o.status as order_status, o.order_type, o.cart_id,
-            o.entity_type, o.entity_id, o.amount as order_amount,
+            o.entity_type, o.entity_id, o.amount as order_amount, o.include_saturday,
             o.client_id, s.plan_name, c.phone_number,
             CASE
               WHEN o.entity_type='child' THEN ch.name
@@ -428,6 +470,7 @@ const buildStatusResponse = (txn, gwState) => ({
   orderStatus: txn.order_status,
   orderType: txn.order_type,
   amountPaid: txn.order_amount,
+  includeSaturday: txn.include_saturday,
   entityType: txn.entity_type,
   entityName: txn.entity_name,
   planName: txn.plan_name,
@@ -543,7 +586,7 @@ exports.getMyPaymentHistory = catchAsync(async (req, res) => {
   const offset = (page - 1) * limit;
 
   const result = await db.query(
-    `SELECT o.id as order_id, o.status as order_status, o.order_type, o.amount,
+    `SELECT o.id as order_id, o.status as order_status, o.order_type, o.amount, o.include_saturday,
             o.entity_type, o.entity_id, o.created_at,
             s.plan_name,
             t.merchant_transaction_id, t.status as payment_status, t.gateway_transaction_id,
@@ -582,14 +625,15 @@ exports.getMyActiveSubscriptions = catchAsync(async (req, res) => {
 
   const result = await db.query(
     `SELECT cs.id, cs.entity_type, cs.entity_id, cs.start_date, cs.end_date, cs.is_active,
-            s.plan_name, s.price, s.billing_cycle,
+            s.plan_name, s.price, s.price_with_saturday, s.price_without_saturday, s.billing_cycle,
             o.amount as amount_paid,
             CASE
               WHEN cs.entity_type='child' THEN ch.name
               WHEN cs.entity_type='teacher' THEN tp.name
               WHEN cs.entity_type='professional' THEN pp.name
             END as entity_name,
-            EXTRACT(DAY FROM cs.end_date - NOW()) as days_remaining
+            EXTRACT(DAY FROM cs.end_date - NOW()) as days_remaining,
+            cs.include_saturday
      FROM client_subscriptions cs
      JOIN subscriptions s ON cs.subscription_id=s.id
      LEFT JOIN orders o ON cs.order_id=o.id

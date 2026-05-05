@@ -38,10 +38,15 @@ const commonHomepageRoutes = require('./common/routes/homepageRoutes');
 const adminEntityRoutes = require('./admin/routes/entityRoutes');
 const commonEntityRoutes = require('./common/routes/entityRoutes');
 const clientMealRoutes = require('./client/routes/mealRoutes');
+const clientMenuNutritionRoutes = require('./client/routes/menuNutritionRoutes');
 const adminMealRoutes = require('./admin/routes/mealRoutes');
 const adminDashboardRoutes = require('./admin/routes/dashboardRoutes');
 const adminTrialPlanRoutes = require('./admin/routes/trialPlanRoutes');
 const adminTokenRoutes = require('./admin/routes/tokenRoutes');
+const adminSubscriptionPlanDurationRoutes = require('./admin/routes/subscriptionPlanDurationRoutes');
+const commonSubscriptionPlanDurationRoutes = require('./common/routes/subscriptionPlanDurationRoutes');
+const adminMenuNutritionRoutes = require('./admin/routes/menuNutritionRoutes');
+const adminTrialPlanFeatureRoutes = require('./admin/routes/trialPlanFeatureRoutes');
 
 const app = express();
 
@@ -111,6 +116,7 @@ app.use('/api/client/teacher', clientTeacherRoutes);
 app.use('/api/client/payment', clientPaymentRoutes);
 app.use('/api/client/cart', clientCartRoutes);
 app.use('/api/client/meals', clientMealRoutes);
+app.use('/api/client/menu-nutrition', clientMenuNutritionRoutes);
 app.use('/api/admin/meals', adminMealRoutes);
 app.use('/api/admin/payment', adminPaymentRoutes);
 app.use('/api/admin/homepage', adminHomepageRoutes);
@@ -119,6 +125,10 @@ app.use('/api/admin/entities', adminEntityRoutes);
 app.use('/api/common/entities', commonEntityRoutes);
 app.use('/api/admin/dashboard', adminDashboardRoutes);
 app.use('/api/admin/tokens', adminTokenRoutes);
+app.use('/api/admin/subscription-plan-days', adminSubscriptionPlanDurationRoutes);
+app.use('/api/common/subscription-plan-days', commonSubscriptionPlanDurationRoutes);
+app.use('/api/admin/menu-nutrition', adminMenuNutritionRoutes);
+app.use('/api/admin/trial-plan-features', adminTrialPlanFeatureRoutes);
 
 // 404 Handler
 app.use((req, res) => {

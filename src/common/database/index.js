@@ -194,7 +194,12 @@ const initDB = async () => {
       id              VARCHAR(20) PRIMARY KEY DEFAULT 'SUB-' || nextval('subscription_id_seq')::TEXT,
       plan_name       VARCHAR(255) NOT NULL,
       price           DECIMAL(10, 2) NOT NULL,
+      price_with_saturday DECIMAL(10, 2),
+      price_without_saturday DECIMAL(10, 2),
+      saturday_option_enabled BOOLEAN NOT NULL DEFAULT true,
+      meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL,
       billing_cycle   VARCHAR(50) NOT NULL,
+      duration_days   INTEGER NOT NULL DEFAULT 30,
       trial_days      INTEGER NOT NULL DEFAULT 0,
       display_order   INTEGER NOT NULL DEFAULT 1,
       is_active       BOOLEAN NOT NULL DEFAULT true,
@@ -279,6 +284,7 @@ const initDB = async () => {
       entity_type     VARCHAR(20) NOT NULL, -- 'child', 'teacher', 'professional'
       entity_id       VARCHAR(20) NOT NULL, -- ID of the child/teacher/professional
       amount          DECIMAL(10, 2) NOT NULL,
+      include_saturday BOOLEAN NOT NULL DEFAULT true,
       status          VARCHAR(20) NOT NULL DEFAULT 'pending', -- 'pending', 'completed', 'failed', 'cancelled'
       start_date      DATE, -- User selected start date for the subscription
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -311,10 +317,31 @@ const initDB = async () => {
       start_date      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       end_date        TIMESTAMP NOT NULL,
       is_active       BOOLEAN NOT NULL DEFAULT true,
+      include_saturday BOOLEAN NOT NULL DEFAULT true,
       order_id        VARCHAR(20) REFERENCES orders(id),
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(client_id, entity_id, entity_type)
+    );
+  `;
+
+  const createSubscriptionFeaturesTable = `
+    CREATE TABLE IF NOT EXISTS subscription_features (
+      id               SERIAL PRIMARY KEY,
+      subscription_id  VARCHAR(20) NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+      feature_text     VARCHAR(255) NOT NULL,
+      sort_order       INTEGER NOT NULL DEFAULT 1,
+      created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  const createDailyMenuNutritionTable = `
+    CREATE TABLE IF NOT EXISTS daily_menu_nutrition (
+      id               SERIAL PRIMARY KEY,
+      menu_id          VARCHAR(20) NOT NULL REFERENCES daily_menus(id) ON DELETE CASCADE,
+      nutrition_text   VARCHAR(255) NOT NULL,
+      sort_order       INTEGER NOT NULL DEFAULT 1,
+      created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `;
 
@@ -342,6 +369,7 @@ const initDB = async () => {
       entity_id       VARCHAR(20) NOT NULL,
       entity_name     VARCHAR(255),
       unit_price      DECIMAL(10, 2) NOT NULL,
+      include_saturday BOOLEAN NOT NULL DEFAULT true,
       start_date      DATE, -- User selected start date for this cart item
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(cart_id, entity_id, entity_type) -- Cannot add same entity twice to cart
@@ -476,6 +504,8 @@ const initDB = async () => {
     await pool.query(createOrdersTable);
     await pool.query(createTransactionsTable);
     await pool.query(createClientSubscriptionsTable);
+    await pool.query(createSubscriptionFeaturesTable);
+    await pool.query(createDailyMenuNutritionTable);
     await pool.query(createEntitiesTable);
     await pool.query(createHomepagesTable);
     await pool.query(createCartsTable);
@@ -600,6 +630,52 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cart_id VARCHAR(20) REFERENCES carts(id);`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS start_date DATE;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS start_date DATE;`);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
+    await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
+    await pool.query(`ALTER TABLE client_subscriptions ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
+
+    // Migration: Add explicit duration_days to subscriptions
+    await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS duration_days INTEGER;`);
+    await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS price_with_saturday DECIMAL(10, 2);`);
+    await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS price_without_saturday DECIMAL(10, 2);`);
+    await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS saturday_option_enabled BOOLEAN NOT NULL DEFAULT true;`);
+    await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
+    await pool.query(`UPDATE subscriptions SET price_with_saturday = price WHERE price_with_saturday IS NULL;`);
+    await pool.query(`UPDATE subscriptions SET price_without_saturday = price WHERE price_without_saturday IS NULL;`);
+    await pool.query(`
+      UPDATE subscriptions
+      SET duration_days = CASE LOWER(COALESCE(billing_cycle, ''))
+        WHEN 'daily' THEN 1
+        WHEN 'weekly' THEN 7
+        WHEN 'monthly' THEN 30
+        WHEN 'yearly' THEN 365
+        WHEN 'annual' THEN 365
+        ELSE 30
+      END
+      WHERE duration_days IS NULL OR duration_days <= 0;
+    `);
+    await pool.query(`ALTER TABLE subscriptions ALTER COLUMN duration_days SET DEFAULT 30;`);
+
+    // Migration: Ensure subscription_features exists and stays clean
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS subscription_features (
+        id               SERIAL PRIMARY KEY,
+        subscription_id  VARCHAR(20) NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+        feature_text     VARCHAR(255) NOT NULL,
+        sort_order       INTEGER NOT NULL DEFAULT 1,
+        created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS daily_menu_nutrition (
+        id               SERIAL PRIMARY KEY,
+        menu_id          VARCHAR(20) NOT NULL REFERENCES daily_menus(id) ON DELETE CASCADE,
+        nutrition_text   VARCHAR(255) NOT NULL,
+        sort_order       INTEGER NOT NULL DEFAULT 1,
+        created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
 
     // Migration: Add entity_id to homepages and handle unique constraints
     await pool.query(`ALTER TABLE homepages ADD COLUMN IF NOT EXISTS entity_id VARCHAR(20) REFERENCES entities(id);`);
