@@ -41,6 +41,7 @@ const clientMealRoutes = require('./client/routes/mealRoutes');
 const adminMealRoutes = require('./admin/routes/mealRoutes');
 const adminDashboardRoutes = require('./admin/routes/dashboardRoutes');
 const adminTrialPlanRoutes = require('./admin/routes/trialPlanRoutes');
+const adminTokenRoutes = require('./admin/routes/tokenRoutes');
 
 const app = express();
 
@@ -117,6 +118,7 @@ app.use('/api/common/homepage', commonHomepageRoutes);
 app.use('/api/admin/entities', adminEntityRoutes);
 app.use('/api/common/entities', commonEntityRoutes);
 app.use('/api/admin/dashboard', adminDashboardRoutes);
+app.use('/api/admin/tokens', adminTokenRoutes);
 
 // 404 Handler
 app.use((req, res) => {

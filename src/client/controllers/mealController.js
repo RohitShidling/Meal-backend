@@ -2,6 +2,19 @@ const db = require('../../common/database');
 const catchAsync = require('../../common/utils/catchAsync');
 const AppError = require('../../common/utils/AppError');
 
+const getMealSkipPolicy = async () => {
+  const result = await db.query(
+    `SELECT setting_key, setting_value
+     FROM app_settings
+     WHERE setting_key IN ('meal_skip_min_days', 'meal_skip_min_notice_days')`
+  );
+  const settings = Object.fromEntries(result.rows.map((row) => [row.setting_key, Number(row.setting_value)]));
+  return {
+    minSkipDays: Number.isFinite(settings.meal_skip_min_days) ? settings.meal_skip_min_days : 3,
+    minNoticeDays: Number.isFinite(settings.meal_skip_min_notice_days) ? settings.meal_skip_min_notice_days : 1,
+  };
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER: Check if client has ANY active subscription (computed remaining)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -186,6 +199,7 @@ exports.getMealStatus = catchAsync(async (req, res) => {
 exports.requestMealSkip = catchAsync(async (req, res, next) => {
   const clientId = req.user.id;
   const { entityType, entityId, startDate, endDate } = req.body;
+  const policy = await getMealSkipPolicy();
 
   if (!entityType || !entityId || !startDate || !endDate) {
     return next(new AppError('entityType, entityId, startDate, and endDate are required.', 400));
@@ -196,11 +210,16 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
   const skipEnd = new Date(endDate);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  const requiredStartDate = new Date(today);
+  requiredStartDate.setDate(requiredStartDate.getDate() + policy.minNoticeDays);
 
-  if (skipStart < tomorrow) {
-    return next(new AppError('Skip start date must be at least tomorrow. You cannot skip meals for today or past dates.', 400));
+  if (skipStart < requiredStartDate) {
+    return next(
+      new AppError(
+        `Skip start date must be at least ${policy.minNoticeDays} day(s) in advance. You cannot skip meals for today/past dates or without required notice.`,
+        400
+      )
+    );
   }
 
   if (skipEnd < skipStart) {
@@ -211,8 +230,13 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
   const diffTime = skipEnd.getTime() - skipStart.getTime();
   const totalDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // inclusive
 
-  if (totalDays < 3) {
-    return next(new AppError(`Minimum 3 consecutive days required for meal skip. You requested ${totalDays} day(s). 1 or 2 day skip is NOT allowed.`, 400));
+  if (totalDays < policy.minSkipDays) {
+    return next(
+      new AppError(
+        `Minimum ${policy.minSkipDays} consecutive day(s) required for meal skip. You requested ${totalDays} day(s).`,
+        400
+      )
+    );
   }
 
   // Verify entity belongs to this client

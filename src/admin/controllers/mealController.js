@@ -397,7 +397,7 @@ exports.getSchoolTokensPDF = catchAsync(async (req, res, next) => {
             (cs.total_meals - cs.used_meals) AS remaining_meals
      FROM children ch
      JOIN client_subscriptions cs ON cs.entity_type='child' AND cs.entity_id=ch.id
-       AND cs.is_active=true AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
+       AND cs.is_active=true AND cs.start_date <= CURRENT_DATE AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
      LEFT JOIN standards s ON ch.standard_id = s.id
      LEFT JOIN meal_sizes ms ON ch.meal_size_id = ms.id
      WHERE ch.school_id = $1
@@ -490,7 +490,7 @@ exports.getCorporateTokensPDF = catchAsync(async (req, res, next) => {
             (cs.total_meals - cs.used_meals) AS remaining_meals
      FROM professional_profiles pp
      JOIN client_subscriptions cs ON cs.entity_type='professional' AND cs.entity_id=pp.id
-       AND cs.is_active=true AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
+       AND cs.is_active=true AND cs.start_date <= CURRENT_DATE AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
      WHERE pp.corporate_location_id = $1
        AND NOT EXISTS (
          SELECT 1 FROM meal_skips msk
@@ -559,7 +559,7 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
      FROM schools sc
      JOIN children ch ON ch.school_id = sc.id
      JOIN client_subscriptions cs ON cs.entity_type='child' AND cs.entity_id=ch.id
-       AND cs.is_active=true AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
+       AND cs.is_active=true AND cs.start_date <= CURRENT_DATE AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
      WHERE NOT EXISTS (
        SELECT 1 FROM meal_skips msk
        WHERE msk.entity_type='child' AND msk.entity_id=ch.id
@@ -575,7 +575,7 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
      FROM corporate_locations cl
      JOIN professional_profiles pp ON pp.corporate_location_id = cl.id
      JOIN client_subscriptions cs ON cs.entity_type='professional' AND cs.entity_id=pp.id
-       AND cs.is_active=true AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
+       AND cs.is_active=true AND cs.start_date <= CURRENT_DATE AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
      WHERE NOT EXISTS (
        SELECT 1 FROM meal_skips msk
        WHERE msk.entity_type='professional' AND msk.entity_id=pp.id
@@ -627,7 +627,7 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
               (cs.total_meals - cs.used_meals) AS remaining_meals
        FROM children ch
        JOIN client_subscriptions cs ON cs.entity_type='child' AND cs.entity_id=ch.id
-         AND cs.is_active=true AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
+         AND cs.is_active=true AND cs.start_date <= CURRENT_DATE AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
        LEFT JOIN standards s ON ch.standard_id = s.id
        LEFT JOIN meal_sizes ms ON ch.meal_size_id = ms.id
        WHERE ch.school_id = $1
@@ -672,7 +672,7 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
               (cs.total_meals - cs.used_meals) AS remaining_meals
        FROM professional_profiles pp
        JOIN client_subscriptions cs ON cs.entity_type='professional' AND cs.entity_id=pp.id
-         AND cs.is_active=true AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
+         AND cs.is_active=true AND cs.start_date <= CURRENT_DATE AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
        WHERE pp.corporate_location_id = $1
          AND NOT EXISTS (
            SELECT 1 FROM meal_skips msk

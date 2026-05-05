@@ -3,12 +3,18 @@ const bcrypt = require('bcrypt');
 process.env.DOTENVX_QUIET = '1';
 require('dotenv').config({ quiet: true });
 
+const sessionTz = /^[A-Za-z0-9_/+-]+$/.test(process.env.PG_SESSION_TIMEZONE || '')
+  ? process.env.PG_SESSION_TIMEZONE
+  : 'Asia/Kolkata';
+
 const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
   port: process.env.DB_PORT || 5432,
   database: process.env.DB_NAME || 'meal',
   user: process.env.DB_USER || 'RohitRohit',
   password: process.env.DB_PASSWORD || 'RohitRohit',
+  // Calendar-day logic (subscription start/end vs token date) expects consistent DATE() casting.
+  options: `-c TimeZone=${sessionTz}`,
 });
 
 // Test connection
@@ -357,6 +363,44 @@ const initDB = async () => {
     );
   `;
 
+  const createAppSettingsTable = `
+    CREATE TABLE IF NOT EXISTS app_settings (
+      setting_key   VARCHAR(100) PRIMARY KEY,
+      setting_value TEXT NOT NULL,
+      description   TEXT,
+      updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  const createSubscriptionMealAdjustmentsTable = `
+    CREATE TABLE IF NOT EXISTS subscription_meal_adjustments (
+      id              SERIAL PRIMARY KEY,
+      subscription_id VARCHAR(20) NOT NULL REFERENCES client_subscriptions(id) ON DELETE CASCADE,
+      adjusted_by     INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      adjustment_type VARCHAR(50) NOT NULL,
+      meal_delta      INTEGER NOT NULL,
+      reason          TEXT NOT NULL,
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  const createTokenDownloadLogsTable = `
+    CREATE TABLE IF NOT EXISTS token_download_logs (
+      id                 SERIAL PRIMARY KEY,
+      token_scope        VARCHAR(20) NOT NULL, -- 'school' | 'corporate'
+      scope_id           VARCHAR(20) NOT NULL, -- schoolId or locationId
+      meal_size_id       INTEGER NOT NULL DEFAULT -1,
+      token_date         DATE NOT NULL DEFAULT CURRENT_DATE,
+      downloaded         BOOLEAN NOT NULL DEFAULT true,
+      download_count     INTEGER NOT NULL DEFAULT 0,
+      first_downloaded_at TIMESTAMP,
+      last_downloaded_at TIMESTAMP,
+      last_downloaded_by INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
   // ──────────────────────────────────────────────
   // HOMEPAGES TABLE
   // ──────────────────────────────────────────────
@@ -436,6 +480,7 @@ const initDB = async () => {
     await pool.query(createHomepagesTable);
     await pool.query(createCartsTable);
     await pool.query(createCartItemsTable);
+    await pool.query(createAppSettingsTable);
 
     // ──────────────────────────────────────────────
     // MEAL SKIPS TABLE (client-initiated meal pauses)
@@ -534,6 +579,22 @@ const initDB = async () => {
       );
     `);
 
+    await pool.query(createSubscriptionMealAdjustmentsTable);
+    await pool.query(createTokenDownloadLogsTable);
+
+    // Token download logs: enforce real uniqueness (Postgres UNIQUE treats NULL meal_size_id as distinct rows)
+    await pool.query(`
+      ALTER TABLE token_download_logs
+      DROP CONSTRAINT IF EXISTS token_download_logs_token_scope_scope_id_meal_size_id_token_date_key
+    `);
+    await pool.query(`UPDATE token_download_logs SET meal_size_id = -1 WHERE meal_size_id IS NULL`);
+    await pool.query(`ALTER TABLE token_download_logs ALTER COLUMN meal_size_id SET DEFAULT -1`);
+    await pool.query(`ALTER TABLE token_download_logs ALTER COLUMN meal_size_id SET NOT NULL`);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_token_download_logs_scope_meal_day
+      ON token_download_logs (token_scope, scope_id, meal_size_id, token_date)
+    `);
+
     // Migration: Add order_type to orders table if it doesn't exist
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_type VARCHAR(20) NOT NULL DEFAULT 'single';`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cart_id VARCHAR(20) REFERENCES carts(id);`);
@@ -613,6 +674,14 @@ const initDB = async () => {
       `);
       console.log('Meal sizes seeded: Small, Medium, Large');
     }
+
+    await pool.query(`
+      INSERT INTO app_settings (setting_key, setting_value, description)
+      VALUES
+        ('meal_skip_min_days', '3', 'Minimum consecutive days required for a meal skip request'),
+        ('meal_skip_min_notice_days', '1', 'How many days in advance skip must be requested')
+      ON CONFLICT (setting_key) DO NOTHING;
+    `);
 
     // ──────────────────────────────────────────────
     // SEED: Standards (1st to 12th)
