@@ -8,11 +8,20 @@ const AppError = require('../../common/utils/AppError');
  */
 exports.saveTeacherProfile = async (req, res, next) => {
   try {
-    const { name, school_college_name, city, state, status } = req.body;
+    const { name, school_college_name, city, state, status, meal_time, meal_size_id } = req.body;
     const clientId = req.user.id;
 
-    if (!name || !school_college_name || !city || !state) {
-      return next(new AppError('All fields (name, school_college_name, city, state) are required', 400));
+    if (!name || !school_college_name || !city || !state || !meal_time || !meal_size_id) {
+      return next(new AppError('All fields (name, school_college_name, city, state, meal_time, meal_size_id) are required', 400));
+    }
+
+    // Validate meal size exists and is active
+    const mealSizeCheck = await query(
+      'SELECT id FROM meal_sizes WHERE id = $1 AND is_active = true',
+      [Number(meal_size_id)]
+    );
+    if (mealSizeCheck.rows.length === 0) {
+      return next(new AppError('Invalid or inactive meal size', 400));
     }
 
     // INDUSTRIAL RULE: Check for mutual exclusivity with Professional profile
@@ -37,22 +46,24 @@ exports.saveTeacherProfile = async (req, res, next) => {
           city = $3, 
           state = $4, 
           status = $5,
+          meal_time = $6,
+          meal_size_id = $7,
           updated_at = CURRENT_TIMESTAMP
-        WHERE client_id = $6
+        WHERE client_id = $8
         RETURNING *;
       `;
-      const values = [name, school_college_name, city, state, status || 'active', clientId];
+      const values = [name, school_college_name, city, state, status || 'active', meal_time, Number(meal_size_id), clientId];
       const updateResult = await query(updateQuery, values);
       result = updateResult.rows[0];
     } else {
       // Create new
       const insertQuery = `
         INSERT INTO teacher_profiles (
-          client_id, name, school_college_name, city, state, location, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+          client_id, name, school_college_name, city, state, location, status, meal_time, meal_size_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING *;
       `;
-      const values = [clientId, name, school_college_name, city, state, '', status || 'active'];
+      const values = [clientId, name, school_college_name, city, state, '', status || 'active', meal_time, Number(meal_size_id)];
       const insertResult = await query(insertQuery, values);
       result = insertResult.rows[0];
     }
