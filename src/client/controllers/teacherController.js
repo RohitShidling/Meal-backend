@@ -1,5 +1,32 @@
 const { query } = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
+const DEFAULT_MEAL_TIME = '1:00 PM';
+
+const normalizeMealTime = (input) => {
+  const raw = String(input ?? '').trim();
+  if (!raw) return DEFAULT_MEAL_TIME;
+  const twelveHour = raw.match(/^(\d{1,2}):([0-5]\d)\s*(AM|PM)$/i);
+  if (twelveHour) {
+    const hour = Number(twelveHour[1]);
+    if (hour >= 1 && hour <= 12) {
+      return `${hour}:${twelveHour[2]} ${twelveHour[3].toUpperCase()}`;
+    }
+  }
+  const twentyFourHour = raw.match(/^(\d{1,2}):([0-5]\d)$/);
+  if (twentyFourHour) {
+    const hour = Number(twentyFourHour[1]);
+    if (hour >= 0 && hour <= 23) {
+      const normalized = new Date(Date.UTC(2000, 0, 1, hour, Number(twentyFourHour[2])));
+      return normalized.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'UTC',
+      });
+    }
+  }
+  return DEFAULT_MEAL_TIME;
+};
 
 /**
  * @desc    Create or update teacher profile
@@ -8,12 +35,13 @@ const AppError = require('../../common/utils/AppError');
  */
 exports.saveTeacherProfile = async (req, res, next) => {
   try {
-    const { name, school_college_name, city, state, status } = req.body;
+    const { name, school_college_name, city, state, meal_time, status } = req.body;
     const clientId = req.user.id;
 
     if (!name || !school_college_name || !city || !state) {
       return next(new AppError('All fields (name, school_college_name, city, state) are required', 400));
     }
+    const normalizedMealTime = normalizeMealTime(meal_time);
 
     // INDUSTRIAL RULE: Check for mutual exclusivity with Professional profile
     const profCheck = await query('SELECT id FROM professional_profiles WHERE client_id = $1', [clientId]);
@@ -47,23 +75,24 @@ exports.saveTeacherProfile = async (req, res, next) => {
           school_id = $3,
           city = $4, 
           state = $5, 
-          status = $6,
+          meal_time = $6,
+          status = $7,
           updated_at = CURRENT_TIMESTAMP
-        WHERE client_id = $7
+        WHERE client_id = $8
         RETURNING *;
       `;
-      const values = [name, school_college_name, resolvedSchoolId, city, state, status || 'active', clientId];
+      const values = [name, school_college_name, resolvedSchoolId, city, state, normalizedMealTime, status || 'active', clientId];
       const updateResult = await query(updateQuery, values);
       result = updateResult.rows[0];
     } else {
       // Create new
       const insertQuery = `
         INSERT INTO teacher_profiles (
-          client_id, name, school_college_name, school_id, city, state, location, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          client_id, name, school_college_name, school_id, city, state, meal_time, location, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING *;
       `;
-      const values = [clientId, name, school_college_name, resolvedSchoolId, city, state, '', status || 'active'];
+      const values = [clientId, name, school_college_name, resolvedSchoolId, city, state, normalizedMealTime, '', status || 'active'];
       const insertResult = await query(insertQuery, values);
       result = insertResult.rows[0];
     }

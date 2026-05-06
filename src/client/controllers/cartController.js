@@ -44,6 +44,19 @@ const validateEntityOwnership = async (entityType, entityId, clientId) => {
   return false;
 };
 
+const assertLargeMealSizeForRole = async ({ entityType, subscription }) => {
+  if (!['teacher', 'professional'].includes(entityType)) return;
+  const mealSizeId = subscription?.meal_size_id;
+  if (!mealSizeId) {
+    throw new AppError('Teacher and professional subscriptions must use Large meal size only.', 400);
+  }
+  const sizeRes = await db.query('SELECT LOWER(name) AS meal_size_key FROM meal_sizes WHERE id = $1', [mealSizeId]);
+  const key = sizeRes.rows[0]?.meal_size_key;
+  if (key !== 'large') {
+    throw new AppError('Teacher and professional subscriptions must use Large meal size only.', 400);
+  }
+};
+
 // ─── GET OR CREATE ACTIVE CART ────────────────────────────────────────────
 const getOrCreateCart = async (clientId) => {
   let cart = await db.query(
@@ -100,6 +113,7 @@ exports.addToCart = catchAsync(async (req, res, next) => {
 
   const sub = await db.query('SELECT * FROM subscriptions WHERE id=$1 AND is_active=true', [subscriptionId]);
   if (sub.rows.length === 0) return next(new AppError('Subscription plan not found', 404));
+  await assertLargeMealSizeForRole({ entityType, subscription: sub.rows[0] });
   const includeSaturdayFlag = parseBoolean(includeSaturday, true);
   const plan = sub.rows[0];
   const selectedPrice = includeSaturdayFlag

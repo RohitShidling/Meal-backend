@@ -44,7 +44,7 @@ const validateProfessionalProfile = (req, res, next) => {
  * Validator for teacher profile
  */
 const validateTeacherProfile = (req, res, next) => {
-  const { name, school_college_name, city, state } = req.body;
+  const { name, school_college_name, city, state, meal_time } = req.body;
   const errors = [];
 
   if (!name || name.trim().length < 2) {
@@ -63,6 +63,12 @@ const validateTeacherProfile = (req, res, next) => {
 
   if (!state) {
     errors.push('State is required.');
+  }
+
+  if (!meal_time) {
+    errors.push('Meal time is required.');
+  } else if (!/^\d{2}:\d{2}(:\d{2})?$/.test(String(meal_time).trim())) {
+    errors.push('Meal time must be in HH:MM or HH:MM:SS format.');
   }
 
   if (errors.length > 0) {

@@ -42,6 +42,31 @@ exports.reduceMealsForToday = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * @desc  Reverse today's meal reduction (admin safety rollback)
+ * @route POST /api/admin/meals/reduce-today/reverse
+ */
+exports.reverseTodayMealReduction = catchAsync(async (req, res, next) => {
+  const adminId = req.user.id;
+  const today = mealEligibilityService.parseSessionToday();
+
+  const result = await mealEligibilityService.reverseMealReductionForDate(adminId, today);
+  if (result.notFound) {
+    return next(new AppError(`No meal reduction found for ${today}.`, 404));
+  }
+
+  res.status(200).json({
+    success: true,
+    message: `Meal reduction rollback completed for ${today}.`,
+    data: {
+      date: today,
+      reduction_id: result.reductionId,
+      restored_count: result.restoredCount,
+      restored_entities: result.restored,
+    },
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1.5. ADMIN: ADD EXTRA MEALS BY ENTITY (child/teacher/professional)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -109,7 +134,14 @@ exports.adminAddExtraMealsByEntity = catchAsync(async (req, res, next) => {
 
   // Find the subscription row for this entity (even if it is inactive due to remaining hitting 0)
   const subRes = await db.query(
-    `SELECT id, client_id, total_meals, used_meals, end_date, start_date, include_saturday
+    `SELECT id,
+            client_id,
+            total_meals,
+            used_meals,
+            start_date,
+            end_date,
+            TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date_ymd,
+            include_saturday
      FROM client_subscriptions
      WHERE entity_type = $1 AND entity_id = $2
      LIMIT 1`,
@@ -122,7 +154,7 @@ exports.adminAddExtraMealsByEntity = catchAsync(async (req, res, next) => {
   const remainingBefore = Number(sub.total_meals) - Number(sub.used_meals);
 
   const includeSaturday = sub.include_saturday !== false;
-  const endYmd = String(sub.end_date).slice(0, 10);
+  const endYmd = sub.end_date_ymd;
   if (!parseYmdStrict(endYmd)) return next(new AppError('Invalid subscription end_date format in DB.', 500));
 
   const newEndYmd = extendEndYmdByMealDays({
@@ -181,6 +213,105 @@ exports.adminAddExtraMealsByEntity = catchAsync(async (req, res, next) => {
     await db.query('ROLLBACK');
     throw e;
   }
+});
+
+/**
+ * @desc  Admin list of all subscribed users with remaining meals
+ * @route GET /api/admin/meals/users
+ */
+exports.getSubscribedUsersRemainingMeals = catchAsync(async (req, res) => {
+  const { role, q, activeOnly = 'false', page = 1, limit = 50 } = req.query;
+  const roleFilter = role ? String(role).trim().toLowerCase() : null;
+  const allowedRoles = ['child', 'teacher', 'professional'];
+  if (roleFilter && !allowedRoles.includes(roleFilter)) {
+    throw new AppError('Invalid role. Use child, teacher, or professional.', 400);
+  }
+
+  const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+  const limitNum = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+  const offset = (pageNum - 1) * limitNum;
+  const search = q ? `%${String(q).trim()}%` : null;
+  const onlyActive = activeOnly === true || String(activeOnly).toLowerCase() === 'true';
+
+  const params = [];
+  const where = ['1=1'];
+  if (roleFilter) {
+    params.push(roleFilter);
+    where.push(`cs.entity_type = $${params.length}`);
+  }
+  if (search) {
+    params.push(search);
+    const s = `$${params.length}`;
+    where.push(
+      `(COALESCE(ch.name, tp.name, pp.name) ILIKE ${s} OR cs.entity_id ILIKE ${s} OR cs.id ILIKE ${s})`
+    );
+  }
+  if (onlyActive) {
+    where.push('cs.is_active = true');
+  }
+
+  params.push(limitNum, offset);
+  const limitParam = `$${params.length - 1}`;
+  const offsetParam = `$${params.length}`;
+
+  const rows = await db.query(
+    `SELECT
+       cs.id AS subscription_id,
+       cs.entity_type AS role,
+       cs.entity_id,
+       COALESCE(ch.name, tp.name, pp.name) AS user_name,
+       cs.is_active,
+       DATE(cs.start_date) AS start_date,
+       DATE(cs.end_date) AS end_date,
+       cs.total_meals,
+       cs.used_meals,
+       (cs.total_meals - cs.used_meals) AS remaining_meals
+     FROM client_subscriptions cs
+     LEFT JOIN children ch ON cs.entity_type = 'child' AND cs.entity_id = ch.id
+     LEFT JOIN teacher_profiles tp ON cs.entity_type = 'teacher' AND cs.entity_id = tp.id
+     LEFT JOIN professional_profiles pp ON cs.entity_type = 'professional' AND cs.entity_id = pp.id
+     WHERE ${where.join(' AND ')}
+     ORDER BY cs.updated_at DESC
+     LIMIT ${limitParam} OFFSET ${offsetParam}`,
+    params
+  );
+
+  const countParams = params.slice(0, params.length - 2);
+  const countRes = await db.query(
+    `SELECT COUNT(*)::int AS total
+     FROM client_subscriptions cs
+     LEFT JOIN children ch ON cs.entity_type = 'child' AND cs.entity_id = ch.id
+     LEFT JOIN teacher_profiles tp ON cs.entity_type = 'teacher' AND cs.entity_id = tp.id
+     LEFT JOIN professional_profiles pp ON cs.entity_type = 'professional' AND cs.entity_id = pp.id
+     WHERE ${where.join(' AND ')}`,
+    countParams
+  );
+
+  res.status(200).json({
+    success: true,
+    pagination: {
+      total: countRes.rows[0]?.total || 0,
+      page: pageNum,
+      limit: limitNum,
+    },
+    data: rows.rows,
+  });
+});
+
+/**
+ * @desc  Admin add remaining meals for one selected user
+ * @route POST /api/admin/meals/users/:entityType/:entityId/add-remaining-meals
+ */
+exports.addRemainingMealsForUser = catchAsync(async (req, res, next) => {
+  const { entityType, entityId } = req.params;
+  const { mealsToAdd, reason } = req.body || {};
+  req.body = {
+    entityType,
+    entityId,
+    extraMeals: mealsToAdd,
+    reason: reason || 'Admin manual meal extension',
+  };
+  return exports.adminAddExtraMealsByEntity(req, res, next);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

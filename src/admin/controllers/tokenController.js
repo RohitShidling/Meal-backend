@@ -200,6 +200,35 @@ const buildSchoolCardRows = (row) => {
   ];
 };
 
+const groupSchoolRowsForExport = (rows, mealCatalogRows = []) => {
+  const grouped = new Map();
+  (rows || []).forEach((row) => {
+    const key = row.meal_size || 'Unassigned';
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(row);
+  });
+
+  const ordered = [];
+  for (const meal of mealCatalogRows) {
+    const key = meal.display_name;
+    if (grouped.has(key)) {
+      ordered.push({ label: key, rows: grouped.get(key) });
+      grouped.delete(key);
+    }
+  }
+
+  if (grouped.has('Unassigned')) {
+    ordered.push({ label: 'Unassigned', rows: grouped.get('Unassigned') });
+    grouped.delete('Unassigned');
+  }
+
+  for (const [label, groupRows] of grouped.entries()) {
+    ordered.push({ label, rows: groupRows });
+  }
+
+  return ordered;
+};
+
 /** Master meal_sizes: reject PDF if id inactive or missing (front must use catalog API ids). */
 const assertActiveMealSizeId = async (mealSizeId, next) => {
   const res = await db.query(
@@ -486,23 +515,26 @@ exports.downloadExportSchoolsBundlePdf = catchAsync(async (req, res, next) => {
   const sections = [];
   let totalRows = 0;
   for (const sch of schools.rows) {
-    for (const ms of meals.rows) {
-      const q = await mealEligibilityService.fetchChildTokenRows({
-        schoolId: sch.school_id,
-        mealSizeId: ms.meal_size_id,
-        delivery,
-      });
-      const rows = q.rows;
-      totalRows += rows.length;
-      if (rows.length === 0) continue;
+    const allRowsRes = await mealEligibilityService.fetchChildTokenRows({
+      schoolId: sch.school_id,
+      mealSizeId: null,
+      delivery,
+    });
+    const allRows = allRowsRes.rows || [];
+    totalRows += allRows.length;
+
+    const grouped = groupSchoolRowsForExport(allRows, meals.rows);
+    for (const group of grouped) {
+      const rows = group.rows;
+      if (!rows.length) continue;
       sections.push({
-        title: `${sch.school_name} — ${ms.display_name}`,
+        title: `${sch.school_name} — ${group.label}`,
         subtitle: `${rows.length} token(s) • ${delivery}`,
         rows,
         drawOne: (doc, x, y, s, serialIdx) => {
           drawTokenCard(doc, x, y, {
             header: `${sch.school_name} — ${delivery}`,
-            badge: s.meal_size || ms.display_name,
+            badge: s.meal_size || group.label,
             serial: `#${serialIdx + 1}`,
             rows: buildSchoolCardRows(s),
           });
@@ -617,23 +649,26 @@ exports.downloadExportAllBundlePdf = catchAsync(async (req, res, next) => {
   const realSections = [];
   let totalSchoolRows = 0;
   for (const sch of schools.rows) {
-    for (const ms of meals.rows) {
-      const q = await mealEligibilityService.fetchChildTokenRows({
-        schoolId: sch.school_id,
-        mealSizeId: ms.meal_size_id,
-        delivery,
-      });
-      const rows = q.rows;
-      totalSchoolRows += rows.length;
-      if (rows.length === 0) continue;
+    const allRowsRes = await mealEligibilityService.fetchChildTokenRows({
+      schoolId: sch.school_id,
+      mealSizeId: null,
+      delivery,
+    });
+    const allRows = allRowsRes.rows || [];
+    totalSchoolRows += allRows.length;
+
+    const grouped = groupSchoolRowsForExport(allRows, meals.rows);
+    for (const group of grouped) {
+      const rows = group.rows;
+      if (!rows.length) continue;
       realSections.push({
-        title: `${sch.school_name} — ${ms.display_name}`,
+        title: `${sch.school_name} — ${group.label}`,
         subtitle: `${rows.length} token(s)`,
         rows,
         drawOne: (doc, x, y, s, serialIdx) => {
           drawTokenCard(doc, x, y, {
             header: `${sch.school_name} — ${delivery}`,
-            badge: s.meal_size || ms.display_name,
+            badge: s.meal_size || group.label,
             serial: `#${serialIdx + 1}`,
             rows: buildSchoolCardRows(s),
           });

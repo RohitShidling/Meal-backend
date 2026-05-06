@@ -25,6 +25,19 @@ const validateEntityOwnership = async (entityType, entityId, clientId) => {
   return r.rows.length > 0;
 };
 
+const assertLargeMealSizeForRole = async ({ entityType, subscription }) => {
+  if (!['teacher', 'professional'].includes(entityType)) return;
+  const mealSizeId = subscription?.meal_size_id;
+  if (!mealSizeId) {
+    throw new AppError('Teacher and professional subscriptions must use Large meal size only.', 400);
+  }
+  const sizeRes = await db.query('SELECT LOWER(name) AS meal_size_key FROM meal_sizes WHERE id = $1', [mealSizeId]);
+  const key = sizeRes.rows[0]?.meal_size_key;
+  if (key !== 'large') {
+    throw new AppError('Teacher and professional subscriptions must use Large meal size only.', 400);
+  }
+};
+
 const parseBoolean = (value, defaultValue = true) => {
   if (value === undefined || value === null) return defaultValue;
   if (typeof value === 'boolean') return value;
@@ -195,6 +208,7 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
 
   const subResult = await db.query('SELECT * FROM subscriptions WHERE id=$1 AND is_active=true', [subscriptionId]);
   if (subResult.rows.length === 0) return next(new AppError('Subscription plan not found', 404));
+  await assertLargeMealSizeForRole({ entityType, subscription: subResult.rows[0] });
 
   const subscription = subResult.rows[0];
   const includeSaturdayFlag = parseBoolean(includeSaturday, true);
@@ -262,10 +276,13 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
 
   const cart = cartRes.rows[0];
   const items = await db.query(
-    'SELECT ci.*, s.plan_name FROM cart_items ci JOIN subscriptions s ON ci.subscription_id=s.id WHERE ci.cart_id=$1',
+    'SELECT ci.*, s.plan_name, s.meal_size_id FROM cart_items ci JOIN subscriptions s ON ci.subscription_id=s.id WHERE ci.cart_id=$1',
     [cart.id]
   );
   if (items.rows.length === 0) return next(new AppError('Your cart has no items', 400));
+  for (const item of items.rows) {
+    await assertLargeMealSizeForRole({ entityType: item.entity_type, subscription: item });
+  }
 
   const totalAmount = parseFloat(cart.total_amount);
 

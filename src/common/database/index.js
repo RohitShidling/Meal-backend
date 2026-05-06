@@ -270,6 +270,7 @@ const initDB = async () => {
       school_id           VARCHAR(20) REFERENCES schools(id) ON DELETE SET NULL,
       city                VARCHAR(100) NOT NULL,
       state               VARCHAR(100) NOT NULL,
+      meal_time           TIME NOT NULL DEFAULT '12:30:00',
       location            TEXT NOT NULL,
       status              VARCHAR(50) NOT NULL DEFAULT 'active',
       created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -658,6 +659,10 @@ const initDB = async () => {
 
     // Teacher → school mapping (needed for school token PDFs that include teachers)
     await pool.query(`ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS school_id VARCHAR(20) REFERENCES schools(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS meal_time TIME;`);
+    await pool.query(`UPDATE teacher_profiles SET meal_time = '12:30:00' WHERE meal_time IS NULL;`);
+    await pool.query(`ALTER TABLE teacher_profiles ALTER COLUMN meal_time SET DEFAULT '12:30:00';`);
+    await pool.query(`ALTER TABLE teacher_profiles ALTER COLUMN meal_time SET NOT NULL;`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_teacher_profiles_school_id ON teacher_profiles (school_id);`);
     // Best-effort backfill from legacy free-text name (case-insensitive exact match after trim)
     await pool.query(`

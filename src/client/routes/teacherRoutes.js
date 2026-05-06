@@ -37,6 +37,10 @@ const { validateTeacherProfile } = require('../validators/profileValidator');
  *         state:
  *           type: string
  *           example: "Karnataka"
+ *         meal_time:
+ *           type: string
+ *           format: time
+ *           example: "12:30:00"
  *         status:
  *           type: string
  *           example: "active"
@@ -67,6 +71,7 @@ const { validateTeacherProfile } = require('../validators/profileValidator');
  *               - school_college_name
  *               - city
  *               - state
+ *               - meal_time
  *             properties:
  *               name:
  *                 type: string
@@ -81,6 +86,10 @@ const { validateTeacherProfile } = require('../validators/profileValidator');
  *               state:
  *                 type: string
  *                 example: "Karnataka"
+ *               meal_time:
+ *                 type: string
+ *                 format: time
+ *                 example: "12:30:00"
  *               status:
  *                 type: string
  *                 example: "active"
@@ -135,6 +144,10 @@ router.post('/profile', clientAuthMiddleware, validateTeacherProfile, teacherCon
  *               state:
  *                 type: string
  *                 example: "Karnataka"
+ *               meal_time:
+ *                 type: string
+ *                 format: time
+ *                 example: "12:30:00"
  *               status:
  *                 type: string
  *                 example: "active"

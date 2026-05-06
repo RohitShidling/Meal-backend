@@ -12,6 +12,8 @@ const { pool, query } = require('../database');
 const AppError = require('../utils/AppError');
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const DEFAULT_MEAL_TIME = '1:00 PM';
+const DEFAULT_TEACHER_PROFESSIONAL_MEAL_SIZE_LABEL = 'Large';
 
 const sessionTimezone = () =>
   /^[A-Za-z0-9_/+-]+$/.test(process.env.PG_SESSION_TIMEZONE || '')
@@ -34,6 +36,17 @@ const resolveDeliveryDate = (inputDate, next) => {
   }
   return inputDate;
 };
+
+const mealTimeSql = (columnRef) => `
+  CASE
+    WHEN ${columnRef} IS NULL OR BTRIM(${columnRef}::text) = '' THEN '${DEFAULT_MEAL_TIME}'
+    WHEN ${columnRef}::text ~* '^\\s*\\d{1,2}:\\d{2}\\s*(AM|PM)\\s*$'
+      THEN UPPER(TO_CHAR(TO_TIMESTAMP(TRIM(${columnRef}::text), 'HH12:MI AM'), 'FMHH12:MI AM'))
+    WHEN ${columnRef}::text ~ '^\\s*\\d{1,2}:\\d{2}\\s*$'
+      THEN UPPER(TO_CHAR(TRIM(${columnRef}::text)::time, 'FMHH12:MI AM'))
+    ELSE '${DEFAULT_MEAL_TIME}'
+  END
+`;
 
 /**
  * SQL predicate on client_subscriptions row alias `cs` — parameter $1 = delivery DATE as string.
@@ -100,7 +113,15 @@ async function countSkippedDueToPolicyOnly(delivery, dbClient = null) {
 async function fetchSchoolMealSizeCounts(delivery) {
   const pred = subscriptionEligiblePredicateSql('cs');
   return query(
-    `SELECT school_id, meal_size_id, SUM(cnt)::int AS students_count
+    `WITH large_size AS (
+       SELECT id
+       FROM meal_sizes
+       WHERE is_active = true
+         AND (LOWER(name) = 'large' OR LOWER(display_name) = 'large')
+       ORDER BY sort_order ASC, id ASC
+       LIMIT 1
+     )
+     SELECT school_id, meal_size_id, SUM(cnt)::int AS students_count
      FROM (
        SELECT ch.school_id AS school_id,
               ch.meal_size_id AS meal_size_id,
@@ -115,16 +136,17 @@ async function fetchSchoolMealSizeCounts(delivery) {
        UNION ALL
 
        SELECT tp.school_id AS school_id,
-              sub.meal_size_id AS meal_size_id,
+              COALESCE(sub.meal_size_id, ls.id) AS meal_size_id,
               COUNT(DISTINCT tp.id)::int AS cnt
        FROM teacher_profiles tp
+       LEFT JOIN large_size ls ON TRUE
        INNER JOIN client_subscriptions cs
          ON cs.entity_type = 'teacher'
         AND cs.entity_id = tp.id
         AND ${pred}
        INNER JOIN subscriptions sub ON sub.id = cs.subscription_id
-       WHERE tp.school_id IS NOT NULL AND sub.meal_size_id IS NOT NULL
-       GROUP BY tp.school_id, sub.meal_size_id
+       WHERE tp.school_id IS NOT NULL
+       GROUP BY tp.school_id, COALESCE(sub.meal_size_id, ls.id)
      ) z
      GROUP BY school_id, meal_size_id`,
     [delivery]
@@ -149,10 +171,20 @@ async function fetchChildTokenRows({ schoolId, mealSizeId, delivery }) {
   const pred = subscriptionEligiblePredicateSql('cs').replace(/\$1/g, deliveryParam);
 
   const teacherMealSizeFilter =
-    mealSizeId !== null && mealSizeId !== undefined && mealSizeId !== '' ? 'AND sub2.meal_size_id = $2' : '';
+    mealSizeId !== null && mealSizeId !== undefined && mealSizeId !== ''
+      ? 'AND COALESCE(sub2.meal_size_id, ls.id) = $2'
+      : '';
 
   const sql = `
-    WITH child_tokens AS (
+    WITH large_size AS (
+      SELECT id, display_name, sort_order
+      FROM meal_sizes
+      WHERE is_active = true
+        AND (LOWER(name) = 'large' OR LOWER(display_name) = 'large')
+      ORDER BY sort_order ASC, id ASC
+      LIMIT 1
+    ),
+    child_tokens AS (
       SELECT DISTINCT ON (ch.id)
              ch.id AS entity_id,
              'child' AS entity_type,
@@ -162,7 +194,7 @@ async function fetchChildTokenRows({ schoolId, mealSizeId, delivery }) {
              s.display_name AS standard,
              ms.display_name AS meal_size,
              ms.sort_order,
-             ch.meal_time,
+             ${mealTimeSql('ch.meal_time')} AS meal_time,
              (cs.total_meals - cs.used_meals) AS remaining_meals,
              cs.id AS subscription_id
       FROM children ch
@@ -184,12 +216,13 @@ async function fetchChildTokenRows({ schoolId, mealSizeId, delivery }) {
              tp.name AS student_name,
              NULL::varchar AS roll_number,
              NULL::varchar AS standard,
-             ms2.display_name AS meal_size,
-             ms2.sort_order,
-             NULL::time AS meal_time,
+             COALESCE(ms2.display_name, ls.display_name, '${DEFAULT_TEACHER_PROFESSIONAL_MEAL_SIZE_LABEL}') AS meal_size,
+             COALESCE(ms2.sort_order, ls.sort_order, 9999) AS sort_order,
+             ${mealTimeSql('tp.meal_time')} AS meal_time,
              (cs2.total_meals - cs2.used_meals) AS remaining_meals,
              cs2.id AS subscription_id
       FROM teacher_profiles tp
+      LEFT JOIN large_size ls ON TRUE
       INNER JOIN client_subscriptions cs2
         ON cs2.entity_type = 'teacher'
        AND cs2.entity_id = tp.id
@@ -211,7 +244,15 @@ async function fetchChildTokenRows({ schoolId, mealSizeId, delivery }) {
 async function fetchProfessionalTokenRows({ locationId, delivery }) {
   const pred = subscriptionEligiblePredicateSql('cs');
   return query(
-    `SELECT * FROM (
+    `WITH large_size AS (
+       SELECT id, display_name
+       FROM meal_sizes
+       WHERE is_active = true
+         AND (LOWER(name) = 'large' OR LOWER(display_name) = 'large')
+       ORDER BY sort_order ASC, id ASC
+       LIMIT 1
+     )
+     SELECT * FROM (
        SELECT DISTINCT ON (pp.id)
               pp.id AS entity_id,
               'professional' AS entity_type,
@@ -220,12 +261,15 @@ async function fetchProfessionalTokenRows({ locationId, delivery }) {
               pp.company_name,
               (cs.total_meals - cs.used_meals) AS remaining_meals,
               cs.id AS subscription_id,
-              'Professional' AS meal_size
+              COALESCE(ms.display_name, ls.display_name, '${DEFAULT_TEACHER_PROFESSIONAL_MEAL_SIZE_LABEL}') AS meal_size
        FROM professional_profiles pp
+       LEFT JOIN large_size ls ON TRUE
        INNER JOIN client_subscriptions cs
          ON cs.entity_type = 'professional'
         AND cs.entity_id = pp.id
         AND ${pred}
+       INNER JOIN subscriptions sub ON sub.id = cs.subscription_id
+       LEFT JOIN meal_sizes ms ON ms.id = sub.meal_size_id
        WHERE pp.corporate_location_id = $2
        ORDER BY pp.id, cs.id
      ) t
@@ -337,22 +381,40 @@ async function executeMealReductionForDate(adminId, deliveryDate) {
 
     const reductionId = reductionIns.rows[0].id;
     const pred = subscriptionEligiblePredicateSql('cs');
+    const tokenEligibleSql = `
+      SELECT cs.id AS subscription_id, cs.entity_type, cs.entity_id
+      FROM client_subscriptions cs
+      INNER JOIN children ch
+        ON cs.entity_type = 'child'
+       AND cs.entity_id = ch.id
+      WHERE ${pred}
+        AND ch.school_id IS NOT NULL
+      UNION
+      SELECT cs.id AS subscription_id, cs.entity_type, cs.entity_id
+      FROM client_subscriptions cs
+      INNER JOIN teacher_profiles tp
+        ON cs.entity_type = 'teacher'
+       AND cs.entity_id = tp.id
+      WHERE ${pred}
+        AND tp.school_id IS NOT NULL
+      UNION
+      SELECT cs.id AS subscription_id, cs.entity_type, cs.entity_id
+      FROM client_subscriptions cs
+      INNER JOIN professional_profiles pp
+        ON cs.entity_type = 'professional'
+       AND cs.entity_id = pp.id
+      WHERE ${pred}
+        AND pp.corporate_location_id IS NOT NULL
+    `;
 
-    const eligibleRes = await client.query(
-      `SELECT cs.id AS subscription_id, cs.entity_type, cs.entity_id
-       FROM client_subscriptions cs
-       WHERE ${pred}`,
-      [deliveryDate]
-    );
+    const eligibleRes = await client.query(tokenEligibleSql, [deliveryDate]);
     const eligibleCount = eligibleRes.rowCount;
 
     const insertLog = await client.query(
       `INSERT INTO daily_meal_log (subscription_id, entity_type, entity_id, meal_date, reduction_id)
        SELECT e.subscription_id, e.entity_type, e.entity_id, $1::date, $2
        FROM (
-         SELECT cs.id AS subscription_id, cs.entity_type, cs.entity_id
-         FROM client_subscriptions cs
-         WHERE ${pred}
+         ${tokenEligibleSql}
        ) e
        ON CONFLICT (subscription_id, meal_date) DO NOTHING
        RETURNING subscription_id, entity_type, entity_id`,
@@ -430,6 +492,147 @@ async function executeMealReductionForDate(adminId, deliveryDate) {
   }
 }
 
+const addDaysYmd = (ymd, days) => {
+  const [y, m, d] = String(ymd).split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  dt.setUTCDate(dt.getUTCDate() + Number(days));
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+};
+
+const isSaturdayYmd = (ymd) => {
+  const [y, m, d] = String(ymd).split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  return dt.getUTCDay() === 6;
+};
+
+const extendEndYmdByMealDays = ({ endYmd, includeSaturday, extraMeals }) => {
+  let remainingExtra = Number(extraMeals) || 0;
+  let cursor = endYmd;
+  while (remainingExtra > 0) {
+    cursor = addDaysYmd(cursor, 1);
+    const saturday = isSaturdayYmd(cursor);
+    const isMealDay = includeSaturday || !saturday;
+    if (isMealDay) remainingExtra -= 1;
+  }
+  return cursor;
+};
+
+async function reverseMealReductionForDate(adminId, deliveryDate) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const reductionRes = await client.query(
+      `SELECT id
+       FROM meal_reductions
+       WHERE reduction_date = $1::date
+       FOR UPDATE`,
+      [deliveryDate]
+    );
+
+    if (reductionRes.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return { notFound: true, date: deliveryDate };
+    }
+
+    const reductionId = reductionRes.rows[0].id;
+    const affectedRes = await client.query(
+      `SELECT dml.subscription_id,
+              dml.entity_type,
+              dml.entity_id,
+              cs.include_saturday,
+              TO_CHAR(cs.end_date, 'YYYY-MM-DD') AS end_date_ymd
+       FROM daily_meal_log dml
+       INNER JOIN client_subscriptions cs ON cs.id = dml.subscription_id
+       WHERE dml.reduction_id = $1
+         AND dml.meal_date = $2::date`,
+      [reductionId, deliveryDate]
+    );
+
+    if (affectedRes.rowCount === 0) {
+      await client.query('DELETE FROM meal_reductions WHERE id = $1', [reductionId]);
+      await client.query('COMMIT');
+      return {
+        notFound: false,
+        reductionId,
+        date: deliveryDate,
+        restoredCount: 0,
+        restored: [],
+      };
+    }
+
+    const subscriptionIds = affectedRes.rows.map((r) => r.subscription_id);
+    await client.query(
+      `UPDATE client_subscriptions
+       SET used_meals = GREATEST(used_meals - 1, 0),
+           is_active = true,
+           updated_at = NOW()
+       WHERE id = ANY($1::varchar[])`,
+      [subscriptionIds]
+    );
+
+    for (const row of affectedRes.rows) {
+      const endYmd = row.end_date_ymd;
+      const newEndYmd = extendEndYmdByMealDays({
+        endYmd,
+        includeSaturday: row.include_saturday !== false,
+        extraMeals: 1,
+      });
+      await client.query(
+        `UPDATE client_subscriptions
+         SET end_date = ($1::date + interval '12 hours'),
+             updated_at = NOW()
+         WHERE id = $2`,
+        [newEndYmd, row.subscription_id]
+      );
+    }
+
+    await client.query(
+      `INSERT INTO subscription_meal_adjustments
+        (subscription_id, adjusted_by, adjustment_type, meal_delta, reason)
+       SELECT dml.subscription_id, $1, 'reduction_rollback', 1, $2
+       FROM daily_meal_log dml
+       WHERE dml.reduction_id = $3
+         AND dml.meal_date = $4::date`,
+      [adminId, `Rollback meal reduction for ${deliveryDate}`, reductionId, deliveryDate]
+    );
+
+    await client.query(
+      `DELETE FROM daily_meal_log
+       WHERE reduction_id = $1
+         AND meal_date = $2::date`,
+      [reductionId, deliveryDate]
+    );
+
+    await client.query('DELETE FROM meal_reductions WHERE id = $1', [reductionId]);
+    await client.query('COMMIT');
+
+    return {
+      notFound: false,
+      reductionId,
+      date: deliveryDate,
+      restoredCount: affectedRes.rowCount,
+      restored: affectedRes.rows.map((r) => ({
+        subscription_id: r.subscription_id,
+        entity_type: r.entity_type,
+        entity_id: r.entity_id,
+      })),
+    };
+  } catch (e) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (_) {
+      /* ignore */
+    }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
   parseSessionToday,
   resolveDeliveryDate,
@@ -443,5 +646,6 @@ module.exports = {
   fetchDistinctCorporateLocationsWithEligible,
   fetchCorporateOverviewBase,
   executeMealReductionForDate,
+  reverseMealReductionForDate,
   countSkippedDueToPolicyOnly,
 };
