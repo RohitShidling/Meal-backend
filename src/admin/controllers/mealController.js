@@ -251,6 +251,7 @@ exports.getSubscribedUsersRemainingMeals = catchAsync(async (req, res) => {
        cs.id AS subscription_id,
        cs.entity_type AS role,
        cs.entity_id,
+       c.phone_number,
        COALESCE(ch.name, tp.name, pp.name) AS user_name,
        cs.is_active,
        DATE(cs.start_date) AS start_date,
@@ -259,6 +260,7 @@ exports.getSubscribedUsersRemainingMeals = catchAsync(async (req, res) => {
        cs.used_meals,
        (cs.total_meals - cs.used_meals) AS remaining_meals
      FROM client_subscriptions cs
+     LEFT JOIN clients c ON cs.client_id = c.id
      LEFT JOIN children ch ON cs.entity_type = 'child' AND cs.entity_id = ch.id
      LEFT JOIN teacher_profiles tp ON cs.entity_type = 'teacher' AND cs.entity_id = tp.id
      LEFT JOIN professional_profiles pp ON cs.entity_type = 'professional' AND cs.entity_id = pp.id
