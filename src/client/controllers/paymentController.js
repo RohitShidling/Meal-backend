@@ -2,6 +2,7 @@ const db = require('../../common/database');
 const phonepe = require('../../common/utils/phonepe');
 const AppError = require('../../common/utils/AppError');
 const catchAsync = require('../../common/utils/catchAsync');
+const mealEligibilityService = require('../../common/services/mealEligibilityService');
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,27 @@ const parseBoolean = (value, defaultValue = true) => {
   return defaultValue;
 };
 
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+const parseYmdStrict = (input) => {
+  if (!input) return null;
+  const raw = String(input).trim();
+  if (!YMD.test(raw)) return null;
+  const [y, m, d] = raw.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+  return raw;
+};
+
+const addDaysYmd = (ymd, days) => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+};
+
 const computeMealCount = (startDate, durationDays, includeSaturday) => {
   const safeDuration = Number(durationDays) > 0 ? Number(durationDays) : 30;
   const base = new Date(startDate);
@@ -60,26 +82,33 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
     [clientId, entityId, entityType, orderId]
   );
 
-  let baseDate = requestedStartDate ? new Date(requestedStartDate) : new Date();
-  let newTotalMeals = computeMealCount(baseDate, durationDays, includeSaturday);
+  const sessionToday = mealEligibilityService.parseSessionToday();
+  let baseDateYmd = parseYmdStrict(requestedStartDate) || sessionToday;
+  let baseDate = new Date(`${baseDateYmd}T00:00:00`);
+  let newTotalMeals = computeMealCount(baseDateYmd, durationDays, includeSaturday);
   let newUsedMeals = 0;
 
-  if (existingSub.rows.length > 0 && new Date(existingSub.rows[0].end_date) > new Date()) {
-    const currentEnd = new Date(existingSub.rows[0].end_date);
-    // If existing subscription is still active and ends after requested start date, extend from current end
-    if (currentEnd > baseDate) {
-      baseDate = currentEnd;
+  if (existingSub.rows.length > 0) {
+    const currentEndYmd = String(existingSub.rows[0].end_date).slice(0, 10);
+    if (currentEndYmd >= sessionToday) {
+      const nextAfterCurrentEnd = addDaysYmd(currentEndYmd, 1);
+      // No overlap and no day duplication: new pack starts the day after existing end.
+      if (nextAfterCurrentEnd > baseDateYmd) {
+        baseDateYmd = nextAfterCurrentEnd;
+        baseDate = new Date(`${baseDateYmd}T00:00:00`);
+      }
+
+      const oldTotal = existingSub.rows[0].total_meals || 0;
+      const oldUsed = existingSub.rows[0].used_meals || 0;
+
+      // Preserve old totals and used, just add new meals to total
+      newTotalMeals = oldTotal + computeMealCount(baseDateYmd, durationDays, includeSaturday);
+      newUsedMeals = oldUsed;
     }
-    const oldTotal = existingSub.rows[0].total_meals || 0;
-    const oldUsed = existingSub.rows[0].used_meals || 0;
-    
-    // Preserve old totals and used, just add new meals to total
-    newTotalMeals = oldTotal + computeMealCount(baseDate, durationDays, includeSaturday);
-    newUsedMeals = oldUsed;
   }
 
-  const endDate = new Date(baseDate);
-  endDate.setDate(endDate.getDate() + durationDays);
+  // Inclusive validity window: 7-day plan from May 7 => May 7..May 13 (not May 14).
+  const endDateYmd = addDaysYmd(baseDateYmd, durationDays - 1);
 
   await db.query(
     `INSERT INTO client_subscriptions (client_id,subscription_id,entity_type,entity_id,start_date,end_date,order_id,is_active,total_meals,used_meals,include_saturday)
@@ -88,7 +117,7 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
        start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date, subscription_id=EXCLUDED.subscription_id,
        order_id=EXCLUDED.order_id, is_active=true, updated_at=NOW(),
        total_meals=EXCLUDED.total_meals, used_meals=EXCLUDED.used_meals, include_saturday=EXCLUDED.include_saturday`,
-    [clientId, subscriptionId, entityType, entityId, endDate, orderId, newTotalMeals, baseDate, newUsedMeals, includeSaturday]
+    [clientId, subscriptionId, entityType, entityId, endDateYmd, orderId, newTotalMeals, baseDateYmd, newUsedMeals, includeSaturday]
   );
 };
 
@@ -147,16 +176,16 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
   if (!subscriptionId || !entityType || !entityId)
     return next(new AppError('subscriptionId, entityType and entityId are required', 400));
 
-  let effectiveStartDate = new Date();
+  const sessionToday = mealEligibilityService.parseSessionToday();
+  let effectiveStartDateYmd = sessionToday;
   if (startDate) {
-    effectiveStartDate = new Date(startDate);
-    if (isNaN(effectiveStartDate.getTime())) {
-      return next(new AppError('Invalid startDate format', 400));
+    const parsed = parseYmdStrict(startDate);
+    if (!parsed) {
+      return next(new AppError('Invalid startDate format. Use YYYY-MM-DD', 400));
     }
-    // ensure start date is not in the past (allow today)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (effectiveStartDate < today) {
+    effectiveStartDateYmd = parsed;
+    // ensure start date is not in the past (allow today) in session timezone
+    if (effectiveStartDateYmd < sessionToday) {
       return next(new AppError('startDate cannot be in the past', 400));
     }
   }
@@ -179,7 +208,7 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
 
   const orderResult = await db.query(
     'INSERT INTO orders (client_id,subscription_id,entity_type,entity_id,amount,include_saturday,status,order_type,start_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
-    [clientId, subscriptionId, entityType, entityId, selectedPrice, includeSaturdayFlag, 'pending', 'single', effectiveStartDate.toISOString().split('T')[0]]
+    [clientId, subscriptionId, entityType, entityId, selectedPrice, includeSaturdayFlag, 'pending', 'single', effectiveStartDateYmd]
   );
   const order = orderResult.rows[0];
 
@@ -640,7 +669,8 @@ exports.getMyActiveSubscriptions = catchAsync(async (req, res) => {
      LEFT JOIN children ch ON cs.entity_type='child' AND cs.entity_id=ch.id
      LEFT JOIN teacher_profiles tp ON cs.entity_type='teacher' AND cs.entity_id=tp.id
      LEFT JOIN professional_profiles pp ON cs.entity_type='professional' AND cs.entity_id=pp.id
-     WHERE cs.client_id=$1 AND cs.is_active=true AND cs.end_date > NOW()
+    WHERE cs.client_id=$1 AND cs.is_active=true
+      AND (cs.total_meals - cs.used_meals) > 0
      ORDER BY cs.end_date ASC`,
     [clientId]
   );

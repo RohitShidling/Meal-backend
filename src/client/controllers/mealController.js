@@ -1,6 +1,25 @@
 const db = require('../../common/database');
 const catchAsync = require('../../common/utils/catchAsync');
 const AppError = require('../../common/utils/AppError');
+const mealEligibilityService = require('../../common/services/mealEligibilityService');
+
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+const parseYmdStrict = (input) => {
+  const raw = String(input || '').trim();
+  if (!YMD.test(raw)) return null;
+  const [y, m, d] = raw.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+  return raw;
+};
+
+const daysBetweenInclusive = (startYmd, endYmd) => {
+  const [sy, sm, sd] = startYmd.split('-').map(Number);
+  const [ey, em, ed] = endYmd.split('-').map(Number);
+  const s = Date.UTC(sy, sm - 1, sd, 12, 0, 0);
+  const e = Date.UTC(ey, em - 1, ed, 12, 0, 0);
+  return Math.floor((e - s) / 86400000) + 1;
+};
 
 const getMealSkipPolicy = async () => {
   const result = await db.query(
@@ -32,7 +51,7 @@ const getSubscriptionStatus = async (clientId) => {
      LEFT JOIN children ch ON cs.entity_type='child' AND cs.entity_id=ch.id
      LEFT JOIN teacher_profiles tp ON cs.entity_type='teacher' AND cs.entity_id=tp.id
      LEFT JOIN professional_profiles pp ON cs.entity_type='professional' AND cs.entity_id=pp.id
-     WHERE cs.client_id=$1 AND cs.is_active=true AND cs.end_date > NOW()
+     WHERE cs.client_id=$1 AND cs.is_active=true
        AND (cs.total_meals - cs.used_meals) > 0`,
     [clientId]
   );
@@ -66,7 +85,7 @@ exports.getTodayMenu = catchAsync(async (req, res, next) => {
   }
 
   // Subscribed — fetch today's menu
-  const today = new Date().toISOString().split('T')[0];
+  const today = mealEligibilityService.parseSessionToday();
   const menu = await db.query(
     `SELECT id, image_url, items, menu_date, created_at
      FROM daily_menus WHERE menu_date=$1 AND is_active=true
@@ -205,15 +224,24 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
     return next(new AppError('entityType, entityId, startDate, and endDate are required.', 400));
   }
 
-  // Validate dates
-  const skipStart = new Date(startDate);
-  const skipEnd = new Date(endDate);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const requiredStartDate = new Date(today);
-  requiredStartDate.setDate(requiredStartDate.getDate() + policy.minNoticeDays);
+  // Validate date-only input in IST-safe form
+  const startYmd = parseYmdStrict(startDate);
+  const endYmd = parseYmdStrict(endDate);
+  if (!startYmd || !endYmd) {
+    return next(new AppError('startDate and endDate must be valid YYYY-MM-DD values.', 400));
+  }
+  const todayYmd = mealEligibilityService.parseSessionToday();
+  const requiredStartYmd = (() => {
+    const [y, m, d] = todayYmd.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+    dt.setUTCDate(dt.getUTCDate() + policy.minNoticeDays);
+    const yy = dt.getUTCFullYear();
+    const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getUTCDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  })();
 
-  if (skipStart < requiredStartDate) {
+  if (startYmd < requiredStartYmd) {
     return next(
       new AppError(
         `Skip start date must be at least ${policy.minNoticeDays} day(s) in advance. You cannot skip meals for today/past dates or without required notice.`,
@@ -222,13 +250,12 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
     );
   }
 
-  if (skipEnd < skipStart) {
+  if (endYmd < startYmd) {
     return next(new AppError('End date must be after start date.', 400));
   }
 
-  // Calculate consecutive days
-  const diffTime = skipEnd.getTime() - skipStart.getTime();
-  const totalDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // inclusive
+  // Calculate consecutive days (inclusive)
+  const totalDays = daysBetweenInclusive(startYmd, endYmd);
 
   if (totalDays < policy.minSkipDays) {
     return next(
@@ -256,16 +283,16 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
   const subCheck = await db.query(
     `SELECT id, end_date FROM client_subscriptions
      WHERE client_id=$1 AND entity_type=$2 AND entity_id=$3
-       AND is_active=true AND end_date > NOW()
+       AND is_active=true
        AND (total_meals - used_meals) > 0`,
     [clientId, entityType, entityId]
   );
   if (subCheck.rows.length === 0) return next(new AppError('No active subscription found for this entity.', 400));
 
   const sub = subCheck.rows[0];
-  const subEndDate = new Date(sub.end_date);
-  if (skipEnd > subEndDate) {
-    return next(new AppError(`Cannot schedule skip beyond your subscription expiry date (${subEndDate.toISOString().split('T')[0]}).`, 400));
+  const subEndYmd = String(sub.end_date).slice(0, 10);
+  if (endYmd > subEndYmd) {
+    return next(new AppError(`Cannot schedule skip beyond your subscription expiry date (${subEndYmd}).`, 400));
   }
 
   // Check for overlapping skips
@@ -273,7 +300,7 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
     `SELECT id FROM meal_skips
      WHERE client_id=$1 AND entity_type=$2 AND entity_id=$3 AND status='approved'
        AND skip_start_date <= $5 AND skip_end_date >= $4`,
-    [clientId, entityType, entityId, startDate, endDate]
+    [clientId, entityType, entityId, startYmd, endYmd]
   );
   if (overlap.rows.length > 0) return next(new AppError('An overlapping meal skip already exists for this date range.', 409));
 
@@ -281,7 +308,7 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
   const result = await db.query(
     `INSERT INTO meal_skips (client_id, entity_type, entity_id, skip_start_date, skip_end_date, total_skip_days)
      VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [clientId, entityType, entityId, startDate, endDate, totalDays]
+    [clientId, entityType, entityId, startYmd, endYmd, totalDays]
   );
 
   // Extend subscription end_date
@@ -292,10 +319,15 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
     [sub.id]
   );
 
+  const created = result.rows[0];
   res.status(201).json({
     success: true,
-    message: `Meal skip approved for ${totalDays} days (${startDate} to ${endDate}). Your subscription end date has been extended by ${totalDays} days.`,
-    data: result.rows[0]
+    message: `Meal skip approved for ${totalDays} days (${startYmd} to ${endYmd}). Your subscription end date has been extended by ${totalDays} days.`,
+    data: {
+      ...created,
+      skip_start_date: startYmd,
+      skip_end_date: endYmd,
+    }
   });
 });
 
@@ -310,7 +342,10 @@ exports.getMyMealSkips = catchAsync(async (req, res) => {
   const clientId = req.user.id;
 
   const result = await db.query(
-    `SELECT ms.*, 
+    `SELECT ms.id, ms.client_id, ms.entity_type, ms.entity_id,
+            TO_CHAR(ms.skip_start_date, 'YYYY-MM-DD') AS skip_start_date,
+            TO_CHAR(ms.skip_end_date, 'YYYY-MM-DD') AS skip_end_date,
+            ms.total_skip_days, ms.status, ms.created_at, ms.updated_at,
             CASE
               WHEN ms.entity_type='child' THEN ch.name
               WHEN ms.entity_type='teacher' THEN tp.name
@@ -350,9 +385,9 @@ exports.cancelMealSkip = catchAsync(async (req, res, next) => {
   if (skip.rows.length === 0) return next(new AppError('Meal skip not found.', 404));
 
   const skipData = skip.rows[0];
-  const today = new Date().toISOString().split('T')[0];
-
-  if (new Date(skipData.skip_start_date) <= new Date(today)) {
+  const today = mealEligibilityService.parseSessionToday();
+  const skipStartYmd = String(skipData.skip_start_date).slice(0, 10);
+  if (skipStartYmd <= today) {
     return next(new AppError('Cannot cancel a skip that has already started or is in the past.', 400));
   }
 

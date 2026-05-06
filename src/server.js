@@ -50,6 +50,16 @@ const adminTrialPlanFeatureRoutes = require('./admin/routes/trialPlanFeatureRout
 
 const app = express();
 
+// Disable ETag so clients don't receive `304 Not Modified` and miss fresh DB data.
+app.disable('etag');
+
+// Force fresh API responses (helps during development / debugging data updates).
+app.use('/api', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  next();
+});
+
 // Middleware
 app.use(helmet()); // Security Headers
 app.use(cors());

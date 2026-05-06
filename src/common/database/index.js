@@ -267,6 +267,7 @@ const initDB = async () => {
       client_id           VARCHAR(20) UNIQUE NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
       name                VARCHAR(255) NOT NULL,
       school_college_name VARCHAR(255) NOT NULL,
+      school_id           VARCHAR(20) REFERENCES schools(id) ON DELETE SET NULL,
       city                VARCHAR(100) NOT NULL,
       state               VARCHAR(100) NOT NULL,
       location            TEXT NOT NULL,
@@ -612,6 +613,27 @@ const initDB = async () => {
     await pool.query(createSubscriptionMealAdjustmentsTable);
     await pool.query(createTokenDownloadLogsTable);
 
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS token_pdf_exports (
+        id              SERIAL PRIMARY KEY,
+        token_scope     VARCHAR(32) NOT NULL,
+        scope_id        VARCHAR(64) NOT NULL,
+        meal_size_id    INTEGER NOT NULL DEFAULT -1,
+        token_date      DATE NOT NULL,
+        admin_id        INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+        row_count       INTEGER NOT NULL DEFAULT 0,
+        content_sha256  CHAR(64),
+        pdf_bytes       BYTEA NOT NULL,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_token_pdf_exports_date ON token_pdf_exports (token_date DESC)`
+    );
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_token_pdf_exports_scope_day ON token_pdf_exports (token_scope, scope_id, token_date)`
+    );
+
     // Token download logs: enforce real uniqueness (Postgres UNIQUE treats NULL meal_size_id as distinct rows)
     await pool.query(`
       ALTER TABLE token_download_logs
@@ -633,6 +655,18 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
     await pool.query(`ALTER TABLE client_subscriptions ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
+
+    // Teacher → school mapping (needed for school token PDFs that include teachers)
+    await pool.query(`ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS school_id VARCHAR(20) REFERENCES schools(id) ON DELETE SET NULL;`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_teacher_profiles_school_id ON teacher_profiles (school_id);`);
+    // Best-effort backfill from legacy free-text name (case-insensitive exact match after trim)
+    await pool.query(`
+      UPDATE teacher_profiles tp
+      SET school_id = sc.id, updated_at = NOW()
+      FROM schools sc
+      WHERE tp.school_id IS NULL
+        AND LOWER(TRIM(tp.school_college_name)) = LOWER(TRIM(sc.name))
+    `);
 
     // Migration: Add explicit duration_days to subscriptions
     await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS duration_days INTEGER;`);

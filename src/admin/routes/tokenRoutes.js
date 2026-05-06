@@ -72,6 +72,55 @@ router.use(adminAuthMiddleware);
  *       400:
  *         description: Invalid date query
  */
+/**
+ * @swagger
+ * /api/admin/tokens/pdf-exports:
+ *   get:
+ *     summary: List archived token PDFs (each download stores a snapshot for audit / re-download)
+ *     tags: [Admin - Token]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         schema: { type: string, example: "2026-05-06" }
+ *         description: Filter by token_date (YYYY-MM-DD)
+ *       - in: query
+ *         name: token_scope
+ *         schema: { type: string, example: "school" }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 50, maximum: 200 }
+ *     responses:
+ *       200:
+ *         description: Newest exports first
+ */
+router.get('/pdf-exports', tokenController.listTokenPdfExports);
+
+/**
+ * @swagger
+ * /api/admin/tokens/pdf-exports/{exportId}/download:
+ *   get:
+ *     summary: Download a previously stored PDF snapshot by id (from pdf-exports list)
+ *     tags: [Admin - Token]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: exportId
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: PDF binary
+ *         content:
+ *           application/pdf:
+ *             schema:
+ *               type: string
+ *               format: binary
+ */
+router.get('/pdf-exports/:exportId/download', tokenController.downloadStoredTokenPdfExport);
+
 router.get('/schools', tokenController.getSchoolTokenOverview);
 
 /**
@@ -98,6 +147,7 @@ router.get('/schools/panel', tokenController.getSchoolTokenPanel);
  * /api/admin/tokens/export/schools/pdf:
  *   get:
  *     summary: Global PDF — all schools; per school, meal sizes in sort_order (empty sizes skipped)
+ *     description: PDF bytes are regenerated on every request from live eligibility data; response is not served from cache.
  *     tags: [Admin - Token]
  *     security:
  *       - bearerAuth: []
@@ -106,6 +156,7 @@ router.get('/schools/panel', tokenController.getSchoolTokenPanel);
  *         name: date
  *         required: false
  *         schema: { type: string }
+ *         description: Token date (YYYY-MM-DD). Default is today in PG session timezone.
  *     responses:
  *       200:
  *         description: PDF
@@ -163,7 +214,8 @@ router.get('/export/all/pdf', tokenController.downloadExportAllBundlePdf);
  * @swagger
  * /api/admin/tokens/schools/{schoolId}/pdf:
  *   get:
- *     summary: Download school token PDF — all meal sizes (card layout); generated only when this URL is opened
+ *     summary: Download school token PDF — all meal sizes (card layout)
+ *     description: Regenerated on each GET from current subscriptions/skips; a snapshot is also stored (see GET /api/admin/tokens/pdf-exports).
  *     tags: [Admin - Token]
  *     security:
  *       - bearerAuth: []

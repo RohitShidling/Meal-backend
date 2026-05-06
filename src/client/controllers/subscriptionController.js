@@ -1,6 +1,17 @@
 const { pool } = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
 const catchAsync = require('../../common/utils/catchAsync');
+const mealEligibilityService = require('../../common/services/mealEligibilityService');
+
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+const parseYmdStrict = (input) => {
+  const raw = String(input || '').trim();
+  if (!YMD.test(raw)) return null;
+  const [y, m, d] = raw.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+  return raw;
+};
 
 /**
  * @desc    Get subscription status for the logged-in client (all entities)
@@ -64,7 +75,10 @@ exports.getMySubscriptionStatus = async (req, res, next) => {
       };
     });
 
-    const hasActiveSubscription = subscriptions.some(sub => sub.subscription_status === true && new Date(sub.end_date) > new Date() && sub.remaining_meals > 0);
+    // Expiration is controlled by remaining meals (and is_active), not by timestamp boundaries.
+    const hasActiveSubscription = subscriptions.some(
+      (sub) => sub.subscription_status === true && sub.remaining_meals > 0
+    );
 
     res.status(200).json({
       success: true,
@@ -91,11 +105,12 @@ exports.updateStartDate = catchAsync(async (req, res, next) => {
     return next(new AppError('entityType, entityId, and startDate are required', 400));
   }
 
-  const newStartDate = new Date(startDate);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  if (newStartDate < today) {
+  const newStartYmd = parseYmdStrict(startDate);
+  if (!newStartYmd) {
+    return next(new AppError('startDate must be valid YYYY-MM-DD', 400));
+  }
+  const todayYmd = mealEligibilityService.parseSessionToday();
+  if (newStartYmd < todayYmd) {
     return next(new AppError('New start date cannot be in the past.', 400));
   }
 
@@ -121,15 +136,16 @@ exports.updateStartDate = catchAsync(async (req, res, next) => {
   // Or maybe allow it if used_meals is 0? The fairest logic is to allow shifting if used_meals == 0.
   
   // Calculate the difference in days between the old start date and the new start date
-  const oldStartDate = new Date(subscription.start_date);
-  oldStartDate.setHours(0,0,0,0);
-  
-  const diffTime = newStartDate.getTime() - oldStartDate.getTime();
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-  // 4. Shift the end_date by the exact same number of days
-  const oldEndDate = new Date(subscription.end_date);
-  const newEndDate = new Date(oldEndDate.getTime() + (diffDays * 24 * 60 * 60 * 1000));
+  const oldStartYmd = String(subscription.start_date).slice(0, 10);
+  const oldEndYmd = String(subscription.end_date).slice(0, 10);
+  const toEpochNoon = (ymd) => {
+    const [y, m, d] = ymd.split('-').map(Number);
+    return Date.UTC(y, m - 1, d, 12, 0, 0);
+  };
+  const diffDays = Math.floor((toEpochNoon(newStartYmd) - toEpochNoon(oldStartYmd)) / 86400000);
+  const endNoon = new Date(toEpochNoon(oldEndYmd));
+  endNoon.setUTCDate(endNoon.getUTCDate() + diffDays);
+  const newEndYmd = `${endNoon.getUTCFullYear()}-${String(endNoon.getUTCMonth() + 1).padStart(2, '0')}-${String(endNoon.getUTCDate()).padStart(2, '0')}`;
 
   // 5. Update the database
   const updateQuery = `
@@ -138,7 +154,7 @@ exports.updateStartDate = catchAsync(async (req, res, next) => {
     WHERE id = $3
     RETURNING start_date, end_date
   `;
-  const updateResult = await pool.query(updateQuery, [newStartDate, newEndDate, subscription.id]);
+  const updateResult = await pool.query(updateQuery, [newStartYmd, newEndYmd, subscription.id]);
 
   res.status(200).json({
     success: true,

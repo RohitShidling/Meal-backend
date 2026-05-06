@@ -25,6 +25,16 @@ exports.saveTeacherProfile = async (req, res, next) => {
     const profileCheckQuery = `SELECT * FROM teacher_profiles WHERE client_id = $1`;
     const profileCheck = await query(profileCheckQuery, [clientId]);
 
+    // Best-effort resolve school_id from existing schools table (preserves current UI flow).
+    // If there is no match, school_id stays NULL and admin school tokens won't include this teacher
+    // until corrected data is provided / mapped.
+    let resolvedSchoolId = null;
+    const schoolMatch = await query(
+      `SELECT id FROM schools WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
+      [school_college_name]
+    );
+    if (schoolMatch.rows.length > 0) resolvedSchoolId = schoolMatch.rows[0].id;
+
     let result;
 
     if (profileCheck.rows.length > 0) {
@@ -34,25 +44,26 @@ exports.saveTeacherProfile = async (req, res, next) => {
         SET 
           name = $1, 
           school_college_name = $2, 
-          city = $3, 
-          state = $4, 
-          status = $5,
+          school_id = $3,
+          city = $4, 
+          state = $5, 
+          status = $6,
           updated_at = CURRENT_TIMESTAMP
-        WHERE client_id = $6
+        WHERE client_id = $7
         RETURNING *;
       `;
-      const values = [name, school_college_name, city, state, status || 'active', clientId];
+      const values = [name, school_college_name, resolvedSchoolId, city, state, status || 'active', clientId];
       const updateResult = await query(updateQuery, values);
       result = updateResult.rows[0];
     } else {
       // Create new
       const insertQuery = `
         INSERT INTO teacher_profiles (
-          client_id, name, school_college_name, city, state, location, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+          client_id, name, school_college_name, school_id, city, state, location, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *;
       `;
-      const values = [clientId, name, school_college_name, city, state, '', status || 'active'];
+      const values = [clientId, name, school_college_name, resolvedSchoolId, city, state, '', status || 'active'];
       const insertResult = await query(insertQuery, values);
       result = insertResult.rows[0];
     }

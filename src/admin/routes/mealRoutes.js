@@ -21,8 +21,9 @@ router.use(adminAuthMiddleware);
  *   post:
  *     summary: Reduce remaining meals by 1 for ALL active subscribers wanting today's meal
  *     description: >
- *       Admin presses this once per day. It reduces remaining_meals by 1 for every active
- *       subscription entity that does NOT have an approved meal skip for today.
+ *       Admin presses this once per calendar day (server session timezone, same as token dates).
+ *       Uses the same eligibility engine as token PDFs: start/end dates, Saturday option,
+ *       remaining meals, and only policy-valid meal skips (min consecutive days) exclude a user.
  *       Can only be called ONCE per day (duplicate calls return 409).
  *     tags: [Admin - Meals]
  *     security:
@@ -41,9 +42,10 @@ router.use(adminAuthMiddleware);
  *                   type: object
  *                   properties:
  *                     date: { type: string, example: "2026-04-30" }
- *                     total_active_subscriptions: { type: integer, example: 50 }
+ *                     reduction_id: { type: integer, example: 12 }
+ *                     eligible_for_meal_on_date: { type: integer, example: 48 }
  *                     meals_reduced: { type: integer, example: 45 }
- *                     skipped_due_to_meal_pause: { type: integer, example: 5 }
+ *                     skipped_due_to_meal_pause: { type: integer, example: 3 }
  *       409:
  *         description: Already reduced today
  *         content:
@@ -55,6 +57,58 @@ router.use(adminAuthMiddleware);
  *                 message: { type: string, example: "Meals have already been reduced for today." }
  */
 router.post('/reduce-today', mealController.reduceMealsForToday);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADMIN: ADD EXTRA MEALS
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * @swagger
+ * /api/admin/meals/extra-by-entity:
+ *   post:
+ *     summary: Admin adds extra meal credits to a single entity (child/teacher/professional)
+ *     tags: [Admin - Meal Adjustments]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [entityType, entityId, extraMeals, reason]
+ *             properties:
+ *               entityType:
+ *                 type: string
+ *                 enum: [child, teacher, professional]
+ *                 example: child
+ *               entityId:
+ *                 type: string
+ *                 example: CH-1
+ *               extraMeals:
+ *                 type: integer
+ *                 example: 5
+ *               reason:
+ *                 type: string
+ *                 example: "Admin bonus meals"
+ *     responses:
+ *       200:
+ *         description: Extra meals added successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Extra meals added successfully." }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     subscription_id: { type: string }
+ *                     remaining_meals_before: { type: integer }
+ *                     remaining_meals_after: { type: integer }
+ *                     new_end_date: { type: string, example: "2026-05-20" }
+ */
+router.post('/extra-by-entity', mealController.adminAddExtraMealsByEntity);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MEAL REDUCTION HISTORY

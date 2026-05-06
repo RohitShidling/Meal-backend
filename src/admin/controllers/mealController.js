@@ -2,6 +2,7 @@ const db = require('../../common/database');
 const catchAsync = require('../../common/utils/catchAsync');
 const AppError = require('../../common/utils/AppError');
 const PDFDocument = require('pdfkit');
+const mealEligibilityService = require('../../common/services/mealEligibilityService');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. REDUCE MEAL FOR ALL (admin presses one button)
@@ -15,105 +16,171 @@ const PDFDocument = require('pdfkit');
  */
 exports.reduceMealsForToday = catchAsync(async (req, res, next) => {
   const adminId = req.user.id;
-  const today = new Date().toISOString().split('T')[0];
+  const today = mealEligibilityService.parseSessionToday();
 
-  // Check if already reduced today
-  const alreadyDone = await db.query(
-    'SELECT id FROM meal_reductions WHERE reduction_date=$1', [today]
-  );
-  if (alreadyDone.rows.length > 0) {
-    return next(new AppError(`Meals have already been reduced for today (${today}). Only one reduction per day is allowed.`, 409));
-  }
+  const result = await mealEligibilityService.executeMealReductionForDate(adminId, today);
 
-  // Create the reduction record FIRST (lock the date)
-  const reductionRow = await db.query(
-    `INSERT INTO meal_reductions (reduced_by, reduction_date, affected_count, skipped_count)
-     VALUES ($1, $2, 0, 0) RETURNING id`,
-    [adminId, today]
-  );
-  const reductionId = reductionRow.rows[0].id;
-
-  // Get all active subscriptions with remaining meals > 0 and start_date <= today
-  const activeSubscriptions = await db.query(
-    `SELECT cs.id, cs.client_id, cs.entity_type, cs.entity_id, cs.total_meals, cs.used_meals
-     FROM client_subscriptions cs
-     WHERE cs.is_active = true AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0 AND cs.start_date <= CURRENT_DATE`
-  );
-
-  let affectedCount = 0;
-  let skippedCount = 0;
-  const affectedDetails = [];
-  const skippedDetails = [];
-
-  for (const sub of activeSubscriptions.rows) {
-    // Check if this entity has an approved skip for today
-    const skipCheck = await db.query(
-      `SELECT id FROM meal_skips
-       WHERE client_id=$1 AND entity_type=$2 AND entity_id=$3
-         AND status='approved'
-         AND skip_start_date <= $4 AND skip_end_date >= $4`,
-      [sub.client_id, sub.entity_type, sub.entity_id, today]
+  if (result.alreadyDone) {
+    return next(
+      new AppError(
+        `Meals have already been reduced for today (${today}). Only one reduction per calendar day is allowed.`,
+        409
+      )
     );
-
-    if (skipCheck.rows.length > 0) {
-      // This entity has a skip for today — do NOT reduce
-      skippedCount++;
-      skippedDetails.push({
-        subscription_id: sub.id,
-        entity_type: sub.entity_type,
-        entity_id: sub.entity_id,
-        reason: 'meal_skip_active'
-      });
-    } else {
-      // STEP 1: Insert into daily_meal_log (SOURCE OF TRUTH)
-      try {
-        await db.query(
-          `INSERT INTO daily_meal_log (subscription_id, entity_type, entity_id, meal_date, reduction_id)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [sub.id, sub.entity_type, sub.entity_id, today, reductionId]
-        );
-      } catch (e) {
-        // UNIQUE violation = already logged today (idempotent)
-        if (e.code === '23505') continue;
-        throw e;
-      }
-
-      // STEP 2: Increment used_meals (denormalized for performance)
-      await db.query(
-        `UPDATE client_subscriptions SET used_meals = used_meals + 1, updated_at = NOW()
-         WHERE id = $1`,
-        [sub.id]
-      );
-
-      affectedCount++;
-      affectedDetails.push({
-        subscription_id: sub.id,
-        entity_type: sub.entity_type,
-        entity_id: sub.entity_id,
-        new_used: sub.used_meals + 1,
-        new_remaining: sub.total_meals - sub.used_meals - 1
-      });
-    }
   }
-
-  // Update the reduction record with final counts
-  await db.query(
-    `UPDATE meal_reductions SET affected_count=$1, skipped_count=$2,
-            details=$3 WHERE id=$4`,
-    [affectedCount, skippedCount, JSON.stringify({ affected: affectedDetails, skipped: skippedDetails }), reductionId]
-  );
 
   res.status(200).json({
     success: true,
     message: `Meal reduction completed for ${today}.`,
     data: {
       date: today,
-      reduction_id: reductionId,
-      total_active_subscriptions: activeSubscriptions.rowCount,
-      meals_reduced: affectedCount,
-      skipped_due_to_meal_pause: skippedCount
-    }
+      reduction_id: result.reductionId,
+      eligible_for_meal_on_date: result.eligible_count,
+      meals_reduced: result.meals_reduced,
+      skipped_due_to_meal_pause: result.skipped_due_to_meal_pause,
+    },
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1.5. ADMIN: ADD EXTRA MEALS BY ENTITY (child/teacher/professional)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+const parseYmdStrict = (input) => {
+  const raw = String(input || '').trim();
+  if (!YMD.test(raw)) return null;
+  return raw;
+};
+
+const addDaysYmd = (ymd, days) => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+};
+
+const isSaturdayYmd = (ymd) => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  return dt.getUTCDay() === 6;
+};
+
+const extendEndYmdByMealDays = ({ endYmd, includeSaturday, extraMeals }) => {
+  let remainingExtra = extraMeals;
+  let cursor = endYmd;
+  while (remainingExtra > 0) {
+    cursor = addDaysYmd(cursor, 1);
+    const saturday = isSaturdayYmd(cursor);
+    const isMealDay = includeSaturday || !saturday;
+    if (isMealDay) remainingExtra -= 1;
+  }
+  return cursor;
+};
+
+/**
+ * @desc  Admin adds extra meal credits for a single entity (child/teacher/professional).
+ *        total_meals increases; end_date extends based on include_saturday so date-based token validity stays correct.
+ *        Also (re)activates subscription when it was expired due to remaining reaching 0.
+ */
+exports.adminAddExtraMealsByEntity = catchAsync(async (req, res, next) => {
+  const adminId = req.user.id;
+  const { entityType, entityId, extraMeals, reason } = req.body || {};
+
+  if (!entityType || !entityId) {
+    return next(new AppError('entityType and entityId are required.', 400));
+  }
+  const allowed = ['child', 'teacher', 'professional'];
+  if (!allowed.includes(entityType)) {
+    return next(new AppError('Invalid entityType. Must be child, teacher, or professional.', 400));
+  }
+
+  const parsedExtra = Number(extraMeals);
+  if (!Number.isInteger(parsedExtra) || parsedExtra <= 0) {
+    return next(new AppError('extraMeals must be a positive integer.', 400));
+  }
+
+  if (!reason || String(reason).trim().length < 3) {
+    return next(new AppError('reason is required and must be at least 3 characters.', 400));
+  }
+
+  // Find the subscription row for this entity (even if it is inactive due to remaining hitting 0)
+  const subRes = await db.query(
+    `SELECT id, client_id, total_meals, used_meals, end_date, start_date, include_saturday
+     FROM client_subscriptions
+     WHERE entity_type = $1 AND entity_id = $2
+     LIMIT 1`,
+    [entityType, entityId]
+  );
+
+  if (subRes.rowCount === 0) return next(new AppError('No subscription found for this entity.', 404));
+
+  const sub = subRes.rows[0];
+  const remainingBefore = Number(sub.total_meals) - Number(sub.used_meals);
+
+  const includeSaturday = sub.include_saturday !== false;
+  const endYmd = String(sub.end_date).slice(0, 10);
+  if (!parseYmdStrict(endYmd)) return next(new AppError('Invalid subscription end_date format in DB.', 500));
+
+  const newEndYmd = extendEndYmdByMealDays({
+    endYmd,
+    includeSaturday,
+    extraMeals: parsedExtra,
+  });
+
+  await db.query('BEGIN');
+  try {
+    await db.query(
+      `UPDATE client_subscriptions
+       SET total_meals = total_meals + $1,
+           is_active = true,
+           end_date = ($2::date + interval '12 hours'),
+           updated_at = NOW()
+       WHERE id = $3`,
+      [parsedExtra, newEndYmd, sub.id]
+    );
+
+    await db.query(
+      `INSERT INTO subscription_meal_adjustments
+        (subscription_id, adjusted_by, adjustment_type, meal_delta, reason)
+       VALUES ($1, $2, 'extra_meals', $3, $4)`,
+      [sub.id, adminId, parsedExtra, String(reason).trim()]
+    );
+
+    const updated = await db.query(
+      `SELECT id, total_meals, used_meals, end_date, include_saturday
+       FROM client_subscriptions
+       WHERE id=$1`,
+      [sub.id]
+    );
+
+    const u = updated.rows[0];
+    const remainingAfter = Number(u.total_meals) - Number(u.used_meals);
+
+    await db.query('COMMIT');
+
+    return res.status(200).json({
+      success: true,
+      message: 'Extra meals added successfully.',
+      data: {
+        subscription_id: u.id,
+        entity_type: entityType,
+        entity_id: entityId,
+        extra_meals_added: parsedExtra,
+        remaining_meals_before: remainingBefore,
+        remaining_meals_after: remainingAfter,
+        total_meals: u.total_meals,
+        used_meals: u.used_meals,
+        new_end_date: String(u.end_date).slice(0, 10),
+      },
+    });
+  } catch (e) {
+    await db.query('ROLLBACK');
+    throw e;
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -242,7 +309,10 @@ exports.getAllMealSkips = catchAsync(async (req, res) => {
   }
 
   const result = await db.query(
-    `SELECT ms.*,
+    `SELECT ms.id, ms.client_id, ms.entity_type, ms.entity_id,
+            TO_CHAR(ms.skip_start_date, 'YYYY-MM-DD') AS skip_start_date,
+            TO_CHAR(ms.skip_end_date, 'YYYY-MM-DD') AS skip_end_date,
+            ms.total_skip_days, ms.status, ms.created_at, ms.updated_at,
             c.phone_number AS client_phone,
             CASE
               WHEN ms.entity_type='child' THEN ch.name
@@ -388,30 +458,15 @@ exports.getSchoolTokensPDF = catchAsync(async (req, res, next) => {
   if (school.rows.length === 0) return next(new AppError('School not found.', 404));
 
   const schoolData = school.rows[0];
-  const today = new Date().toISOString().split('T')[0];
+  const today = mealEligibilityService.parseSessionToday();
 
-  // Get all subscribed children in this school with computed remaining
-  const children = await db.query(
-    `SELECT ch.name AS child_name, ch.roll_number, s.display_name AS standard,
-            ms.display_name AS meal_size, ms.sort_order, ch.meal_time,
-            (cs.total_meals - cs.used_meals) AS remaining_meals
-     FROM children ch
-     JOIN client_subscriptions cs ON cs.entity_type='child' AND cs.entity_id=ch.id
-       AND cs.is_active=true AND cs.start_date <= CURRENT_DATE AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
-     LEFT JOIN standards s ON ch.standard_id = s.id
-     LEFT JOIN meal_sizes ms ON ch.meal_size_id = ms.id
-     WHERE ch.school_id = $1
-       AND NOT EXISTS (
-         SELECT 1 FROM meal_skips msk
-         WHERE msk.entity_type='child' AND msk.entity_id=ch.id
-           AND msk.status='approved'
-           AND msk.skip_start_date <= $2 AND msk.skip_end_date >= $2
-       )
-     ORDER BY ms.sort_order, ch.name`,
-    [schoolId, today]
-  );
+  const children = await mealEligibilityService.fetchChildTokenRows({
+    schoolId,
+    mealSizeId: null,
+    delivery: today,
+  });
 
-  if (children.rowCount === 0) {
+  if (children.rows.length === 0) {
     return res.status(200).json({
       success: false,
       message: 'No subscribed children wanting meal today in this school.'
@@ -483,26 +538,14 @@ exports.getCorporateTokensPDF = catchAsync(async (req, res, next) => {
   if (location.rows.length === 0) return next(new AppError('Corporate location not found.', 404));
 
   const locData = location.rows[0];
-  const today = new Date().toISOString().split('T')[0];
+  const today = mealEligibilityService.parseSessionToday();
 
-  const professionals = await db.query(
-    `SELECT pp.name AS professional_name, pp.company_name,
-            (cs.total_meals - cs.used_meals) AS remaining_meals
-     FROM professional_profiles pp
-     JOIN client_subscriptions cs ON cs.entity_type='professional' AND cs.entity_id=pp.id
-       AND cs.is_active=true AND cs.start_date <= CURRENT_DATE AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
-     WHERE pp.corporate_location_id = $1
-       AND NOT EXISTS (
-         SELECT 1 FROM meal_skips msk
-         WHERE msk.entity_type='professional' AND msk.entity_id=pp.id
-           AND msk.status='approved'
-           AND msk.skip_start_date <= $2 AND msk.skip_end_date >= $2
-       )
-     ORDER BY pp.name`,
-    [locationId, today]
-  );
+  const professionals = await mealEligibilityService.fetchProfessionalTokenRows({
+    locationId,
+    delivery: today,
+  });
 
-  if (professionals.rowCount === 0) {
+  if (professionals.rows.length === 0) {
     return res.status(200).json({
       success: false,
       message: 'No subscribed professionals wanting meal today at this location.'
@@ -534,7 +577,7 @@ exports.getCorporateTokensPDF = catchAsync(async (req, res, next) => {
       badge: 'Professional',
       serial: `#${idx + 1}`,
       rows: [
-        { label: 'Name:', value: p.professional_name },
+        { label: 'Name:', value: p.professional_name || p.name },
         { label: 'Company:', value: p.company_name },
         { label: 'Remaining:', value: p.remaining_meals }
       ]
@@ -552,41 +595,12 @@ exports.getCorporateTokensPDF = catchAsync(async (req, res, next) => {
  * @route GET /api/admin/meals/tokens/all
  */
 exports.getAllTokensPDF = catchAsync(async (req, res) => {
-  const today = new Date().toISOString().split('T')[0];
+  const today = mealEligibilityService.parseSessionToday();
 
-  const schools = await db.query(
-    `SELECT DISTINCT sc.id, sc.name, sc.city, sc.state
-     FROM schools sc
-     JOIN children ch ON ch.school_id = sc.id
-     JOIN client_subscriptions cs ON cs.entity_type='child' AND cs.entity_id=ch.id
-       AND cs.is_active=true AND cs.start_date <= CURRENT_DATE AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
-     WHERE NOT EXISTS (
-       SELECT 1 FROM meal_skips msk
-       WHERE msk.entity_type='child' AND msk.entity_id=ch.id
-         AND msk.status='approved'
-         AND msk.skip_start_date <= $1 AND msk.skip_end_date >= $1
-     )
-     ORDER BY sc.name`,
-    [today]
-  );
+  const schools = await mealEligibilityService.fetchDistinctSchoolsWithEligibleChildren(today);
+  const locations = await mealEligibilityService.fetchDistinctCorporateLocationsWithEligible(today);
 
-  const locations = await db.query(
-    `SELECT DISTINCT cl.id, cl.name, cl.city, cl.state
-     FROM corporate_locations cl
-     JOIN professional_profiles pp ON pp.corporate_location_id = cl.id
-     JOIN client_subscriptions cs ON cs.entity_type='professional' AND cs.entity_id=pp.id
-       AND cs.is_active=true AND cs.start_date <= CURRENT_DATE AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
-     WHERE NOT EXISTS (
-       SELECT 1 FROM meal_skips msk
-       WHERE msk.entity_type='professional' AND msk.entity_id=pp.id
-         AND msk.status='approved'
-         AND msk.skip_start_date <= $1 AND msk.skip_end_date >= $1
-     )
-     ORDER BY cl.name`,
-    [today]
-  );
-
-  if (schools.rowCount === 0 && locations.rowCount === 0) {
+  if (schools.rows.length === 0 && locations.rows.length === 0) {
     return res.status(200).json({
       success: false,
       message: `No meal tokens to generate for today (${today}).`
@@ -616,31 +630,16 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
     .text(`Generated at: ${new Date().toLocaleString('en-IN')}`, { align: 'center' });
   doc.moveDown(1);
   doc.fontSize(12).fillColor('#2b6cb0')
-    .text(`Schools: ${schools.rowCount} | Corporates: ${locations.rowCount}`, { align: 'center' });
+    .text(`Schools: ${schools.rows.length} | Corporates: ${locations.rows.length}`, { align: 'center' });
 
   // School cards — each school starts a new page, all meal sizes together
   for (const school of schools.rows) {
-    const children = await db.query(
-      `SELECT ch.name AS child_name, ch.roll_number,
-              s.display_name AS standard, ms.display_name AS meal_size,
-              ms.sort_order, ch.meal_time,
-              (cs.total_meals - cs.used_meals) AS remaining_meals
-       FROM children ch
-       JOIN client_subscriptions cs ON cs.entity_type='child' AND cs.entity_id=ch.id
-         AND cs.is_active=true AND cs.start_date <= CURRENT_DATE AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
-       LEFT JOIN standards s ON ch.standard_id = s.id
-       LEFT JOIN meal_sizes ms ON ch.meal_size_id = ms.id
-       WHERE ch.school_id = $1
-         AND NOT EXISTS (
-           SELECT 1 FROM meal_skips msk
-           WHERE msk.entity_type='child' AND msk.entity_id=ch.id
-             AND msk.status='approved'
-             AND msk.skip_start_date <= $2 AND msk.skip_end_date >= $2
-         )
-       ORDER BY ms.sort_order, ch.name`,
-      [school.id, today]
-    );
-    if (children.rowCount === 0) continue;
+    const children = await mealEligibilityService.fetchChildTokenRows({
+      schoolId: school.school_id,
+      mealSizeId: null,
+      delivery: today,
+    });
+    if (children.rows.length === 0) continue;
 
     doc.addPage();
     let currentPage = 0;
@@ -651,7 +650,7 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
         currentPage = pos.pageIdx;
       }
       drawTokenCard(doc, pos.x, pos.y, {
-        header: `${school.name} — ${today}`,
+        header: `${school.school_name} — ${today}`,
         badge: s.meal_size || 'Standard',
         serial: `#${idx + 1}`,
         rows: [
@@ -667,23 +666,11 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
 
   // Corporate cards
   for (const loc of locations.rows) {
-    const profs = await db.query(
-      `SELECT pp.name AS professional_name, pp.company_name,
-              (cs.total_meals - cs.used_meals) AS remaining_meals
-       FROM professional_profiles pp
-       JOIN client_subscriptions cs ON cs.entity_type='professional' AND cs.entity_id=pp.id
-         AND cs.is_active=true AND cs.start_date <= CURRENT_DATE AND cs.end_date > NOW() AND (cs.total_meals - cs.used_meals) > 0
-       WHERE pp.corporate_location_id = $1
-         AND NOT EXISTS (
-           SELECT 1 FROM meal_skips msk
-           WHERE msk.entity_type='professional' AND msk.entity_id=pp.id
-             AND msk.status='approved'
-             AND msk.skip_start_date <= $2 AND msk.skip_end_date >= $2
-         )
-       ORDER BY pp.name`,
-      [loc.id, today]
-    );
-    if (profs.rowCount === 0) continue;
+    const profs = await mealEligibilityService.fetchProfessionalTokenRows({
+      locationId: loc.location_id,
+      delivery: today,
+    });
+    if (profs.rows.length === 0) continue;
 
     doc.addPage();
     let currentPage = 0;
@@ -694,11 +681,11 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
         currentPage = pos.pageIdx;
       }
       drawTokenCard(doc, pos.x, pos.y, {
-        header: `${loc.name} — ${today}`,
+        header: `${loc.location_name} — ${today}`,
         badge: 'Professional',
         serial: `#${idx + 1}`,
         rows: [
-          { label: 'Name:', value: p.professional_name },
+          { label: 'Name:', value: p.professional_name || p.name },
           { label: 'Company:', value: p.company_name },
           { label: 'Remaining:', value: p.remaining_meals }
         ]
@@ -717,35 +704,24 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
  * @route GET /api/admin/meals/kitchen-report/today
  */
 exports.getKitchenReport = catchAsync(async (req, res, next) => {
-  const today = new Date().toISOString().split('T')[0];
+  const today = mealEligibilityService.parseSessionToday();
+  const pred = mealEligibilityService.subscriptionEligiblePredicateSql('cs');
 
   // 1. Total Subscribed (Everyone who has a valid subscription, regardless of skip or start date)
   const totalSubscribedRes = await db.query(
     `SELECT COUNT(*) as total FROM client_subscriptions 
      WHERE is_active = true 
-       AND end_date > NOW() 
        AND (total_meals - used_meals) > 0`
   );
   const totalSubscribed = parseInt(totalSubscribedRes.rows[0].total);
 
-  // 2. Active Today (People who need a meal TODAY)
-  // Condition: active, remaining > 0, start_date <= today, not skipped today
-  const activeTodayQuery = `
-    SELECT cs.id, cs.entity_type, cs.entity_id 
-    FROM client_subscriptions cs
-    WHERE cs.is_active = true 
-      AND cs.end_date > NOW() 
-      AND (cs.total_meals - cs.used_meals) > 0
-      AND cs.start_date <= $1
-      AND NOT EXISTS (
-        SELECT 1 FROM meal_skips ms
-        WHERE ms.entity_type = cs.entity_type 
-          AND ms.entity_id = cs.entity_id
-          AND ms.status = 'approved'
-          AND ms.skip_start_date <= $1 AND ms.skip_end_date >= $1
-      )
-  `;
-  const activeTodayRes = await db.query(activeTodayQuery, [today]);
+  // 2. Active Today — same rules as tokens / meal reduction (calendar day in session TZ)
+  const activeTodayRes = await db.query(
+    `SELECT cs.id, cs.entity_type, cs.entity_id 
+     FROM client_subscriptions cs
+     WHERE ${pred}`,
+    [today]
+  );
   const activeTodayCount = activeTodayRes.rowCount;
 
   // 3. Meal size breakdown from subscription plan mapping (works for all entity types)
