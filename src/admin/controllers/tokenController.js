@@ -214,15 +214,17 @@ const assertActiveMealSizeId = async (mealSizeId, next) => {
 const fetchSchoolSizePdfRows = async (schoolId, mealSizeId, delivery) => {
   const result = await db.query(
     `SELECT ch.name AS child_name, ch.roll_number,
-            s.display_name AS standard, ms.display_name AS meal_size,
+            st.display_name AS standard,
+            ms.display_name AS meal_size,
             ch.meal_time,
             (cs.total_meals - cs.used_meals) AS remaining_meals
      FROM children ch
      ${CHILD_SUBJOIN.replace(/\$delivery/g, '$3')}
-     LEFT JOIN standards s ON s.id = ch.standard_id
-     LEFT JOIN meal_sizes ms ON ms.id = ch.meal_size_id
+     JOIN subscriptions sp ON sp.id = cs.subscription_id
+     JOIN meal_sizes ms ON ms.id = sp.meal_size_id
+     LEFT JOIN standards st ON st.id = ch.standard_id
      WHERE ch.school_id=$1
-       AND ch.meal_size_id=$2
+       AND sp.meal_size_id=$2
        AND NOT EXISTS (
          SELECT 1 FROM meal_skips sk
          WHERE sk.entity_type='child' AND sk.entity_id=ch.id
@@ -348,13 +350,14 @@ const buildSchoolTokenOverviewGrouped = async (delivery) => {
        SELECT sc.id AS school_id, ms.id AS meal_size_id, COUNT(*)::INTEGER AS students_count
        FROM schools sc
        INNER JOIN children ch ON ch.school_id = sc.id
-       INNER JOIN meal_sizes ms ON ms.id = ch.meal_size_id
        INNER JOIN client_subscriptions cs ON cs.entity_type = 'child'
          AND cs.entity_id = ch.id
          AND cs.is_active = true
          AND DATE(cs.start_date) <= $1::date
          AND DATE(cs.end_date) >= $1::date
          AND (cs.total_meals - cs.used_meals) > 0
+       INNER JOIN subscriptions sp ON sp.id = cs.subscription_id
+       INNER JOIN meal_sizes ms ON ms.id = sp.meal_size_id
        WHERE NOT EXISTS (
          SELECT 1 FROM meal_skips sk
          WHERE sk.entity_type = 'child' AND sk.entity_id = ch.id
@@ -950,14 +953,16 @@ exports.getSchoolMealSizeTokens = catchAsync(async (req, res, next) => {
 
   const students = await db.query(
     `SELECT ch.id AS entity_id, 'child' AS entity_type, ch.name AS student_name, ch.roll_number,
-            s.display_name AS standard, ms.display_name AS meal_size,
+            st.display_name AS standard,
+            ms.display_name AS meal_size,
             (cs.total_meals - cs.used_meals) AS remaining_meals
      FROM children ch
      ${CHILD_SUBJOIN.replace(/\$delivery/g, '$3')}
-     LEFT JOIN standards s ON s.id = ch.standard_id
-     LEFT JOIN meal_sizes ms ON ms.id = ch.meal_size_id
+     JOIN subscriptions sp ON sp.id = cs.subscription_id
+     JOIN meal_sizes ms ON ms.id = sp.meal_size_id
+     LEFT JOIN standards st ON st.id = ch.standard_id
      WHERE ch.school_id = $1
-       AND ch.meal_size_id = $2
+       AND sp.meal_size_id = $2
        AND NOT EXISTS (
          SELECT 1 FROM meal_skips sk
          WHERE sk.entity_type='child' AND sk.entity_id=ch.id
@@ -1019,15 +1024,17 @@ exports.downloadSchoolMealSizeTokensPdf = catchAsync(async (req, res, next) => {
 
   const result = await db.query(
     `SELECT ch.name AS child_name, ch.roll_number,
-            s.display_name AS standard, ms.display_name AS meal_size,
+            st.display_name AS standard,
+            ms.display_name AS meal_size,
             ch.meal_time,
             (cs.total_meals - cs.used_meals) AS remaining_meals
      FROM children ch
      ${CHILD_SUBJOIN.replace(/\$delivery/g, '$3')}
-     LEFT JOIN standards s ON s.id = ch.standard_id
-     LEFT JOIN meal_sizes ms ON ms.id = ch.meal_size_id
+     JOIN subscriptions sp ON sp.id = cs.subscription_id
+     JOIN meal_sizes ms ON ms.id = sp.meal_size_id
+     LEFT JOIN standards st ON st.id = ch.standard_id
      WHERE ch.school_id=$1
-       AND ch.meal_size_id=$2
+       AND sp.meal_size_id=$2
        AND NOT EXISTS (
          SELECT 1 FROM meal_skips sk
          WHERE sk.entity_type='child' AND sk.entity_id=ch.id
@@ -1087,13 +1094,15 @@ exports.downloadSchoolAllSizesTokensPdf = catchAsync(async (req, res, next) => {
 
   const result = await db.query(
     `SELECT ch.name AS child_name, ch.roll_number,
-            s.display_name AS standard, ms.display_name AS meal_size, ms.sort_order,
+            st.display_name AS standard,
+            ms.display_name AS meal_size, ms.sort_order,
             ch.meal_time,
             (cs.total_meals - cs.used_meals) AS remaining_meals
      FROM children ch
      ${CHILD_SUBJOIN.replace(/\$delivery/g, '$2')}
-     LEFT JOIN standards s ON s.id = ch.standard_id
-     LEFT JOIN meal_sizes ms ON ms.id = ch.meal_size_id
+     JOIN subscriptions sp ON sp.id = cs.subscription_id
+     JOIN meal_sizes ms ON ms.id = sp.meal_size_id
+     LEFT JOIN standards st ON st.id = ch.standard_id
      WHERE ch.school_id = $1
        AND NOT EXISTS (
          SELECT 1 FROM meal_skips sk

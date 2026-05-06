@@ -66,6 +66,7 @@ exports.getAllPayments = catchAsync(async (req, res) => {
       o.entity_type,
       o.entity_id,
       o.created_at,
+      o.start_date AS order_start_date,
       c.phone_number AS client_phone,
       s.plan_name AS subscription_name,
       t.merchant_transaction_id,
@@ -91,7 +92,11 @@ exports.getAllPayments = catchAsync(async (req, res) => {
       CASE
         WHEN o.entity_type = 'cart' THEN COALESCE(cart_summary.institution_names, 'Mixed')
         ELSE cl.name
-      END AS corporate_location_name
+      END AS corporate_location_name,
+      CASE
+        WHEN o.entity_type = 'cart' THEN cart_summary.cart_start_date
+        ELSE o.start_date
+      END AS subscription_start_date
     FROM orders o
     LEFT JOIN clients c ON o.client_id = c.id
     LEFT JOIN subscriptions s ON o.subscription_id = s.id
@@ -104,6 +109,7 @@ exports.getAllPayments = catchAsync(async (req, res) => {
     LEFT JOIN LATERAL (
       SELECT
         STRING_AGG(DISTINCT COALESCE(ci.entity_name, ci.entity_id), ', ') AS entity_names,
+        MIN(ci.start_date)::date AS cart_start_date,
         CASE
           WHEN COUNT(DISTINCT ci.entity_type) > 1 THEN 'Cart (Mixed)'
           WHEN MAX(ci.entity_type) = 'child' THEN 'Cart (Student)'

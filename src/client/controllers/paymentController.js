@@ -52,8 +52,14 @@ const computeMealCount = (startDate, durationDays, includeSaturday) => {
  * Core function: finalize ONE subscription after successful payment
  */
 const activateSingleSubscription = async (clientId, subscriptionId, entityType, entityId, orderId, requestedStartDate, includeSaturday) => {
-  const subRes = await db.query('SELECT duration_days FROM subscriptions WHERE id=$1', [subscriptionId]);
-  const durationDays = Number(subRes.rows[0]?.duration_days || 30);
+  const subRes = await db.query(
+    'SELECT duration_days, duration_days_with_saturday, duration_days_without_saturday FROM subscriptions WHERE id=$1',
+    [subscriptionId]
+  );
+  const baseDurationDays = Number(subRes.rows[0]?.duration_days || 30);
+  const durationDays = includeSaturday
+    ? Number(subRes.rows[0]?.duration_days_with_saturday || baseDurationDays)
+    : Number(subRes.rows[0]?.duration_days_without_saturday || baseDurationDays);
 
   const existingSub = await db.query(
     'SELECT end_date, total_meals, used_meals FROM client_subscriptions WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true AND order_id != $4',
