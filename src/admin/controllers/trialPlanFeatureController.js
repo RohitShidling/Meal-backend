@@ -60,6 +60,8 @@ exports.createTrialPlan = async (req, res, next) => {
       meal_size_id,
       billing_cycle,
       trial_days,
+      duration_days_with_saturday,
+      duration_days_without_saturday,
       display_order,
       is_active,
       features,
@@ -68,6 +70,12 @@ exports.createTrialPlan = async (req, res, next) => {
 
     if (!plan_name || !billing_cycle || trial_days === undefined) {
       return next(new AppError('plan_name, billing_cycle and trial_days are required', 400));
+    }
+    if (duration_days_with_saturday === undefined || duration_days_with_saturday === null || duration_days_with_saturday === '') {
+      return next(new AppError('duration_days_with_saturday is required', 400));
+    }
+    if (duration_days_without_saturday === undefined || duration_days_without_saturday === null || duration_days_without_saturday === '') {
+      return next(new AppError('duration_days_without_saturday is required', 400));
     }
     if (meal_size_id === undefined || meal_size_id === null || meal_size_id === '') {
       return next(new AppError('meal_size_id is required', 400));
@@ -125,13 +133,19 @@ exports.createTrialPlan = async (req, res, next) => {
       SET
         price_with_saturday = $1,
         price_without_saturday = $2,
-        saturday_option_enabled = COALESCE($3, saturday_option_enabled)
-      WHERE id = $4
+        saturday_option_enabled = COALESCE($3, saturday_option_enabled),
+        duration_days_with_saturday = $4,
+        duration_days_without_saturday = $5,
+        meal_size_id = $6
+      WHERE id = $7
       `,
       [
         resolvedPriceWithSaturday,
         resolvedPriceWithoutSaturday,
         saturday_option_enabled,
+        Number(duration_days_with_saturday),
+        Number(duration_days_without_saturday),
+        Number(meal_size_id),
         result.rows[0].id,
       ]
     );
@@ -143,6 +157,10 @@ exports.createTrialPlan = async (req, res, next) => {
     result.rows[0].price_with_saturday = resolvedPriceWithSaturday;
     result.rows[0].price_without_saturday = resolvedPriceWithoutSaturday;
     result.rows[0].meal_size_id = Number(meal_size_id);
+    result.rows[0].duration_days_with_saturday =
+      Number(duration_days_with_saturday);
+    result.rows[0].duration_days_without_saturday =
+      Number(duration_days_without_saturday);
     if (saturday_option_enabled !== undefined) {
       result.rows[0].saturday_option_enabled = saturday_option_enabled;
     }
@@ -201,6 +219,8 @@ exports.updateTrialPlan = async (req, res, next) => {
       meal_size_id,
       billing_cycle,
       trial_days,
+      duration_days_with_saturday,
+      duration_days_without_saturday,
       display_order,
       is_active,
       features,
@@ -276,14 +296,35 @@ exports.updateTrialPlan = async (req, res, next) => {
         price_with_saturday = $1,
         price_without_saturday = $2,
         saturday_option_enabled = COALESCE($3, saturday_option_enabled),
-        meal_size_id = COALESCE($4, meal_size_id)
-      WHERE id = $5
+        meal_size_id = COALESCE($4, meal_size_id),
+        duration_days_with_saturday = $5,
+        duration_days_without_saturday = $6
+      WHERE id = $7
       `,
-      [nextPriceWithSaturday, nextPriceWithoutSaturday, saturday_option_enabled, meal_size_id !== undefined ? Number(meal_size_id) : null, id]
+      [
+        nextPriceWithSaturday,
+        nextPriceWithoutSaturday,
+        saturday_option_enabled,
+        meal_size_id !== undefined ? Number(meal_size_id) : null,
+        duration_days_with_saturday !== undefined && duration_days_with_saturday !== null && duration_days_with_saturday !== '' ? Number(duration_days_with_saturday) : (current.duration_days_with_saturday ?? null),
+        duration_days_without_saturday !== undefined && duration_days_without_saturday !== null && duration_days_without_saturday !== '' ? Number(duration_days_without_saturday) : (current.duration_days_without_saturday ?? null),
+        id
+      ]
     );
     result.rows[0].price = nextPriceWithSaturday;
     result.rows[0].price_with_saturday = nextPriceWithSaturday;
     result.rows[0].price_without_saturday = nextPriceWithoutSaturday;
+    result.rows[0].duration_days_with_saturday =
+      duration_days_with_saturday !== undefined
+        ? (duration_days_with_saturday === null || duration_days_with_saturday === '' ? null : Number(duration_days_with_saturday))
+        : (current.duration_days_with_saturday ?? null);
+    result.rows[0].duration_days_without_saturday =
+      duration_days_without_saturday !== undefined
+        ? (duration_days_without_saturday === null || duration_days_without_saturday === '' ? null : Number(duration_days_without_saturday))
+        : (current.duration_days_without_saturday ?? null);
+    if (result.rows[0].duration_days_with_saturday === null || result.rows[0].duration_days_without_saturday === null) {
+      return next(new AppError('duration_days_with_saturday and duration_days_without_saturday are required', 400));
+    }
     if (meal_size_id !== undefined) {
       result.rows[0].meal_size_id = Number(meal_size_id);
     }

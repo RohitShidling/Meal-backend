@@ -15,7 +15,7 @@ exports.getSubscriptions = async (req, res, next) => {
     if (isClient) {
       // Clients only see active subscriptions ordered by display_order
       sqlQuery = `
-        SELECT id, plan_name, price, price_with_saturday, price_without_saturday, saturday_option_enabled, meal_size_id, billing_cycle, trial_days, display_order 
+        SELECT id, plan_name, price, price_with_saturday, price_without_saturday, saturday_option_enabled, meal_size_id, billing_cycle, duration_days, duration_days_with_saturday, duration_days_without_saturday, trial_days, display_order 
         FROM subscriptions 
         WHERE is_active = true
         ORDER BY display_order ASC, created_at DESC;

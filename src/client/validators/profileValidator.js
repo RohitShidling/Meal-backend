@@ -4,7 +4,7 @@ const AppError = require('../../common/utils/AppError');
  * Validator for professional profile
  */
 const validateProfessionalProfile = (req, res, next) => {
-  const { name, company_name, corporate_location_id, city, state, lunch_time } = req.body;
+  const { name, company_name, corporate_location_id, city, state, lunch_time, meal_size_id } = req.body;
   const errors = [];
 
   if (!name || name.trim().length < 2) {
@@ -32,6 +32,9 @@ const validateProfessionalProfile = (req, res, next) => {
   if (!lunch_time) {
     errors.push('Lunch time is required.');
   }
+  if (!meal_size_id) {
+    errors.push('Meal size selection is required.');
+  }
 
   if (errors.length > 0) {
     return next(new AppError('Validation failed.', 400, errors));
@@ -44,7 +47,7 @@ const validateProfessionalProfile = (req, res, next) => {
  * Validator for teacher profile
  */
 const validateTeacherProfile = (req, res, next) => {
-  const { name, school_college_name, city, state, meal_time } = req.body;
+  const { name, school_college_name, city, state, meal_time, meal_size_id } = req.body;
   const errors = [];
 
   if (!name || name.trim().length < 2) {
@@ -63,6 +66,9 @@ const validateTeacherProfile = (req, res, next) => {
 
   if (!state) {
     errors.push('State is required.');
+  }
+  if (!meal_size_id) {
+    errors.push('Meal size selection is required.');
   }
 
   if (!meal_time) {

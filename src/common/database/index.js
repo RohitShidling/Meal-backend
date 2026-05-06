@@ -200,6 +200,8 @@ const initDB = async () => {
       meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL,
       billing_cycle   VARCHAR(50) NOT NULL,
       duration_days   INTEGER NOT NULL DEFAULT 30,
+      duration_days_with_saturday INTEGER,
+      duration_days_without_saturday INTEGER,
       trial_days      INTEGER NOT NULL DEFAULT 0,
       display_order   INTEGER NOT NULL DEFAULT 1,
       is_active       BOOLEAN NOT NULL DEFAULT true,
@@ -240,6 +242,7 @@ const initDB = async () => {
       city                  VARCHAR(100) NOT NULL,
       state                 VARCHAR(100) NOT NULL,
       lunch_time            TIME NOT NULL,
+      meal_size_id          INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL,
       created_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -273,6 +276,8 @@ const initDB = async () => {
       meal_time           TIME NOT NULL DEFAULT '12:30:00',
       location            TEXT NOT NULL,
       status              VARCHAR(50) NOT NULL DEFAULT 'active',
+      meal_time           TIME,
+      meal_size_id        INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL,
       created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -679,6 +684,8 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS price_without_saturday DECIMAL(10, 2);`);
     await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS saturday_option_enabled BOOLEAN NOT NULL DEFAULT true;`);
     await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS duration_days_with_saturday INTEGER;`);
+    await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS duration_days_without_saturday INTEGER;`);
     await pool.query(`UPDATE subscriptions SET price_with_saturday = price WHERE price_with_saturday IS NULL;`);
     await pool.query(`UPDATE subscriptions SET price_without_saturday = price WHERE price_without_saturday IS NULL;`);
     await pool.query(`
@@ -694,6 +701,11 @@ const initDB = async () => {
       WHERE duration_days IS NULL OR duration_days <= 0;
     `);
     await pool.query(`ALTER TABLE subscriptions ALTER COLUMN duration_days SET DEFAULT 30;`);
+
+    // Migration: profile enhancements (meal size + time)
+    await pool.query(`ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS meal_time TIME;`);
+    await pool.query(`ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
 
     // Migration: Ensure subscription_features exists and stays clean
     await pool.query(`

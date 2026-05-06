@@ -8,11 +8,20 @@ const AppError = require('../../common/utils/AppError');
  */
 exports.saveProfessionalProfile = async (req, res, next) => {
   try {
-    const { name, company_name, corporate_location_id, city, state, lunch_time } = req.body;
+    const { name, company_name, corporate_location_id, city, state, lunch_time, meal_size_id } = req.body;
     const clientId = req.user.id;
 
-    if (!name || !company_name || !corporate_location_id || !city || !state || !lunch_time) {
-      return next(new AppError('All fields (name, company_name, corporate_location_id, city, state, lunch_time) are required', 400));
+    if (!name || !company_name || !corporate_location_id || !city || !state || !lunch_time || !meal_size_id) {
+      return next(new AppError('All fields (name, company_name, corporate_location_id, city, state, lunch_time, meal_size_id) are required', 400));
+    }
+
+    // Validate meal size exists and is active
+    const mealSizeCheck = await query(
+      'SELECT id FROM meal_sizes WHERE id = $1 AND is_active = true',
+      [Number(meal_size_id)]
+    );
+    if (mealSizeCheck.rows.length === 0) {
+      return next(new AppError('Invalid or inactive meal size', 400));
     }
 
     // Verify corporate location exists and is active
@@ -46,22 +55,23 @@ exports.saveProfessionalProfile = async (req, res, next) => {
           city = $4, 
           state = $5, 
           lunch_time = $6,
+          meal_size_id = $7,
           updated_at = CURRENT_TIMESTAMP
-        WHERE client_id = $7
+        WHERE client_id = $8
         RETURNING *;
       `;
-      const values = [name, company_name, corporate_location_id, city, state, lunch_time, clientId];
+      const values = [name, company_name, corporate_location_id, city, state, lunch_time, Number(meal_size_id), clientId];
       const updateResult = await query(updateQuery, values);
       result = updateResult.rows[0];
     } else {
       // Create new
       const insertQuery = `
         INSERT INTO professional_profiles (
-          client_id, name, company_name, corporate_location_id, city, state, lunch_time
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+          client_id, name, company_name, corporate_location_id, city, state, lunch_time, meal_size_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *;
       `;
-      const values = [clientId, name, company_name, corporate_location_id, city, state, lunch_time];
+      const values = [clientId, name, company_name, corporate_location_id, city, state, lunch_time, Number(meal_size_id)];
       const insertResult = await query(insertQuery, values);
       result = insertResult.rows[0];
     }
