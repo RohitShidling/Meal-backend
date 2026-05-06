@@ -1,12 +1,29 @@
 const db = require('../../common/database');
 const catchAsync = require('../../common/utils/catchAsync');
 
+const mapEntityTypeToSector = (entityType) => {
+  if (entityType === 'child') return 'student';
+  if (entityType === 'teacher') return 'teacher';
+  if (entityType === 'professional') return 'professional_worker';
+  return entityType || null;
+};
+
+const mapEntityTypeToSectorLabel = (entityType) => {
+  if (entityType === 'child') return 'Student';
+  if (entityType === 'teacher') return 'Teacher';
+  if (entityType === 'professional') return 'Professional Worker';
+  return entityType || null;
+};
+
 /**
  * @desc    Get all payments with advanced filters — fixed count query
  * @route   GET /api/admin/payment/all
  */
 exports.getAllPayments = catchAsync(async (req, res) => {
-  const { schoolId, entityType, status, startDate, endDate, page = 1, limit = 10 } = req.query;
+  const schoolId = req.query.schoolId || req.query.school_id;
+  const entityType = req.query.entityType || req.query.entity_type || req.query.sector;
+  const status = req.query.status || req.query.order_status;
+  const { startDate, endDate, page = 1, limit = 10 } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   const params = [];
@@ -14,119 +31,187 @@ exports.getAllPayments = catchAsync(async (req, res) => {
   let whereClause = 'WHERE 1=1';
 
   if (entityType) {
-    whereClause += ` AND o.entity_type = $${paramCount}`;
+    // Filter against normalized entity type (cart items split out)
+    whereClause += ` AND np.entity_type = $${paramCount}`;
     params.push(entityType);
     paramCount++;
   }
   if (status) {
-    whereClause += ` AND o.status = $${paramCount}`;
+    whereClause += ` AND np.order_status = $${paramCount}`;
     params.push(status);
     paramCount++;
   }
   if (startDate) {
-    whereClause += ` AND o.created_at >= $${paramCount}`;
+    whereClause += ` AND np.payment_date >= $${paramCount}`;
     params.push(startDate);
     paramCount++;
   }
   if (endDate) {
-    whereClause += ` AND o.created_at <= $${paramCount}`;
+    whereClause += ` AND np.payment_date <= $${paramCount}`;
     params.push(endDate);
     paramCount++;
   }
   if (schoolId) {
-    whereClause += ` AND sch_ch.id = $${paramCount}`;
+    whereClause += ` AND np.school_id = $${paramCount}`;
     params.push(schoolId);
     paramCount++;
   }
 
-  const baseJoins = `
-    FROM orders o
-    LEFT JOIN clients c ON o.client_id = c.id
-    LEFT JOIN subscriptions s ON o.subscription_id = s.id
-    LEFT JOIN children ch ON o.entity_type = 'child' AND o.entity_id = ch.id
-    LEFT JOIN teacher_profiles t ON o.entity_type = 'teacher' AND o.entity_id = t.id
-    LEFT JOIN professional_profiles p ON o.entity_type = 'professional' AND o.entity_id = p.id
-    LEFT JOIN schools sch_ch ON ch.school_id = sch_ch.id
-    LEFT JOIN corporate_locations cl ON p.corporate_location_id = cl.id
-    ${whereClause}
+  const normalizedPaymentsCte = `
+    WITH normalized_payments AS (
+      -- Non-cart orders: 1 order = 1 person
+      SELECT
+        o.id AS order_id,
+        o.status AS order_status,
+        o.order_type,
+        o.created_at AS payment_date,
+        o.client_id,
+        c.phone_number AS client_phone,
+        o.entity_type,
+        o.entity_id,
+        CASE
+          WHEN o.entity_type = 'child' THEN ch.name
+          WHEN o.entity_type = 'teacher' THEN tp.name
+          WHEN o.entity_type = 'professional' THEN pp.name
+          ELSE NULL
+        END AS customer_name,
+        CASE
+          WHEN o.entity_type = 'child' THEN sch.name
+          WHEN o.entity_type = 'teacher' THEN sch_t.name
+          ELSE NULL
+        END AS school_name,
+        CASE
+          WHEN o.entity_type = 'child' THEN ch.school_id
+          WHEN o.entity_type = 'teacher' THEN tp.school_id
+          ELSE NULL
+        END AS school_id,
+        NULL::varchar AS corporate_location_name,
+        o.amount::numeric AS amount,
+        false AS is_cart_order,
+        tx.merchant_transaction_id,
+        tx.status AS payment_status
+      FROM orders o
+      LEFT JOIN clients c ON o.client_id = c.id
+      LEFT JOIN transactions tx ON tx.order_id = o.id
+      LEFT JOIN children ch ON o.entity_type = 'child' AND o.entity_id = ch.id
+      LEFT JOIN schools sch ON ch.school_id = sch.id
+      LEFT JOIN teacher_profiles tp ON o.entity_type = 'teacher' AND o.entity_id = tp.id
+      LEFT JOIN schools sch_t ON tp.school_id = sch_t.id
+      LEFT JOIN professional_profiles pp ON o.entity_type = 'professional' AND o.entity_id = pp.id
+      WHERE o.entity_type IS DISTINCT FROM 'cart'
+
+      UNION ALL
+
+      -- Cart orders: split into per-cart-item rows (1 row per person)
+      SELECT
+        o.id AS order_id,
+        o.status AS order_status,
+        o.order_type,
+        o.created_at AS payment_date,
+        o.client_id,
+        c.phone_number AS client_phone,
+        ci.entity_type,
+        ci.entity_id,
+        COALESCE(
+          ci.entity_name,
+          CASE
+            WHEN ci.entity_type = 'child' THEN ch2.name
+            WHEN ci.entity_type = 'teacher' THEN tp2.name
+            WHEN ci.entity_type = 'professional' THEN pp2.name
+            ELSE NULL
+          END
+        ) AS customer_name,
+        CASE
+          WHEN ci.entity_type = 'child' THEN sch2.name
+          WHEN ci.entity_type = 'teacher' THEN sch_t2.name
+          ELSE NULL
+        END AS school_name,
+        CASE
+          WHEN ci.entity_type = 'child' THEN ch2.school_id
+          WHEN ci.entity_type = 'teacher' THEN tp2.school_id
+          ELSE NULL
+        END AS school_id,
+        cl2.name AS corporate_location_name,
+        ci.unit_price::numeric AS amount,
+        true AS is_cart_order,
+        tx.merchant_transaction_id,
+        tx.status AS payment_status
+      FROM orders o
+      INNER JOIN cart_items ci ON ci.cart_id = o.cart_id
+      LEFT JOIN clients c ON o.client_id = c.id
+      LEFT JOIN transactions tx ON tx.order_id = o.id
+      LEFT JOIN children ch2 ON ci.entity_type = 'child' AND ci.entity_id = ch2.id
+      LEFT JOIN schools sch2 ON ch2.school_id = sch2.id
+      LEFT JOIN teacher_profiles tp2 ON ci.entity_type = 'teacher' AND ci.entity_id = tp2.id
+      LEFT JOIN schools sch_t2 ON tp2.school_id = sch_t2.id
+      LEFT JOIN professional_profiles pp2 ON ci.entity_type = 'professional' AND ci.entity_id = pp2.id
+      LEFT JOIN corporate_locations cl2 ON pp2.corporate_location_id = cl2.id
+      WHERE o.entity_type = 'cart'
+    )
   `;
 
   // Count query — separate, clean
-  const countRes = await db.query(`SELECT COUNT(*) ${baseJoins}`, params);
+  const countRes = await db.query(
+    `
+    ${normalizedPaymentsCte}
+    SELECT COUNT(*) FROM normalized_payments np
+    ${whereClause}
+    `,
+    params
+  );
   const total = parseInt(countRes.rows[0].count);
 
   // Data query
   const dataParams = [...params, parseInt(limit), offset];
-  const result = await db.query(`
+  const result = await db.query(
+    `
+    ${normalizedPaymentsCte}
     SELECT
-      o.id AS order_id,
-      o.status AS order_status,
-      o.order_type,
-      o.amount,
-      o.entity_type,
-      o.entity_id,
-      o.created_at,
-      c.phone_number AS client_phone,
-      s.plan_name AS subscription_name,
-      t.merchant_transaction_id,
-      t.status AS payment_status,
-      CASE
-        WHEN o.entity_type = 'child' THEN ch.name
-        WHEN o.entity_type = 'teacher' THEN t2.name
-        WHEN o.entity_type = 'professional' THEN p.name
-        WHEN o.entity_type = 'cart' THEN COALESCE(cart_summary.entity_names, 'Cart Order')
-        ELSE 'Cart Order'
-      END AS entity_name,
-      CASE
-        WHEN o.entity_type = 'cart' THEN COALESCE(cart_summary.entity_type_label, 'Cart')
-        WHEN o.entity_type = 'child' THEN 'Student'
-        WHEN o.entity_type = 'teacher' THEN 'Teacher'
-        WHEN o.entity_type = 'professional' THEN 'Professional'
-        ELSE o.entity_type
-      END AS sector_label,
-      CASE
-        WHEN o.entity_type = 'cart' THEN COALESCE(cart_summary.institution_names, 'Mixed')
-        ELSE sch_ch.name
-      END AS school_name,
-      CASE
-        WHEN o.entity_type = 'cart' THEN COALESCE(cart_summary.institution_names, 'Mixed')
-        ELSE cl.name
-      END AS corporate_location_name
-    FROM orders o
-    LEFT JOIN clients c ON o.client_id = c.id
-    LEFT JOIN subscriptions s ON o.subscription_id = s.id
-    LEFT JOIN transactions t ON t.order_id = o.id
-    LEFT JOIN children ch ON o.entity_type = 'child' AND o.entity_id = ch.id
-    LEFT JOIN teacher_profiles t2 ON o.entity_type = 'teacher' AND o.entity_id = t2.id
-    LEFT JOIN professional_profiles p ON o.entity_type = 'professional' AND o.entity_id = p.id
-    LEFT JOIN schools sch_ch ON ch.school_id = sch_ch.id
-    LEFT JOIN corporate_locations cl ON p.corporate_location_id = cl.id
-    LEFT JOIN LATERAL (
-      SELECT
-        STRING_AGG(DISTINCT COALESCE(ci.entity_name, ci.entity_id), ', ') AS entity_names,
-        CASE
-          WHEN COUNT(DISTINCT ci.entity_type) > 1 THEN 'Cart (Mixed)'
-          WHEN MAX(ci.entity_type) = 'child' THEN 'Cart (Student)'
-          WHEN MAX(ci.entity_type) = 'teacher' THEN 'Cart (Teacher)'
-          WHEN MAX(ci.entity_type) = 'professional' THEN 'Cart (Professional)'
-          ELSE 'Cart'
-        END AS entity_type_label,
-        STRING_AGG(
-          DISTINCT COALESCE(sch.name, cl2.name, tp.school_college_name, 'Unknown'),
-          ', '
-        ) AS institution_names
-      FROM cart_items ci
-      LEFT JOIN children ch2 ON ci.entity_type = 'child' AND ci.entity_id = ch2.id
-      LEFT JOIN schools sch ON ch2.school_id = sch.id
-      LEFT JOIN professional_profiles pp2 ON ci.entity_type = 'professional' AND ci.entity_id = pp2.id
-      LEFT JOIN corporate_locations cl2 ON pp2.corporate_location_id = cl2.id
-      LEFT JOIN teacher_profiles tp ON ci.entity_type = 'teacher' AND ci.entity_id = tp.id
-      WHERE ci.cart_id = o.cart_id
-    ) AS cart_summary ON o.entity_type = 'cart'
+      np.order_id,
+      np.order_status,
+      np.order_type,
+      np.amount,
+      np.entity_type,
+      np.entity_id,
+      np.payment_date AS created_at,
+      np.client_phone,
+      np.merchant_transaction_id,
+      np.payment_status,
+      np.customer_name AS customer_name,
+      np.school_name,
+      np.corporate_location_name,
+      np.is_cart_order
+    FROM normalized_payments np
     ${whereClause}
-    ORDER BY o.created_at DESC
+    ORDER BY np.payment_date DESC, np.order_id DESC
     LIMIT $${paramCount} OFFSET $${paramCount + 1}
-  `, dataParams);
+    `,
+    dataParams
+  );
+
+  const normalized = result.rows.map((row) => {
+    const sector = mapEntityTypeToSector(row.entity_type);
+    const sectorLabel = mapEntityTypeToSectorLabel(row.entity_type);
+    const customerName = row.customer_name || 'Unknown';
+    const schoolName = row.school_name || null;
+    return {
+      ...row,
+      amount: Number(row.amount),
+      school_name: schoolName,
+      customer_name: customerName,
+      // New frontend-friendly fields
+      orderId: row.order_id,
+      isCartOrder: !!row.is_cart_order,
+      customerName,
+      sector,
+      schoolName,
+      paymentStatus: row.payment_status || row.order_status,
+      paymentDate: row.created_at,
+      // Legacy compatibility keys (for existing UI bindings)
+      entity_name: customerName,
+      sector_label: sectorLabel,
+    };
+  });
 
   res.status(200).json({
     success: true,
@@ -136,7 +221,7 @@ exports.getAllPayments = catchAsync(async (req, res) => {
       limit: parseInt(limit),
       totalPages: Math.ceil(total / parseInt(limit))
     },
-    data: result.rows
+    data: normalized
   });
 });
 
@@ -145,6 +230,36 @@ exports.getAllPayments = catchAsync(async (req, res) => {
  * @route   GET /api/admin/payment/stats
  */
 exports.getPaymentStats = catchAsync(async (req, res) => {
+  const normalizedPaymentsCte = `
+    WITH normalized_payments AS (
+      SELECT
+        o.id AS order_id,
+        o.status AS order_status,
+        o.created_at AS payment_date,
+        o.entity_type,
+        o.entity_id,
+        o.amount::numeric AS amount,
+        false AS is_cart_order
+      FROM orders o
+      WHERE o.entity_type IS DISTINCT FROM 'cart'
+
+      UNION ALL
+
+      SELECT
+        o.id AS order_id,
+        o.status AS order_status,
+        o.created_at AS payment_date,
+        ci.entity_type,
+        ci.entity_id,
+        ci.unit_price::numeric AS amount,
+        true AS is_cart_order
+      FROM orders o
+      INNER JOIN cart_items ci ON ci.cart_id = o.cart_id
+      WHERE o.entity_type = 'cart'
+    )
+  `;
+
+  // Overall stats at ORDER level (unchanged meaning), plus normalized row count for UI tables.
   const stats = await db.query(`
     SELECT
       COUNT(*)                                                        AS total_orders,
@@ -155,37 +270,82 @@ exports.getPaymentStats = catchAsync(async (req, res) => {
     FROM orders
   `);
 
-  const revenueByEntity = await db.query(`
-    SELECT entity_type, COUNT(*) AS order_count, COALESCE(SUM(amount), 0) AS revenue
-    FROM orders
-    WHERE status = 'completed'
-    GROUP BY entity_type
-    ORDER BY entity_type
-  `);
+  const normalizedCount = await db.query(
+    `
+    ${normalizedPaymentsCte}
+    SELECT COUNT(*)::int AS total_rows
+    FROM normalized_payments np
+    WHERE np.order_status = 'completed'
+    `
+  );
 
-  const recentPayments = await db.query(`
-    SELECT o.id, o.amount, o.status, o.created_at, c.phone_number,
-           CASE
-             WHEN o.entity_type='child' THEN ch.name
-             WHEN o.entity_type='teacher' THEN tp.name
-             WHEN o.entity_type='professional' THEN pp.name
-             ELSE 'Cart Order'
-           END AS entity_name
-    FROM orders o
-    LEFT JOIN clients c ON o.client_id = c.id
-    LEFT JOIN children ch ON o.entity_type='child' AND o.entity_id=ch.id
-    LEFT JOIN teacher_profiles tp ON o.entity_type='teacher' AND o.entity_id=tp.id
-    LEFT JOIN professional_profiles pp ON o.entity_type='professional' AND o.entity_id=pp.id
-    WHERE o.status = 'completed'
-    ORDER BY o.created_at DESC LIMIT 10
-  `);
+  // Revenue by entity type using normalized rows (cart splits correctly; amount uses unit_price per person)
+  const revenueByEntity = await db.query(
+    `
+    ${normalizedPaymentsCte}
+    SELECT np.entity_type, COUNT(*)::int AS order_count, COALESCE(SUM(np.amount), 0) AS revenue
+    FROM normalized_payments np
+    WHERE np.order_status = 'completed'
+    GROUP BY np.entity_type
+    ORDER BY np.entity_type
+    `
+  );
+
+  // Recent completed payments as normalized rows (good for UI lists)
+  const recentPayments = await db.query(
+    `
+    WITH normalized_recent AS (
+      SELECT
+        np.order_id AS id,
+        np.amount,
+        np.order_status AS status,
+        np.payment_date AS created_at,
+        c.phone_number,
+        np.entity_type,
+        np.entity_id,
+        np.is_cart_order,
+        CASE
+          WHEN np.entity_type='child' THEN ch.name
+          WHEN np.entity_type='teacher' THEN tp.name
+          WHEN np.entity_type='professional' THEN pp.name
+          ELSE NULL
+        END AS customer_name
+      FROM (
+        ${normalizedPaymentsCte}
+        SELECT * FROM normalized_payments
+      ) np
+      LEFT JOIN orders o ON o.id = np.order_id
+      LEFT JOIN clients c ON o.client_id = c.id
+      LEFT JOIN children ch ON np.entity_type='child' AND np.entity_id=ch.id
+      LEFT JOIN teacher_profiles tp ON np.entity_type='teacher' AND np.entity_id=tp.id
+      LEFT JOIN professional_profiles pp ON np.entity_type='professional' AND np.entity_id=pp.id
+      WHERE np.order_status = 'completed'
+    )
+    SELECT * FROM normalized_recent
+    ORDER BY created_at DESC, id DESC
+    LIMIT 10
+    `
+  );
 
   res.status(200).json({
     success: true,
     data: {
-      overall: stats.rows[0],
-      byEntityType: revenueByEntity.rows,
-      recentPayments: recentPayments.rows
+      overall: {
+        ...stats.rows[0],
+        completed_rows: normalizedCount.rows[0]?.total_rows ?? 0,
+      },
+      byEntityType: revenueByEntity.rows.map((r) => ({
+        ...r,
+        sector: mapEntityTypeToSector(r.entity_type),
+      })),
+      recentPayments: recentPayments.rows.map((r) => ({
+        ...r,
+        isCartOrder: !!r.is_cart_order,
+        customerName: r.customer_name,
+        sector: mapEntityTypeToSector(r.entity_type),
+        entity_name: r.customer_name,
+        sector_label: mapEntityTypeToSectorLabel(r.entity_type),
+      })),
     }
   });
 });

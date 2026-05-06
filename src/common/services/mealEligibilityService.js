@@ -369,17 +369,23 @@ async function executeMealReductionForDate(adminId, deliveryDate) {
       [adminId, deliveryDate]
     );
 
-    if (reductionIns.rowCount === 0) {
-      await client.query('ROLLBACK');
-      const ex = await query('SELECT id FROM meal_reductions WHERE reduction_date = $1::date', [deliveryDate]);
-      return {
-        alreadyDone: true,
-        reductionId: ex.rows[0]?.id,
-        date: deliveryDate,
-      };
+    let reductionId = reductionIns.rows[0]?.id;
+    const isRepeatReduction = reductionIns.rowCount === 0;
+    if (!reductionId) {
+      const ex = await client.query(
+        `SELECT id
+         FROM meal_reductions
+         WHERE reduction_date = $1::date
+         ORDER BY id DESC
+         LIMIT 1
+         FOR UPDATE`,
+        [deliveryDate]
+      );
+      if (ex.rowCount === 0) {
+        throw new Error('Unable to resolve meal reduction row for date.');
+      }
+      reductionId = ex.rows[0].id;
     }
-
-    const reductionId = reductionIns.rows[0].id;
     const pred = subscriptionEligiblePredicateSql('cs');
     const tokenEligibleSql = `
       SELECT cs.id AS subscription_id, cs.entity_type, cs.entity_id
@@ -410,19 +416,24 @@ async function executeMealReductionForDate(adminId, deliveryDate) {
     const eligibleRes = await client.query(tokenEligibleSql, [deliveryDate]);
     const eligibleCount = eligibleRes.rowCount;
 
-    const insertLog = await client.query(
-      `INSERT INTO daily_meal_log (subscription_id, entity_type, entity_id, meal_date, reduction_id)
-       SELECT e.subscription_id, e.entity_type, e.entity_id, $1::date, $2
-       FROM (
-         ${tokenEligibleSql}
-       ) e
-       ON CONFLICT (subscription_id, meal_date) DO NOTHING
-       RETURNING subscription_id, entity_type, entity_id`,
-      [deliveryDate, reductionId]
-    );
-
-    const insertedRows = insertLog.rows;
-    const subscriptionIds = insertedRows.map((r) => r.subscription_id);
+    let reducedRows = [];
+    if (isRepeatReduction) {
+      // Testing mode behavior: allow repeated same-day reductions for currently eligible token holders.
+      reducedRows = eligibleRes.rows;
+    } else {
+      const insertLog = await client.query(
+        `INSERT INTO daily_meal_log (subscription_id, entity_type, entity_id, meal_date, reduction_id)
+         SELECT e.subscription_id, e.entity_type, e.entity_id, $1::date, $2
+         FROM (
+           ${tokenEligibleSql}
+         ) e
+         ON CONFLICT (subscription_id, meal_date) DO NOTHING
+         RETURNING subscription_id, entity_type, entity_id`,
+        [deliveryDate, reductionId]
+      );
+      reducedRows = insertLog.rows;
+    }
+    const subscriptionIds = reducedRows.map((r) => r.subscription_id);
 
     if (subscriptionIds.length > 0) {
       await client.query(
@@ -448,35 +459,37 @@ async function executeMealReductionForDate(adminId, deliveryDate) {
     const skippedPause = await countSkippedDueToPolicyOnly(deliveryDate, client);
 
     const details = {
-      affected: insertedRows.map((r) => ({
+      affected: reducedRows.map((r) => ({
         subscription_id: r.subscription_id,
         entity_type: r.entity_type,
         entity_id: r.entity_id,
       })),
       stats: {
         eligible_count: eligibleCount,
-        newly_logged: insertedRows.length,
+        newly_logged: isRepeatReduction ? 0 : reducedRows.length,
+        repeated_reduction_mode: isRepeatReduction,
         skipped_due_to_valid_meal_skip: skippedPause,
       },
     };
 
     await client.query(
       `UPDATE meal_reductions
-       SET affected_count = $1,
+       SET affected_count = COALESCE(affected_count, 0) + $1,
            skipped_count = $2,
            details = $3::jsonb
        WHERE id = $4`,
-      [insertedRows.length, skippedPause, JSON.stringify(details), reductionId]
+      [reducedRows.length, skippedPause, JSON.stringify(details), reductionId]
     );
 
     await client.query('COMMIT');
 
     return {
       alreadyDone: false,
+      repeated_reduction_mode: isRepeatReduction,
       reductionId,
       date: deliveryDate,
       eligible_count: eligibleCount,
-      meals_reduced: insertedRows.length,
+      meals_reduced: reducedRows.length,
       skipped_due_to_meal_pause: skippedPause,
       details,
     };

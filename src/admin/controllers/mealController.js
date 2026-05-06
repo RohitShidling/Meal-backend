@@ -20,21 +20,13 @@ exports.reduceMealsForToday = catchAsync(async (req, res, next) => {
 
   const result = await mealEligibilityService.executeMealReductionForDate(adminId, today);
 
-  if (result.alreadyDone) {
-    return next(
-      new AppError(
-        `Meals have already been reduced for today (${today}). Only one reduction per calendar day is allowed.`,
-        409
-      )
-    );
-  }
-
   res.status(200).json({
     success: true,
-    message: `Meal reduction completed for ${today}.`,
+    message: `Meal reduction completed for ${today}${result.repeated_reduction_mode ? ' (repeat run).' : '.'}`,
     data: {
       date: today,
       reduction_id: result.reductionId,
+      repeated_reduction_mode: !!result.repeated_reduction_mode,
       eligible_for_meal_on_date: result.eligible_count,
       meals_reduced: result.meals_reduced,
       skipped_due_to_meal_pause: result.skipped_due_to_meal_pause,
