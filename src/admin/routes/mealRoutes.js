@@ -8,8 +8,12 @@ router.use(adminAuthMiddleware);
 /**
  * @swagger
  * tags:
- *   name: Admin - Meals
- *   description: Meal reduction, skip management, and PDF token generation
+ *   - name: Admin - Meals
+ *     description: Meal reduction, skip management, and PDF token generation
+ *   - name: Admin - Reduce Meals
+ *     description: Bulk meal reduction and rollback operations
+ *   - name: Admin - Increase Meals
+ *     description: User-level meal increments and adjustment APIs
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -21,10 +25,11 @@ router.use(adminAuthMiddleware);
  *   post:
  *     summary: Reduce remaining meals by 1 for ALL active subscribers wanting today's meal
  *     description: >
- *       Admin presses this once per day. It reduces remaining_meals by 1 for every active
- *       subscription entity that does NOT have an approved meal skip for today.
+ *       Admin presses this once per calendar day (server session timezone, same as token dates).
+ *       Uses the same eligibility engine as token PDFs: start/end dates, Saturday option,
+ *       remaining meals, and only policy-valid meal skips (min consecutive days) exclude a user.
  *       Can only be called ONCE per day (duplicate calls return 409).
- *     tags: [Admin - Meals]
+ *     tags: [Admin - Reduce Meals]
  *     security:
  *       - bearerAuth: []
  *     responses:
@@ -41,9 +46,10 @@ router.use(adminAuthMiddleware);
  *                   type: object
  *                   properties:
  *                     date: { type: string, example: "2026-04-30" }
- *                     total_active_subscriptions: { type: integer, example: 50 }
+ *                     reduction_id: { type: integer, example: 12 }
+ *                     eligible_for_meal_on_date: { type: integer, example: 48 }
  *                     meals_reduced: { type: integer, example: 45 }
- *                     skipped_due_to_meal_pause: { type: integer, example: 5 }
+ *                     skipped_due_to_meal_pause: { type: integer, example: 3 }
  *       409:
  *         description: Already reduced today
  *         content:
@@ -55,6 +61,171 @@ router.use(adminAuthMiddleware);
  *                 message: { type: string, example: "Meals have already been reduced for today." }
  */
 router.post('/reduce-today', mealController.reduceMealsForToday);
+
+/**
+ * @swagger
+ * /api/admin/meals/reduce-today/reverse:
+ *   post:
+ *     summary: Reverse today's reduce-meals operation
+ *     description: >
+ *       Restores one meal for users that were actually reduced today.
+ *       Uses daily_meal_log + reduction_id to avoid restoring users who were never reduced.
+ *     tags: [Admin - Reduce Meals]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Reduction rollback completed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Meal reduction rollback completed for 2026-05-06." }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     date: { type: string, example: "2026-05-06" }
+ *                     reduction_id: { type: integer, example: 12 }
+ *                     restored_count: { type: integer, example: 45 }
+ *                     restored_entities:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           subscription_id: { type: string, example: "CT-SUB-101" }
+ *                           entity_type: { type: string, example: "teacher" }
+ *                           entity_id: { type: string, example: "TCH-5" }
+ *       404:
+ *         description: No reduction exists for today
+ */
+router.post('/reduce-today/reverse', mealController.reverseTodayMealReduction);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADMIN: ADD EXTRA MEALS
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * @swagger
+ * /api/admin/meals/extra-by-entity:
+ *   post:
+ *     summary: Admin adds extra meal credits to a single entity (child/teacher/professional)
+ *     tags: [Admin - Increase Meals]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [entityType, entityId, extraMeals, reason]
+ *             properties:
+ *               entityType:
+ *                 type: string
+ *                 enum: [child, teacher, professional]
+ *                 example: child
+ *               entityId:
+ *                 type: string
+ *                 example: CH-1
+ *               extraMeals:
+ *                 type: integer
+ *                 example: 5
+ *               reason:
+ *                 type: string
+ *                 example: "Admin bonus meals"
+ *     responses:
+ *       200:
+ *         description: Extra meals added successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 message: { type: string, example: "Extra meals added successfully." }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     subscription_id: { type: string }
+ *                     remaining_meals_before: { type: integer }
+ *                     remaining_meals_after: { type: integer }
+ *                     new_end_date: { type: string, example: "2026-05-20" }
+ */
+router.post('/extra-by-entity', mealController.adminAddExtraMealsByEntity);
+
+/**
+ * @swagger
+ * /api/admin/meals/users:
+ *   get:
+ *     summary: List subscribed users with remaining meals (students/teachers/corporate users)
+ *     tags: [Admin - Increase Meals]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: role
+ *         schema:
+ *           type: string
+ *           enum: [child, teacher, professional]
+ *       - in: query
+ *         name: q
+ *         schema: { type: string, example: "rahul" }
+ *       - in: query
+ *         name: activeOnly
+ *         schema: { type: boolean, default: false }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 50, maximum: 200 }
+ *     responses:
+ *       200:
+ *         description: Subscribed users list
+ *       400:
+ *         description: Invalid role filter
+ */
+router.get('/users', mealController.getSubscribedUsersRemainingMeals);
+
+/**
+ * @swagger
+ * /api/admin/meals/users/{entityType}/{entityId}/add-remaining-meals:
+ *   post:
+ *     summary: Increase remaining meals for one selected user
+ *     tags: [Admin - Meal Adjustments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: entityType
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [child, teacher, professional]
+ *       - in: path
+ *         name: entityId
+ *         required: true
+ *         schema: { type: string, example: "TCH-3" }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [mealsToAdd]
+ *             properties:
+ *               mealsToAdd: { type: integer, example: 3, minimum: 1 }
+ *               reason: { type: string, example: "Complimentary meals for service delay" }
+ *     responses:
+ *       200:
+ *         description: Meals added successfully
+ *       400:
+ *         description: Validation error
+ *       404:
+ *         description: User/subscription not found
+ */
+router.post('/users/:entityType/:entityId/add-remaining-meals', mealController.addRemainingMealsForUser);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MEAL REDUCTION HISTORY

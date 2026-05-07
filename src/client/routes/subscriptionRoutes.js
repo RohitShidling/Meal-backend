@@ -170,5 +170,7 @@ router.put('/update-start-date', subscriptionController.updateStartDate);
  *                           price: { type: number }
  */
 router.get('/alerts', subscriptionController.getSubscriptionAlerts);
+router.get('/notifications', subscriptionController.getSubscriptionNotifications);
+router.patch('/notifications/:id/read', subscriptionController.markSubscriptionNotificationRead);
 
 module.exports = router;

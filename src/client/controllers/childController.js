@@ -1,6 +1,33 @@
 const db = require('../../common/database');
 const catchAsync = require('../../common/utils/catchAsync');
 const AppError = require('../../common/utils/AppError');
+const DEFAULT_MEAL_TIME = '1:00 PM';
+
+const normalizeMealTime = (input) => {
+  const raw = String(input ?? '').trim();
+  if (!raw) return DEFAULT_MEAL_TIME;
+  const twelveHour = raw.match(/^(\d{1,2}):([0-5]\d)\s*(AM|PM)$/i);
+  if (twelveHour) {
+    const hour = Number(twelveHour[1]);
+    if (hour >= 1 && hour <= 12) {
+      return `${hour}:${twelveHour[2]} ${twelveHour[3].toUpperCase()}`;
+    }
+  }
+  const twentyFourHour = raw.match(/^(\d{1,2}):([0-5]\d)$/);
+  if (twentyFourHour) {
+    const hour = Number(twentyFourHour[1]);
+    if (hour >= 0 && hour <= 23) {
+      const normalized = new Date(Date.UTC(2000, 0, 1, hour, Number(twentyFourHour[2])));
+      return normalized.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'UTC',
+      });
+    }
+  }
+  return DEFAULT_MEAL_TIME;
+};
 
 /**
  * POST /api/client/children
@@ -66,7 +93,7 @@ const addChildren = catchAsync(async (req, res, next) => {
           (parent_id, name, roll_number, school_id, standard_id, meal_size_id, meal_time)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
-        [clientId, name.trim(), rollNumber.trim(), schoolId, standardId, mealSizeId, mealTime]
+        [clientId, name.trim(), rollNumber.trim(), schoolId, standardId, mealSizeId, normalizeMealTime(mealTime)]
       );
 
       insertedChildren.push(result.rows[0]);
@@ -124,6 +151,7 @@ const updateChild = catchAsync(async (req, res, next) => {
   const { childId } = req.params;
   const clientId = req.user.id;
   const { name, rollNumber, schoolId, standardId, mealSizeId, mealTime } = req.body;
+  const normalizedMealTime = mealTime === undefined ? null : normalizeMealTime(mealTime);
 
   // Check if child exists and belongs to client
   const childCheck = await db.query('SELECT * FROM children WHERE id = $1 AND parent_id = $2', [childId, clientId]);
@@ -143,7 +171,7 @@ const updateChild = catchAsync(async (req, res, next) => {
          updated_at = NOW()
      WHERE id = $7 AND parent_id = $8
      RETURNING *`,
-    [name, rollNumber, schoolId, standardId, mealSizeId, mealTime, childId, clientId]
+    [name, rollNumber, schoolId, standardId, mealSizeId, normalizedMealTime, childId, clientId]
   );
 
   return res.status(200).json({

@@ -2,6 +2,8 @@ const db = require('../../common/database');
 const phonepe = require('../../common/utils/phonepe');
 const AppError = require('../../common/utils/AppError');
 const catchAsync = require('../../common/utils/catchAsync');
+const mealEligibilityService = require('../../common/services/mealEligibilityService');
+const DEFAULT_MEAL_TIME = '1:00 PM';
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
@@ -24,6 +26,22 @@ const validateEntityOwnership = async (entityType, entityId, clientId) => {
   return r.rows.length > 0;
 };
 
+const resolveEntityMealMeta = async (entityType, entityId) => {
+  if (entityType === 'child') {
+    const r = await db.query('SELECT meal_size_id, meal_time AS meal_timing FROM children WHERE id=$1', [entityId]);
+    return r.rows[0] || {};
+  }
+  if (entityType === 'teacher') {
+    const r = await db.query('SELECT meal_size_id, meal_time AS meal_timing FROM teacher_profiles WHERE id=$1', [entityId]);
+    return r.rows[0] || {};
+  }
+  if (entityType === 'professional') {
+    const r = await db.query('SELECT meal_size_id, lunch_time AS meal_timing FROM professional_profiles WHERE id=$1', [entityId]);
+    return r.rows[0] || {};
+  }
+  return {};
+};
+
 const parseBoolean = (value, defaultValue = true) => {
   if (value === undefined || value === null) return defaultValue;
   if (typeof value === 'boolean') return value;
@@ -31,6 +49,27 @@ const parseBoolean = (value, defaultValue = true) => {
   if (['true', '1', 'yes', 'y'].includes(raw)) return true;
   if (['false', '0', 'no', 'n'].includes(raw)) return false;
   return defaultValue;
+};
+
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+const parseYmdStrict = (input) => {
+  if (!input) return null;
+  const raw = String(input).trim();
+  if (!YMD.test(raw)) return null;
+  const [y, m, d] = raw.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+  return raw;
+};
+
+const addDaysYmd = (ymd, days) => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
 };
 
 const computeMealCount = (startDate, durationDays, includeSaturday) => {
@@ -66,26 +105,33 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
     [clientId, entityId, entityType, orderId]
   );
 
-  let baseDate = requestedStartDate ? new Date(requestedStartDate) : new Date();
-  let newTotalMeals = computeMealCount(baseDate, durationDays, includeSaturday);
+  const sessionToday = mealEligibilityService.parseSessionToday();
+  let baseDateYmd = parseYmdStrict(requestedStartDate) || sessionToday;
+  let baseDate = new Date(`${baseDateYmd}T00:00:00`);
+  let newTotalMeals = computeMealCount(baseDateYmd, durationDays, includeSaturday);
   let newUsedMeals = 0;
 
-  if (existingSub.rows.length > 0 && new Date(existingSub.rows[0].end_date) > new Date()) {
-    const currentEnd = new Date(existingSub.rows[0].end_date);
-    // If existing subscription is still active and ends after requested start date, extend from current end
-    if (currentEnd > baseDate) {
-      baseDate = currentEnd;
+  if (existingSub.rows.length > 0) {
+    const currentEndYmd = String(existingSub.rows[0].end_date).slice(0, 10);
+    if (currentEndYmd >= sessionToday) {
+      const nextAfterCurrentEnd = addDaysYmd(currentEndYmd, 1);
+      // No overlap and no day duplication: new pack starts the day after existing end.
+      if (nextAfterCurrentEnd > baseDateYmd) {
+        baseDateYmd = nextAfterCurrentEnd;
+        baseDate = new Date(`${baseDateYmd}T00:00:00`);
+      }
+
+      const oldTotal = existingSub.rows[0].total_meals || 0;
+      const oldUsed = existingSub.rows[0].used_meals || 0;
+
+      // Preserve old totals and used, just add new meals to total
+      newTotalMeals = oldTotal + computeMealCount(baseDateYmd, durationDays, includeSaturday);
+      newUsedMeals = oldUsed;
     }
-    const oldTotal = existingSub.rows[0].total_meals || 0;
-    const oldUsed = existingSub.rows[0].used_meals || 0;
-    
-    // Preserve old totals and used, just add new meals to total
-    newTotalMeals = oldTotal + computeMealCount(baseDate, durationDays, includeSaturday);
-    newUsedMeals = oldUsed;
   }
 
-  const endDate = new Date(baseDate);
-  endDate.setDate(endDate.getDate() + durationDays);
+  // Inclusive validity window: 7-day plan from May 7 => May 7..May 13 (not May 14).
+  const endDateYmd = addDaysYmd(baseDateYmd, durationDays - 1);
 
   await db.query(
     `INSERT INTO client_subscriptions (client_id,subscription_id,entity_type,entity_id,start_date,end_date,order_id,is_active,total_meals,used_meals,include_saturday)
@@ -94,7 +140,7 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
        start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date, subscription_id=EXCLUDED.subscription_id,
        order_id=EXCLUDED.order_id, is_active=true, updated_at=NOW(),
        total_meals=EXCLUDED.total_meals, used_meals=EXCLUDED.used_meals, include_saturday=EXCLUDED.include_saturday`,
-    [clientId, subscriptionId, entityType, entityId, endDate, orderId, newTotalMeals, baseDate, newUsedMeals, includeSaturday]
+    [clientId, subscriptionId, entityType, entityId, endDateYmd, orderId, newTotalMeals, baseDateYmd, newUsedMeals, includeSaturday]
   );
 };
 
@@ -153,16 +199,16 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
   if (!subscriptionId || !entityType || !entityId)
     return next(new AppError('subscriptionId, entityType and entityId are required', 400));
 
-  let effectiveStartDate = new Date();
+  const sessionToday = mealEligibilityService.parseSessionToday();
+  let effectiveStartDateYmd = sessionToday;
   if (startDate) {
-    effectiveStartDate = new Date(startDate);
-    if (isNaN(effectiveStartDate.getTime())) {
-      return next(new AppError('Invalid startDate format', 400));
+    const parsed = parseYmdStrict(startDate);
+    if (!parsed) {
+      return next(new AppError('Invalid startDate format. Use YYYY-MM-DD', 400));
     }
-    // ensure start date is not in the past (allow today)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (effectiveStartDate < today) {
+    effectiveStartDateYmd = parsed;
+    // ensure start date is not in the past (allow today) in session timezone
+    if (effectiveStartDateYmd < sessionToday) {
       return next(new AppError('startDate cannot be in the past', 400));
     }
   }
@@ -172,8 +218,10 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
 
   const subResult = await db.query('SELECT * FROM subscriptions WHERE id=$1 AND is_active=true', [subscriptionId]);
   if (subResult.rows.length === 0) return next(new AppError('Subscription plan not found', 404));
-
   const subscription = subResult.rows[0];
+  const entityMealMeta = await resolveEntityMealMeta(entityType, entityId);
+  const effectiveMealSizeId = entityMealMeta.meal_size_id || subscription.meal_size_id || null;
+  const effectiveMealTiming = entityMealMeta.meal_timing || DEFAULT_MEAL_TIME;
   const includeSaturdayFlag = parseBoolean(includeSaturday, true);
   const selectedPrice = includeSaturdayFlag
     ? Number(subscription.price_with_saturday ?? subscription.price)
@@ -184,8 +232,8 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
   const entityName = await resolveEntityName(entityType, entityId);
 
   const orderResult = await db.query(
-    'INSERT INTO orders (client_id,subscription_id,entity_type,entity_id,amount,include_saturday,status,order_type,start_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
-    [clientId, subscriptionId, entityType, entityId, selectedPrice, includeSaturdayFlag, 'pending', 'single', effectiveStartDate.toISOString().split('T')[0]]
+    'INSERT INTO orders (client_id,subscription_id,entity_type,entity_id,amount,meal_size_id,meal_timing,include_saturday,status,order_type,start_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',
+    [clientId, subscriptionId, entityType, entityId, selectedPrice, effectiveMealSizeId, effectiveMealTiming, includeSaturdayFlag, 'pending', 'single', effectiveStartDateYmd]
   );
   const order = orderResult.rows[0];
 
@@ -216,6 +264,8 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
       merchantTransactionId,
       entityName,
       amount: selectedPrice,
+      mealSizeId: effectiveMealSizeId,
+      mealTiming: effectiveMealTiming,
       includeSaturday: includeSaturdayFlag,
       planVariant: includeSaturdayFlag ? 'with_saturday' : 'without_saturday',
       planName: subscription.plan_name,
@@ -239,7 +289,11 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
 
   const cart = cartRes.rows[0];
   const items = await db.query(
-    'SELECT ci.*, s.plan_name FROM cart_items ci JOIN subscriptions s ON ci.subscription_id=s.id WHERE ci.cart_id=$1',
+    `SELECT ci.*, s.plan_name, s.meal_size_id, ms.display_name AS meal_size_name
+     FROM cart_items ci
+     JOIN subscriptions s ON ci.subscription_id=s.id
+     LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
+     WHERE ci.cart_id=$1`,
     [cart.id]
   );
   if (items.rows.length === 0) return next(new AppError('Your cart has no items', 400));
@@ -282,7 +336,12 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
       merchantTransactionId,
       totalAmount,
       itemCount: items.rows.length,
-      items: items.rows.map(i => ({ entityName: i.entity_name, entityType: i.entity_type, plan: i.plan_name, price: i.unit_price })),
+      items: items.rows.map(i => ({ entityName: i.entity_name, entityType: i.entity_type, plan: i.plan_name, price: i.unit_price, mealSize: i.meal_size_name || null, mealTiming: i.meal_timing || DEFAULT_MEAL_TIME })),
+      mealMeta: items.rows.map(i => ({
+        entityName: i.entity_name,
+        mealSizeId: i.meal_size_id || null,
+        mealTiming: i.meal_timing || DEFAULT_MEAL_TIME,
+      })),
       planVariants: items.rows.map(i => ({
         entityName: i.entity_name,
         includeSaturday: i.include_saturday !== false,
@@ -393,7 +452,7 @@ exports.checkPaymentStatus = catchAsync(async (req, res, next) => {
   // Fetch transaction with full order and entity details
   const txnRes = await db.query(
     `SELECT t.*, o.status as order_status, o.order_type, o.cart_id,
-            o.entity_type, o.entity_id, o.amount as order_amount, o.include_saturday,
+            o.entity_type, o.entity_id, o.amount as order_amount, o.include_saturday, o.meal_size_id, o.meal_timing,
             o.client_id, s.plan_name, c.phone_number,
             CASE
               WHEN o.entity_type='child' THEN ch.name
@@ -455,7 +514,11 @@ exports.checkPaymentStatus = catchAsync(async (req, res, next) => {
   let cartItems = [];
   if (localTxn.order_type === 'cart' && localTxn.cart_id) {
     const ci = await db.query(
-      'SELECT ci.*,s.plan_name FROM cart_items ci JOIN subscriptions s ON ci.subscription_id=s.id WHERE ci.cart_id=$1',
+      `SELECT ci.*, s.plan_name, ms.display_name AS meal_size_name
+       FROM cart_items ci
+       JOIN subscriptions s ON ci.subscription_id=s.id
+       LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
+       WHERE ci.cart_id=$1`,
       [localTxn.cart_id]
     );
     cartItems = ci.rows;
@@ -477,6 +540,8 @@ const buildStatusResponse = (txn, gwState) => ({
   orderType: txn.order_type,
   amountPaid: txn.order_amount,
   includeSaturday: txn.include_saturday,
+  mealSizeId: txn.meal_size_id,
+  mealTiming: txn.meal_timing || DEFAULT_MEAL_TIME,
   entityType: txn.entity_type,
   entityName: txn.entity_name,
   planName: txn.plan_name,
@@ -592,9 +657,9 @@ exports.getMyPaymentHistory = catchAsync(async (req, res) => {
   const offset = (page - 1) * limit;
 
   const result = await db.query(
-    `SELECT o.id as order_id, o.status as order_status, o.order_type, o.amount, o.include_saturday,
+    `SELECT o.id as order_id, o.status as order_status, o.order_type, o.amount, o.include_saturday, o.meal_timing,
             o.entity_type, o.entity_id, o.created_at,
-            s.plan_name,
+            s.plan_name, ms.display_name AS meal_size_name,
             t.merchant_transaction_id, t.status as payment_status, t.gateway_transaction_id,
             CASE
               WHEN o.entity_type='child' THEN ch.name
@@ -604,6 +669,7 @@ exports.getMyPaymentHistory = catchAsync(async (req, res) => {
             END as entity_name
      FROM orders o
      LEFT JOIN subscriptions s ON o.subscription_id=s.id
+     LEFT JOIN meal_sizes ms ON o.meal_size_id = ms.id
      LEFT JOIN transactions t ON t.order_id=o.id
      LEFT JOIN children ch ON o.entity_type='child' AND o.entity_id=ch.id
      LEFT JOIN teacher_profiles tp ON o.entity_type='teacher' AND o.entity_id=tp.id
@@ -628,27 +694,41 @@ exports.getMyPaymentHistory = catchAsync(async (req, res) => {
  */
 exports.getMyActiveSubscriptions = catchAsync(async (req, res) => {
   const clientId = req.user.id;
+  const today = mealEligibilityService.parseSessionToday();
 
   const result = await db.query(
-    `SELECT cs.id, cs.entity_type, cs.entity_id, cs.start_date, cs.end_date, cs.is_active,
+    `SELECT cs.id, cs.entity_type, cs.entity_id, cs.is_active,
             s.plan_name, s.price, s.price_with_saturday, s.price_without_saturday, s.billing_cycle,
             o.amount as amount_paid,
+            COALESCE(me.display_name, 'Large') AS meal_size_name,
+            (cs.total_meals - cs.used_meals) AS remaining_meals,
+            CASE
+              WHEN cs.entity_type='child' THEN ch.meal_time
+              WHEN cs.entity_type='teacher' THEN tp.meal_time
+              WHEN cs.entity_type='professional' THEN pp.lunch_time
+            END AS meal_timing,
             CASE
               WHEN cs.entity_type='child' THEN ch.name
               WHEN cs.entity_type='teacher' THEN tp.name
               WHEN cs.entity_type='professional' THEN pp.name
             END as entity_name,
-            EXTRACT(DAY FROM cs.end_date - NOW()) as days_remaining,
-            cs.include_saturday
+            (DATE(cs.end_date) - $2::date) as days_remaining,
+            cs.include_saturday,
+            TO_CHAR(cs.start_date, 'YYYY-MM-DD') AS start_date,
+            TO_CHAR(cs.end_date, 'YYYY-MM-DD') AS end_date
      FROM client_subscriptions cs
      JOIN subscriptions s ON cs.subscription_id=s.id
      LEFT JOIN orders o ON cs.order_id=o.id
      LEFT JOIN children ch ON cs.entity_type='child' AND cs.entity_id=ch.id
      LEFT JOIN teacher_profiles tp ON cs.entity_type='teacher' AND cs.entity_id=tp.id
      LEFT JOIN professional_profiles pp ON cs.entity_type='professional' AND cs.entity_id=pp.id
-     WHERE cs.client_id=$1 AND cs.is_active=true AND cs.end_date > NOW()
+     LEFT JOIN meal_sizes me ON me.id = COALESCE(ch.meal_size_id, tp.meal_size_id, pp.meal_size_id, s.meal_size_id)
+    WHERE cs.client_id=$1 AND cs.is_active=true
+      AND (cs.total_meals - cs.used_meals) > 0
+      AND DATE(cs.start_date) <= $2::date
+      AND DATE(cs.end_date) >= $2::date
      ORDER BY cs.end_date ASC`,
-    [clientId]
+    [clientId, today]
   );
 
   res.status(200).json({

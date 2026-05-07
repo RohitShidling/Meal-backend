@@ -1,5 +1,38 @@
 const { query } = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
+const DEFAULT_MEAL_TIME = '1:00 PM';
+
+const normalizeMealTime = (input) => {
+  const raw = String(input ?? '').trim();
+  if (!raw) return DEFAULT_MEAL_TIME;
+  const twelveHour = raw.match(/^(\d{1,2}):([0-5]\d)\s*(AM|PM)$/i);
+  if (twelveHour) {
+    const hour = Number(twelveHour[1]);
+    if (hour >= 1 && hour <= 12) {
+      return `${hour}:${twelveHour[2]} ${twelveHour[3].toUpperCase()}`;
+    }
+  }
+  const twentyFourHour = raw.match(/^(\d{1,2}):([0-5]\d)$/);
+  if (twentyFourHour) {
+    const hour = Number(twentyFourHour[1]);
+    if (hour >= 0 && hour <= 23) {
+      const normalized = new Date(Date.UTC(2000, 0, 1, hour, Number(twentyFourHour[2])));
+      return normalized.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'UTC',
+      });
+    }
+  }
+  return DEFAULT_MEAL_TIME;
+};
+
+const withProfessionalAliases = (row) => (row ? {
+  ...row,
+  mealTiming: row.lunch_time || DEFAULT_MEAL_TIME,
+  mealSizeId: row.meal_size_id || null,
+} : row);
 
 /**
  * @desc    Create or update professional profile
@@ -8,18 +41,21 @@ const AppError = require('../../common/utils/AppError');
  */
 exports.saveProfessionalProfile = async (req, res, next) => {
   try {
-    const { name, company_name, corporate_location_id, city, state, lunch_time, meal_size_id } = req.body;
+    const { name, company_name, corporate_location_id, city, state } = req.body;
+    const mealTimeInput = req.body.mealTiming ?? req.body.lunch_time;
+    const mealSizeInput = req.body.mealSizeId ?? req.body.meal_size_id;
     const clientId = req.user.id;
 
-    if (!name || !company_name || !corporate_location_id || !city || !state || !lunch_time || !meal_size_id) {
+    if (!name || !company_name || !corporate_location_id || !city || !state || !mealTimeInput || !mealSizeInput) {
       return next(new AppError('All fields (name, company_name, corporate_location_id, city, state, lunch_time, meal_size_id) are required', 400));
     }
 
     // Validate meal size exists and is active
     const mealSizeCheck = await query(
       'SELECT id FROM meal_sizes WHERE id = $1 AND is_active = true',
-      [Number(meal_size_id)]
+      [Number(mealSizeInput)]
     );
+    const normalizedMealTime = normalizeMealTime(mealTimeInput);
     if (mealSizeCheck.rows.length === 0) {
       return next(new AppError('Invalid or inactive meal size', 400));
     }
@@ -60,7 +96,7 @@ exports.saveProfessionalProfile = async (req, res, next) => {
         WHERE client_id = $8
         RETURNING *;
       `;
-      const values = [name, company_name, corporate_location_id, city, state, lunch_time, Number(meal_size_id), clientId];
+      const values = [name, company_name, corporate_location_id, city, state, normalizedMealTime, Number(mealSizeInput), clientId];
       const updateResult = await query(updateQuery, values);
       result = updateResult.rows[0];
     } else {
@@ -71,7 +107,7 @@ exports.saveProfessionalProfile = async (req, res, next) => {
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *;
       `;
-      const values = [clientId, name, company_name, corporate_location_id, city, state, lunch_time, Number(meal_size_id)];
+      const values = [clientId, name, company_name, corporate_location_id, city, state, normalizedMealTime, Number(mealSizeInput)];
       const insertResult = await query(insertQuery, values);
       result = insertResult.rows[0];
     }
@@ -79,7 +115,7 @@ exports.saveProfessionalProfile = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: profileCheck.rows.length > 0 ? 'Professional profile updated successfully' : 'Professional profile created successfully',
-      data: result,
+      data: withProfessionalAliases(result),
     });
   } catch (error) {
     next(new AppError(error.message || 'Error saving professional profile', 500));
@@ -114,7 +150,7 @@ exports.getProfessionalProfile = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      data: result.rows[0],
+      data: withProfessionalAliases(result.rows[0]),
     });
   } catch (error) {
     next(new AppError(error.message || 'Error fetching professional profile', 500));

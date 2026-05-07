@@ -1,16 +1,11 @@
+const crypto = require('crypto');
 const db = require('../../common/database');
 const catchAsync = require('../../common/utils/catchAsync');
 const AppError = require('../../common/utils/AppError');
 const PDFDocument = require('pdfkit');
+const mealEligibilityService = require('../../common/services/mealEligibilityService');
 
-/** Calendar "today" aligned with DB session timezone (`PG_SESSION_TIMEZONE`, default Asia/Kolkata). */
-const parseToday = () => {
-  const tz = /^[A-Za-z0-9_/+-]+$/.test(process.env.PG_SESSION_TIMEZONE || '')
-    ? process.env.PG_SESSION_TIMEZONE
-    : 'Asia/Kolkata';
-  return new Date().toLocaleDateString('en-CA', { timeZone: tz });
-};
-const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const parseToday = () => mealEligibilityService.parseSessionToday();
 
 /** Use -1 in DB when token PDF is “all meal sizes” (school) or corporate bundle */
 const WHOLE_DOWNLOAD_MEAL_SIZE_KEY = -1;
@@ -21,19 +16,7 @@ const normalizeMealSizeKey = (mealSizeId) => {
   return Number.isFinite(n) ? n : WHOLE_DOWNLOAD_MEAL_SIZE_KEY;
 };
 
-const resolveTokenDate = (inputDate, next) => {
-  if (!inputDate) return parseToday();
-  if (!DATE_REGEX.test(inputDate)) {
-    next(new AppError('Invalid date format. Use YYYY-MM-DD.', 400));
-    return null;
-  }
-  const parsed = new Date(`${inputDate}T00:00:00.000Z`);
-  if (Number.isNaN(parsed.getTime())) {
-    next(new AppError('Invalid date value.', 400));
-    return null;
-  }
-  return inputDate;
-};
+const resolveTokenDate = (inputDate, next) => mealEligibilityService.resolveDeliveryDate(inputDate, next);
 
 /** Reject literals "undefined"/"null" from bad frontend templating → clear 400 instead of confusing 404. */
 const sanitizePathSchoolId = (schoolId, next) => {
@@ -91,29 +74,35 @@ const upsertDownloadLog = async ({ tokenScope, scopeId, mealSizeId = WHOLE_DOWNL
   );
 };
 
-/**
- * Subscription + delivery eligibility for calendar day `$delivery`:
- * Uses PG session timezone (see Pool `PG_SESSION_TIMEZONE`, default Asia/Kolkata) when casting TIMESTAMP → DATE.
- */
-const CHILD_SUBJOIN = `
-  JOIN client_subscriptions cs
-    ON cs.entity_type = 'child'
-   AND cs.entity_id = ch.id
-   AND cs.is_active = true
-   AND DATE(cs.start_date) <= $delivery::date
-   AND DATE(cs.end_date) >= $delivery::date
-   AND (cs.total_meals - cs.used_meals) > 0
-`;
+/** Every PDF download is regenerated; a copy is stored for audit and later retrieval. */
+const persistTokenPdfExport = async ({ buffer, tokenScope, scopeId, mealSizeId, tokenDate, adminId, rowCount }) => {
+  if (!buffer || !buffer.length) return;
+  const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+  await db.query(
+    `INSERT INTO token_pdf_exports
+      (token_scope, scope_id, meal_size_id, token_date, admin_id, row_count, content_sha256, pdf_bytes)
+     VALUES ($1, $2, $3, $4::date, $5, $6, $7, $8)`,
+    [
+      tokenScope,
+      scopeId,
+      normalizeMealSizeKey(mealSizeId),
+      tokenDate,
+      adminId,
+      rowCount,
+      hash,
+      buffer,
+    ]
+  );
+};
 
-const PROF_SUBJOIN = `
-  JOIN client_subscriptions cs
-    ON cs.entity_type = 'professional'
-   AND cs.entity_id = pp.id
-   AND cs.is_active = true
-   AND DATE(cs.start_date) <= $delivery::date
-   AND DATE(cs.end_date) >= $delivery::date
-   AND (cs.total_meals - cs.used_meals) > 0
-`;
+const sendPdfBuffer = (res, filename, buffer) => {
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Length', buffer.length);
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buffer);
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PDF: same card layout as Admin meal token PDF (sticker-ready)
@@ -193,6 +182,54 @@ const drawSectionTitle = (doc, title, sub) => {
   doc.moveDown(0.5);
 };
 
+const buildSchoolCardRows = (row) => {
+  if (row.entity_type === 'teacher') {
+    return [
+      { label: 'Name:', value: row.child_name },
+      { label: 'Role:', value: 'Teacher' },
+      { label: 'Meal Size:', value: row.meal_size },
+      { label: 'Meal Time:', value: row.meal_time || '1:00 PM' },
+      { label: 'Remaining:', value: row.remaining_meals },
+    ];
+  }
+  return [
+    { label: 'Name:', value: row.child_name },
+    { label: 'Roll No:', value: row.roll_number },
+    { label: 'Standard:', value: row.standard },
+    { label: 'Meal Time:', value: row.meal_time },
+    { label: 'Remaining:', value: row.remaining_meals },
+  ];
+};
+
+const groupSchoolRowsForExport = (rows, mealCatalogRows = []) => {
+  const grouped = new Map();
+  (rows || []).forEach((row) => {
+    const key = row.meal_size || 'Unassigned';
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(row);
+  });
+
+  const ordered = [];
+  for (const meal of mealCatalogRows) {
+    const key = meal.display_name;
+    if (grouped.has(key)) {
+      ordered.push({ label: key, rows: grouped.get(key) });
+      grouped.delete(key);
+    }
+  }
+
+  if (grouped.has('Unassigned')) {
+    ordered.push({ label: 'Unassigned', rows: grouped.get('Unassigned') });
+    grouped.delete('Unassigned');
+  }
+
+  for (const [label, groupRows] of grouped.entries()) {
+    ordered.push({ label, rows: groupRows });
+  }
+
+  return ordered;
+};
+
 /** Master meal_sizes: reject PDF if id inactive or missing (front must use catalog API ids). */
 const assertActiveMealSizeId = async (mealSizeId, next) => {
   const res = await db.query(
@@ -209,33 +246,6 @@ const assertActiveMealSizeId = async (mealSizeId, next) => {
     return null;
   }
   return res.rows[0];
-};
-
-const fetchSchoolSizePdfRows = async (schoolId, mealSizeId, delivery) => {
-  const result = await db.query(
-    `SELECT ch.name AS child_name, ch.roll_number,
-            st.display_name AS standard,
-            ms.display_name AS meal_size,
-            ch.meal_time,
-            (cs.total_meals - cs.used_meals) AS remaining_meals
-     FROM children ch
-     ${CHILD_SUBJOIN.replace(/\$delivery/g, '$3')}
-     JOIN subscriptions sp ON sp.id = cs.subscription_id
-     JOIN meal_sizes ms ON ms.id = sp.meal_size_id
-     LEFT JOIN standards st ON st.id = ch.standard_id
-     WHERE ch.school_id=$1
-       AND sp.meal_size_id=$2
-       AND NOT EXISTS (
-         SELECT 1 FROM meal_skips sk
-         WHERE sk.entity_type='child' AND sk.entity_id=ch.id
-           AND sk.status='approved'
-           AND sk.skip_start_date <= $3::date
-           AND sk.skip_end_date >= $3::date
-       )
-     ORDER BY ch.name ASC`,
-    [schoolId, mealSizeId, delivery]
-  );
-  return result.rows;
 };
 
 const streamBundlePdfToBuffer = (sectionBuilders) =>
@@ -298,13 +308,7 @@ const streamCardsPdfBuffer = async (rows, drawRowCard) =>
     doc.end();
   });
 
-const sendCardsPdfAttachment = async (res, filename, rows, drawRowCard) => {
-  const buffer = await streamCardsPdfBuffer(rows, drawRowCard);
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Length', buffer.length);
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.send(buffer);
-};
+const buildCardsPdfBuffer = (rows, drawRowCard) => streamCardsPdfBuffer(rows, drawRowCard);
 
 const getSkipPolicy = async () => {
   const result = await db.query(
@@ -322,106 +326,74 @@ const getSkipPolicy = async () => {
 
 /** Shared: eligible schools × active meal_sizes + counts + per-size download status. */
 const buildSchoolTokenOverviewGrouped = async (delivery) => {
-  /*
-   * For each school that has ≥1 eligible child on `delivery`,
-   * return ALL active master meal_sizes (Small/Medium/Large/…) with counts (0 if none).
-   * Download badges come from token_download_logs and persist across refresh.
-   */
-  const result = await db.query(
-    `WITH eligible_schools AS (
-       SELECT DISTINCT sc.id, sc.name
-       FROM schools sc
-       INNER JOIN children ch ON ch.school_id = sc.id
-       INNER JOIN client_subscriptions cs ON cs.entity_type = 'child'
-         AND cs.entity_id = ch.id
-         AND cs.is_active = true
-         AND DATE(cs.start_date) <= $1::date
-         AND DATE(cs.end_date) >= $1::date
-         AND (cs.total_meals - cs.used_meals) > 0
-       WHERE NOT EXISTS (
-         SELECT 1 FROM meal_skips sk
-         WHERE sk.entity_type = 'child' AND sk.entity_id = ch.id
-           AND sk.status = 'approved'
-           AND sk.skip_start_date <= $1::date
-           AND sk.skip_end_date >= $1::date
-       )
-     ),
-     size_counts AS (
-       SELECT sc.id AS school_id, ms.id AS meal_size_id, COUNT(*)::INTEGER AS students_count
-       FROM schools sc
-       INNER JOIN children ch ON ch.school_id = sc.id
-       INNER JOIN client_subscriptions cs ON cs.entity_type = 'child'
-         AND cs.entity_id = ch.id
-         AND cs.is_active = true
-         AND DATE(cs.start_date) <= $1::date
-         AND DATE(cs.end_date) >= $1::date
-         AND (cs.total_meals - cs.used_meals) > 0
-       INNER JOIN subscriptions sp ON sp.id = cs.subscription_id
-       INNER JOIN meal_sizes ms ON ms.id = sp.meal_size_id
-       WHERE NOT EXISTS (
-         SELECT 1 FROM meal_skips sk
-         WHERE sk.entity_type = 'child' AND sk.entity_id = ch.id
-           AND sk.status = 'approved'
-           AND sk.skip_start_date <= $1::date
-           AND sk.skip_end_date >= $1::date
-       )
-       GROUP BY sc.id, ms.id
-     )
-     SELECT es.id AS school_id,
-            es.name AS school_name,
-            ms.id AS meal_size_id,
-            ms.name AS meal_size_key,
-            ms.display_name AS meal_size,
-            ms.sort_order,
-            COALESCE(sz.students_count, 0)::INTEGER AS students_count,
-            COALESCE(tdl.downloaded, false) AS downloaded,
-            COALESCE(tdl.download_count, 0)::INTEGER AS download_count,
-            tdl.last_downloaded_at
-     FROM eligible_schools es
-     CROSS JOIN meal_sizes ms
-     LEFT JOIN size_counts sz ON sz.school_id = es.id AND sz.meal_size_id = ms.id
-     LEFT JOIN token_download_logs tdl
-       ON tdl.token_scope = 'school'
-      AND tdl.scope_id = es.id
-      AND tdl.meal_size_id = ms.id
-      AND tdl.token_date = $1::date
-     WHERE ms.is_active = true
-     ORDER BY es.name ASC, ms.sort_order ASC, ms.display_name ASC`,
-    [delivery]
+  const countsRes = await mealEligibilityService.fetchSchoolMealSizeCounts(delivery);
+  const countBySchool = {};
+  for (const row of countsRes.rows) {
+    if (!countBySchool[row.school_id]) countBySchool[row.school_id] = {};
+    countBySchool[row.school_id][row.meal_size_id] = row.students_count;
+  }
+  const schoolIds = Object.keys(countBySchool);
+  if (schoolIds.length === 0) return { grouped: {}, ids: [] };
+
+  const schoolsRes = await db.query(
+    `SELECT id AS school_id, name AS school_name FROM schools WHERE id = ANY($1::varchar[]) ORDER BY name ASC`,
+    [schoolIds]
+  );
+  const catalog = await db.query(
+    `SELECT id AS meal_size_id, name AS meal_size_key, display_name AS meal_size, sort_order
+     FROM meal_sizes WHERE is_active = true
+     ORDER BY sort_order ASC, display_name ASC`
   );
 
+  const logRows = await db.query(
+    `SELECT scope_id AS school_id, meal_size_id,
+            COALESCE(downloaded, false) AS downloaded,
+            COALESCE(download_count, 0)::INTEGER AS download_count,
+            last_downloaded_at
+     FROM token_download_logs
+     WHERE token_scope = 'school' AND token_date = $1::date AND scope_id = ANY($2::varchar[])`,
+    [delivery, schoolIds]
+  );
+  const logKey = (sid, mid) => `${sid}::${mid}`;
+  const logMap = new Map();
+  for (const lr of logRows.rows) {
+    logMap.set(logKey(lr.school_id, Number(lr.meal_size_id)), lr);
+  }
+
   const grouped = {};
-  for (const row of result.rows) {
-    if (!grouped[row.school_id]) {
-      grouped[row.school_id] = {
-        school_id: row.school_id,
-        /** Alias so frontends that mistakenly use `.id` for routes can migrate to `.school_id`. */
-        schoolId: row.school_id,
-        school_name: row.school_name,
-        /** Sum of eligible students across all meal sizes for this delivery date (same as Σ students_count). */
-        total_students: 0,
-        meal_sizes: [],
-        /** Filled later: combined “all sizes” PDF download row (meal_size_id = -1 in logs). */
-        whole_school_pdf: {
-          downloaded: false,
-          download_count: 0,
-          last_downloaded_at: null,
-        },
+  for (const s of schoolsRes.rows) {
+    grouped[s.school_id] = {
+      school_id: s.school_id,
+      schoolId: s.school_id,
+      school_name: s.school_name,
+      total_students: 0,
+      meal_sizes: [],
+      whole_school_pdf: {
+        downloaded: false,
+        download_count: 0,
+        last_downloaded_at: null,
+      },
+    };
+    for (const ms of catalog.rows) {
+      const sc = Number(countBySchool[s.school_id]?.[ms.meal_size_id]) || 0;
+      grouped[s.school_id].total_students += sc;
+      const lg = logMap.get(logKey(s.school_id, ms.meal_size_id)) || {
+        downloaded: false,
+        download_count: 0,
+        last_downloaded_at: null,
       };
+      grouped[s.school_id].meal_sizes.push({
+        meal_size_id: ms.meal_size_id,
+        meal_size_key: ms.meal_size_key,
+        meal_size: ms.meal_size,
+        sort_order: ms.sort_order,
+        students_count: sc,
+        can_download_pdf: sc > 0,
+        downloaded: lg.downloaded,
+        download_count: lg.download_count,
+        last_downloaded_at: lg.last_downloaded_at,
+      });
     }
-    const sc = Number(row.students_count) || 0;
-    grouped[row.school_id].total_students += sc;
-    grouped[row.school_id].meal_sizes.push({
-      meal_size_id: row.meal_size_id,
-      meal_size_key: row.meal_size_key,
-      meal_size: row.meal_size,
-      sort_order: row.sort_order,
-      students_count: sc,
-      can_download_pdf: sc > 0,
-      downloaded: row.downloaded,
-      download_count: row.download_count,
-      last_downloaded_at: row.last_downloaded_at,
-    });
   }
 
   const ids = Object.keys(grouped);
@@ -486,7 +458,7 @@ exports.getSchoolTokenPanel = catchAsync(async (req, res, next) => {
   const { grouped, ids } = await buildSchoolTokenOverviewGrouped(delivery);
 
   const apiBaseNote =
-    'Append ?date=YYYY-MM-DD on PDF GETs. PDF is generated only when user opens the PDF URL (on button click).';
+    'Append ?date=YYYY-MM-DD on PDF GETs. Each PDF request regenerates fresh content from current DB state; a byte-accurate copy is also stored (see GET /api/admin/tokens/pdf-exports).';
 
   res.status(200).json({
     success: true,
@@ -539,48 +511,33 @@ exports.downloadExportSchoolsBundlePdf = catchAsync(async (req, res, next) => {
   const meals = await db.query(
     `SELECT id AS meal_size_id, display_name FROM meal_sizes WHERE is_active = true ORDER BY sort_order ASC, display_name ASC`
   );
-  const schools = await db.query(
-    `SELECT DISTINCT sc.id AS school_id, sc.name AS school_name
-     FROM schools sc
-     INNER JOIN children ch ON ch.school_id = sc.id
-     INNER JOIN client_subscriptions cs ON cs.entity_type = 'child'
-       AND cs.entity_id = ch.id
-       AND cs.is_active = true
-       AND DATE(cs.start_date) <= $1::date
-       AND DATE(cs.end_date) >= $1::date
-       AND (cs.total_meals - cs.used_meals) > 0
-     WHERE NOT EXISTS (
-       SELECT 1 FROM meal_skips sk
-       WHERE sk.entity_type='child' AND sk.entity_id=ch.id
-         AND sk.status='approved'
-         AND sk.skip_start_date <= $1::date
-         AND sk.skip_end_date >= $1::date
-     )
-     ORDER BY sc.name ASC`,
-    [delivery]
-  );
+  const schools = await mealEligibilityService.fetchDistinctSchoolsWithEligibleChildren(delivery);
 
   const sections = [];
+  let totalRows = 0;
   for (const sch of schools.rows) {
-    for (const ms of meals.rows) {
-      const rows = await fetchSchoolSizePdfRows(sch.school_id, ms.meal_size_id, delivery);
-      if (rows.length === 0) continue;
+    const allRowsRes = await mealEligibilityService.fetchChildTokenRows({
+      schoolId: sch.school_id,
+      mealSizeId: null,
+      delivery,
+    });
+    const allRows = allRowsRes.rows || [];
+    totalRows += allRows.length;
+
+    const grouped = groupSchoolRowsForExport(allRows, meals.rows);
+    for (const group of grouped) {
+      const rows = group.rows;
+      if (!rows.length) continue;
       sections.push({
-        title: `${sch.school_name} — ${ms.display_name}`,
+        title: `${sch.school_name} — ${group.label}`,
         subtitle: `${rows.length} token(s) • ${delivery}`,
         rows,
         drawOne: (doc, x, y, s, serialIdx) => {
           drawTokenCard(doc, x, y, {
             header: `${sch.school_name} — ${delivery}`,
-            badge: s.meal_size || ms.display_name,
+            badge: s.meal_size || group.label,
             serial: `#${serialIdx + 1}`,
-            rows: [
-              { label: 'Name:', value: s.child_name },
-              { label: 'Roll No:', value: s.roll_number },
-              { label: 'Standard:', value: s.standard },
-              { label: 'Meal Time:', value: s.meal_time },
-              { label: 'Remaining:', value: s.remaining_meals },
-            ],
+            rows: buildSchoolCardRows(s),
           });
         },
       });
@@ -600,32 +557,19 @@ exports.downloadExportSchoolsBundlePdf = catchAsync(async (req, res, next) => {
     adminId,
   });
 
-  const filename = `TOKENS_ALL_SCHOOLS_${delivery}.pdf`;
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Length', buffer.length);
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.send(buffer);
-});
+  await persistTokenPdfExport({
+    buffer,
+    tokenScope: 'export_school',
+    scopeId: 'GLOBAL',
+    mealSizeId: WHOLE_DOWNLOAD_MEAL_SIZE_KEY,
+    tokenDate: delivery,
+    adminId,
+    rowCount: totalRows,
+  });
 
-const fetchCorporatePdfRows = async (locationId, delivery) => {
-  const result = await db.query(
-    `SELECT pp.name, pp.company_name,
-            (cs.total_meals - cs.used_meals) AS remaining_meals
-     FROM professional_profiles pp
-     ${PROF_SUBJOIN.replace(/\$delivery/g, '$2')}
-     WHERE pp.corporate_location_id=$1
-       AND NOT EXISTS (
-         SELECT 1 FROM meal_skips sk
-         WHERE sk.entity_type='professional' AND sk.entity_id=pp.id
-           AND sk.status='approved'
-           AND sk.skip_start_date <= $2::date
-           AND sk.skip_end_date >= $2::date
-       )
-     ORDER BY pp.name ASC`,
-    [locationId, delivery]
-  );
-  return result.rows;
-};
+  const filename = `TOKENS_ALL_SCHOOLS_${delivery}.pdf`;
+  sendPdfBuffer(res, filename, buffer);
+});
 
 /** One PDF: all corporate locations (“college” / office) in name order. */
 exports.downloadExportCorporateBundlePdf = catchAsync(async (req, res, next) => {
@@ -633,30 +577,17 @@ exports.downloadExportCorporateBundlePdf = catchAsync(async (req, res, next) => 
   const delivery = resolveTokenDate(req.query.date, next);
   if (!delivery) return;
 
-  const locations = await db.query(
-    `SELECT DISTINCT cl.id AS location_id, cl.name AS location_name
-     FROM corporate_locations cl
-     INNER JOIN professional_profiles pp ON pp.corporate_location_id = cl.id
-     INNER JOIN client_subscriptions cs ON cs.entity_type = 'professional'
-       AND cs.entity_id = pp.id
-       AND cs.is_active = true
-       AND DATE(cs.start_date) <= $1::date
-       AND DATE(cs.end_date) >= $1::date
-       AND (cs.total_meals - cs.used_meals) > 0
-     WHERE NOT EXISTS (
-       SELECT 1 FROM meal_skips sk
-       WHERE sk.entity_type='professional' AND sk.entity_id=pp.id
-         AND sk.status='approved'
-         AND sk.skip_start_date <= $1::date
-         AND sk.skip_end_date >= $1::date
-     )
-     ORDER BY cl.name ASC`,
-    [delivery]
-  );
+  const locations = await mealEligibilityService.fetchDistinctCorporateLocationsWithEligible(delivery);
 
   const sections = [];
+  let totalRows = 0;
   for (const loc of locations.rows) {
-    const rows = await fetchCorporatePdfRows(loc.location_id, delivery);
+    const q = await mealEligibilityService.fetchProfessionalTokenRows({
+      locationId: loc.location_id,
+      delivery,
+    });
+    const rows = q.rows;
+    totalRows += rows.length;
     if (rows.length === 0) continue;
     sections.push({
       title: `${loc.location_name} — Corporate`,
@@ -670,6 +601,8 @@ exports.downloadExportCorporateBundlePdf = catchAsync(async (req, res, next) => 
           rows: [
             { label: 'Name:', value: p.name },
             { label: 'Company:', value: p.company_name },
+            { label: 'Meal Size:', value: p.meal_size || 'Large' },
+            { label: 'Meal Time:', value: p.meal_time || '1:00 PM' },
             { label: 'Remaining:', value: p.remaining_meals },
           ],
         });
@@ -690,11 +623,18 @@ exports.downloadExportCorporateBundlePdf = catchAsync(async (req, res, next) => 
     adminId,
   });
 
+  await persistTokenPdfExport({
+    buffer,
+    tokenScope: 'export_corp',
+    scopeId: 'GLOBAL',
+    mealSizeId: WHOLE_DOWNLOAD_MEAL_SIZE_KEY,
+    tokenDate: delivery,
+    adminId,
+    rowCount: totalRows,
+  });
+
   const filename = `TOKENS_ALL_CORPORATE_${delivery}.pdf`;
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Length', buffer.length);
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.send(buffer);
+  sendPdfBuffer(res, filename, buffer);
 });
 
 /** One PDF: schools export first, then corporate / “college” section. */
@@ -706,69 +646,34 @@ exports.downloadExportAllBundlePdf = catchAsync(async (req, res, next) => {
   const meals = await db.query(
     `SELECT id AS meal_size_id, display_name FROM meal_sizes WHERE is_active = true ORDER BY sort_order ASC, display_name ASC`
   );
-  const schools = await db.query(
-    `SELECT DISTINCT sc.id AS school_id, sc.name AS school_name
-     FROM schools sc
-     INNER JOIN children ch ON ch.school_id = sc.id
-     INNER JOIN client_subscriptions cs ON cs.entity_type = 'child'
-       AND cs.entity_id = ch.id
-       AND cs.is_active = true
-       AND DATE(cs.start_date) <= $1::date
-       AND DATE(cs.end_date) >= $1::date
-       AND (cs.total_meals - cs.used_meals) > 0
-     WHERE NOT EXISTS (
-       SELECT 1 FROM meal_skips sk
-       WHERE sk.entity_type='child' AND sk.entity_id=ch.id
-         AND sk.status='approved'
-         AND sk.skip_start_date <= $1::date
-         AND sk.skip_end_date >= $1::date
-     )
-     ORDER BY sc.name ASC`,
-    [delivery]
-  );
-
-  const locations = await db.query(
-    `SELECT DISTINCT cl.id AS location_id, cl.name AS location_name
-     FROM corporate_locations cl
-     INNER JOIN professional_profiles pp ON pp.corporate_location_id = cl.id
-     INNER JOIN client_subscriptions cs ON cs.entity_type = 'professional'
-       AND cs.entity_id = pp.id
-       AND cs.is_active = true
-       AND DATE(cs.start_date) <= $1::date
-       AND DATE(cs.end_date) >= $1::date
-       AND (cs.total_meals - cs.used_meals) > 0
-     WHERE NOT EXISTS (
-       SELECT 1 FROM meal_skips sk
-       WHERE sk.entity_type='professional' AND sk.entity_id=pp.id
-         AND sk.status='approved'
-         AND sk.skip_start_date <= $1::date
-         AND sk.skip_end_date >= $1::date
-     )
-     ORDER BY cl.name ASC`,
-    [delivery]
-  );
+  const schools = await mealEligibilityService.fetchDistinctSchoolsWithEligibleChildren(delivery);
+  const locations = await mealEligibilityService.fetchDistinctCorporateLocationsWithEligible(delivery);
 
   const realSections = [];
+  let totalSchoolRows = 0;
   for (const sch of schools.rows) {
-    for (const ms of meals.rows) {
-      const rows = await fetchSchoolSizePdfRows(sch.school_id, ms.meal_size_id, delivery);
-      if (rows.length === 0) continue;
+    const allRowsRes = await mealEligibilityService.fetchChildTokenRows({
+      schoolId: sch.school_id,
+      mealSizeId: null,
+      delivery,
+    });
+    const allRows = allRowsRes.rows || [];
+    totalSchoolRows += allRows.length;
+
+    const grouped = groupSchoolRowsForExport(allRows, meals.rows);
+    for (const group of grouped) {
+      const rows = group.rows;
+      if (!rows.length) continue;
       realSections.push({
-        title: `${sch.school_name} — ${ms.display_name}`,
+        title: `${sch.school_name} — ${group.label}`,
         subtitle: `${rows.length} token(s)`,
         rows,
         drawOne: (doc, x, y, s, serialIdx) => {
           drawTokenCard(doc, x, y, {
             header: `${sch.school_name} — ${delivery}`,
-            badge: s.meal_size || ms.display_name,
+            badge: s.meal_size || group.label,
             serial: `#${serialIdx + 1}`,
-            rows: [
-              { label: 'Name:', value: s.child_name },
-              { label: 'Roll No:', value: s.roll_number },
-              { label: 'Standard:', value: s.standard },
-              { label: 'Meal Time:', value: s.meal_time },
-              { label: 'Remaining:', value: s.remaining_meals },
-            ],
+            rows: buildSchoolCardRows(s),
           });
         },
       });
@@ -776,8 +681,14 @@ exports.downloadExportAllBundlePdf = catchAsync(async (req, res, next) => {
   }
 
   const corpBlocks = [];
+  let totalCorpRows = 0;
   for (const loc of locations.rows) {
-    const crows = await fetchCorporatePdfRows(loc.location_id, delivery);
+    const q = await mealEligibilityService.fetchProfessionalTokenRows({
+      locationId: loc.location_id,
+      delivery,
+    });
+    const crows = q.rows;
+    totalCorpRows += crows.length;
     if (crows.length === 0) continue;
     corpBlocks.push({
       title: loc.location_name,
@@ -791,6 +702,8 @@ exports.downloadExportAllBundlePdf = catchAsync(async (req, res, next) => {
           rows: [
             { label: 'Name:', value: p.name },
             { label: 'Company:', value: p.company_name },
+            { label: 'Meal Size:', value: p.meal_size || 'Large' },
+            { label: 'Meal Time:', value: p.meal_time || '1:00 PM' },
             { label: 'Remaining:', value: p.remaining_meals },
           ],
         });
@@ -884,48 +797,63 @@ exports.downloadExportAllBundlePdf = catchAsync(async (req, res, next) => {
     adminId,
   });
 
+  await persistTokenPdfExport({
+    buffer,
+    tokenScope: 'export_all',
+    scopeId: 'GLOBAL',
+    mealSizeId: WHOLE_DOWNLOAD_MEAL_SIZE_KEY,
+    tokenDate: delivery,
+    adminId,
+    rowCount: totalSchoolRows + totalCorpRows,
+  });
+
   const filename = `TOKENS_SCHOOLS_AND_CORP_${delivery}.pdf`;
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Length', buffer.length);
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.send(buffer);
+  sendPdfBuffer(res, filename, buffer);
 });
 
 exports.getCorporateTokenOverview = catchAsync(async (req, res, next) => {
   const delivery = resolveTokenDate(req.query.date, next);
   if (!delivery) return;
-  const result = await db.query(
-    `SELECT cl.id AS corporate_location_id,
-            cl.name AS corporate_location_name,
-            COUNT(*)::INTEGER AS professionals_count,
-            COALESCE(tdl.downloaded, false) AS downloaded,
-            COALESCE(tdl.download_count, 0)::INTEGER AS download_count,
-            tdl.last_downloaded_at
-     FROM corporate_locations cl
-     JOIN professional_profiles pp ON pp.corporate_location_id = cl.id
-     ${PROF_SUBJOIN.replace(/\$delivery/g, '$1')}
-     LEFT JOIN token_download_logs tdl
-       ON tdl.token_scope = 'corporate'
-      AND tdl.scope_id = cl.id
-      AND tdl.meal_size_id = ${WHOLE_DOWNLOAD_MEAL_SIZE_KEY}
-      AND tdl.token_date = $1::date
-     WHERE NOT EXISTS (
-       SELECT 1 FROM meal_skips sk
-       WHERE sk.entity_type='professional' AND sk.entity_id=pp.id
-         AND sk.status='approved'
-         AND sk.skip_start_date <= $1::date
-         AND sk.skip_end_date >= $1::date
-     )
-     GROUP BY cl.id, cl.name, tdl.downloaded, tdl.download_count, tdl.last_downloaded_at
-     ORDER BY cl.name ASC`,
-    [delivery]
-  );
+  const base = await mealEligibilityService.fetchCorporateOverviewBase(delivery);
+  const locIds = base.rows.map((r) => r.corporate_location_id);
+  let logMap = new Map();
+  if (locIds.length > 0) {
+    const logs = await db.query(
+      `SELECT scope_id AS corporate_location_id,
+              COALESCE(downloaded, false) AS downloaded,
+              COALESCE(download_count, 0)::INTEGER AS download_count,
+              last_downloaded_at
+       FROM token_download_logs
+       WHERE token_scope = 'corporate'
+         AND meal_size_id = ${WHOLE_DOWNLOAD_MEAL_SIZE_KEY}
+         AND token_date = $1::date
+         AND scope_id = ANY($2::varchar[])`,
+      [delivery, locIds]
+    );
+    logMap = new Map(logs.rows.map((l) => [l.corporate_location_id, l]));
+  }
+
+  const data = base.rows.map((row) => {
+    const lg = logMap.get(row.corporate_location_id) || {
+      downloaded: false,
+      download_count: 0,
+      last_downloaded_at: null,
+    };
+    return {
+      corporate_location_id: row.corporate_location_id,
+      corporate_location_name: row.corporate_location_name,
+      professionals_count: row.professionals_count,
+      downloaded: lg.downloaded,
+      download_count: lg.download_count,
+      last_downloaded_at: lg.last_downloaded_at,
+    };
+  });
 
   res.status(200).json({
     success: true,
     date: delivery,
-    count: result.rowCount,
-    data: result.rows,
+    count: data.length,
+    data,
   });
 });
 
@@ -951,28 +879,11 @@ exports.getSchoolMealSizeTokens = catchAsync(async (req, res, next) => {
   const msRow = await assertActiveMealSizeId(Number(mealSizeId), next);
   if (!msRow) return;
 
-  const students = await db.query(
-    `SELECT ch.id AS entity_id, 'child' AS entity_type, ch.name AS student_name, ch.roll_number,
-            st.display_name AS standard,
-            ms.display_name AS meal_size,
-            (cs.total_meals - cs.used_meals) AS remaining_meals
-     FROM children ch
-     ${CHILD_SUBJOIN.replace(/\$delivery/g, '$3')}
-     JOIN subscriptions sp ON sp.id = cs.subscription_id
-     JOIN meal_sizes ms ON ms.id = sp.meal_size_id
-     LEFT JOIN standards st ON st.id = ch.standard_id
-     WHERE ch.school_id = $1
-       AND sp.meal_size_id = $2
-       AND NOT EXISTS (
-         SELECT 1 FROM meal_skips sk
-         WHERE sk.entity_type='child' AND sk.entity_id=ch.id
-           AND sk.status='approved'
-           AND sk.skip_start_date <= $3::date
-           AND sk.skip_end_date >= $3::date
-       )
-     ORDER BY ch.name ASC`,
-    [schoolId, mealSizeId, delivery]
-  );
+  const students = await mealEligibilityService.fetchChildTokenRows({
+    schoolId,
+    mealSizeId,
+    delivery,
+  });
 
   const downloadStatus = await db.query(
     `SELECT COALESCE(downloaded, false) AS downloaded,
@@ -989,7 +900,7 @@ exports.getSchoolMealSizeTokens = catchAsync(async (req, res, next) => {
     school_name: school.rows[0].name,
     meal_size_id: msRow.id,
     meal_size: msRow.display_name,
-    count: students.rowCount,
+    count: students.rows.length,
     downloaded: status.downloaded,
     download_count: status.download_count,
     last_downloaded_at: status.last_downloaded_at,
@@ -1022,31 +933,13 @@ exports.downloadSchoolMealSizeTokensPdf = catchAsync(async (req, res, next) => {
   const mealSize = await assertActiveMealSizeId(Number(mealSizeId), next);
   if (!mealSize) return;
 
-  const result = await db.query(
-    `SELECT ch.name AS child_name, ch.roll_number,
-            st.display_name AS standard,
-            ms.display_name AS meal_size,
-            ch.meal_time,
-            (cs.total_meals - cs.used_meals) AS remaining_meals
-     FROM children ch
-     ${CHILD_SUBJOIN.replace(/\$delivery/g, '$3')}
-     JOIN subscriptions sp ON sp.id = cs.subscription_id
-     JOIN meal_sizes ms ON ms.id = sp.meal_size_id
-     LEFT JOIN standards st ON st.id = ch.standard_id
-     WHERE ch.school_id=$1
-       AND sp.meal_size_id=$2
-       AND NOT EXISTS (
-         SELECT 1 FROM meal_skips sk
-         WHERE sk.entity_type='child' AND sk.entity_id=ch.id
-           AND sk.status='approved'
-           AND sk.skip_start_date <= $3::date
-           AND sk.skip_end_date >= $3::date
-       )
-     ORDER BY ch.name ASC`,
-    [schoolId, mealSizeId, delivery]
-  );
+  const result = await mealEligibilityService.fetchChildTokenRows({
+    schoolId,
+    mealSizeId,
+    delivery,
+  });
 
-  if (result.rowCount === 0) {
+  if (result.rows.length === 0) {
     return next(new AppError('No token records found for selected school and meal size.', 404));
   }
 
@@ -1062,20 +955,26 @@ exports.downloadSchoolMealSizeTokensPdf = catchAsync(async (req, res, next) => {
   const safeSize = mealSize.display_name.replace(/\s+/g, '_');
   const filename = `tokens_${safeSchool}_${safeSize}_${delivery}.pdf`;
 
-  await sendCardsPdfAttachment(res, filename, result.rows, (doc, x, y, s, idx) => {
+  const buffer = await buildCardsPdfBuffer(result.rows, (doc, x, y, s, idx) => {
     drawTokenCard(doc, x, y, {
       header: `${school.rows[0].name} — ${delivery}`,
       badge: s.meal_size || 'Standard',
       serial: `#${idx + 1}`,
-      rows: [
-        { label: 'Name:', value: s.child_name },
-        { label: 'Roll No:', value: s.roll_number },
-        { label: 'Standard:', value: s.standard },
-        { label: 'Meal Time:', value: s.meal_time },
-        { label: 'Remaining:', value: s.remaining_meals },
-      ],
+      rows: buildSchoolCardRows(s),
     });
   });
+
+  await persistTokenPdfExport({
+    buffer,
+    tokenScope: 'school',
+    scopeId: schoolId,
+    mealSizeId: normalizeMealSizeKey(mealSizeId),
+    tokenDate: delivery,
+    adminId,
+    rowCount: result.rows.length,
+  });
+
+  sendPdfBuffer(res, filename, buffer);
 });
 
 /**
@@ -1092,30 +991,13 @@ exports.downloadSchoolAllSizesTokensPdf = catchAsync(async (req, res, next) => {
   const school = await db.query('SELECT id, name FROM schools WHERE id = $1', [schoolId]);
   if (school.rowCount === 0) return next(new AppError('School not found.', 404));
 
-  const result = await db.query(
-    `SELECT ch.name AS child_name, ch.roll_number,
-            st.display_name AS standard,
-            ms.display_name AS meal_size, ms.sort_order,
-            ch.meal_time,
-            (cs.total_meals - cs.used_meals) AS remaining_meals
-     FROM children ch
-     ${CHILD_SUBJOIN.replace(/\$delivery/g, '$2')}
-     JOIN subscriptions sp ON sp.id = cs.subscription_id
-     JOIN meal_sizes ms ON ms.id = sp.meal_size_id
-     LEFT JOIN standards st ON st.id = ch.standard_id
-     WHERE ch.school_id = $1
-       AND NOT EXISTS (
-         SELECT 1 FROM meal_skips sk
-         WHERE sk.entity_type='child' AND sk.entity_id=ch.id
-           AND sk.status='approved'
-           AND sk.skip_start_date <= $2::date
-           AND sk.skip_end_date >= $2::date
-       )
-     ORDER BY ms.sort_order NULLS LAST, ms.display_name, ch.name`,
-    [schoolId, delivery]
-  );
+  const result = await mealEligibilityService.fetchChildTokenRows({
+    schoolId,
+    mealSizeId: null,
+    delivery,
+  });
 
-  if (result.rowCount === 0) {
+  if (result.rows.length === 0) {
     return next(new AppError('No token records found for selected school.', 404));
   }
 
@@ -1130,20 +1012,26 @@ exports.downloadSchoolAllSizesTokensPdf = catchAsync(async (req, res, next) => {
   const safeSchool = school.rows[0].name.replace(/\s+/g, '_');
   const filename = `tokens_${safeSchool}_ALL_SIZES_${delivery}.pdf`;
 
-  await sendCardsPdfAttachment(res, filename, result.rows, (doc, x, y, s, idx) => {
+  const buffer = await buildCardsPdfBuffer(result.rows, (doc, x, y, s, idx) => {
     drawTokenCard(doc, x, y, {
       header: `${school.rows[0].name} — ${delivery}`,
       badge: s.meal_size || 'Standard',
       serial: `#${idx + 1}`,
-      rows: [
-        { label: 'Name:', value: s.child_name },
-        { label: 'Roll No:', value: s.roll_number },
-        { label: 'Standard:', value: s.standard },
-        { label: 'Meal Time:', value: s.meal_time },
-        { label: 'Remaining:', value: s.remaining_meals },
-      ],
+      rows: buildSchoolCardRows(s),
     });
   });
+
+  await persistTokenPdfExport({
+    buffer,
+    tokenScope: 'school',
+    scopeId: schoolId,
+    mealSizeId: WHOLE_DOWNLOAD_MEAL_SIZE_KEY,
+    tokenDate: delivery,
+    adminId,
+    rowCount: result.rows.length,
+  });
+
+  sendPdfBuffer(res, filename, buffer);
 });
 
 exports.getCorporateTokens = catchAsync(async (req, res, next) => {
@@ -1155,23 +1043,10 @@ exports.getCorporateTokens = catchAsync(async (req, res, next) => {
   const location = await db.query('SELECT id, name FROM corporate_locations WHERE id = $1', [locationId]);
   if (location.rowCount === 0) return next(new AppError('Corporate location not found.', 404));
 
-  const result = await db.query(
-    `SELECT pp.id AS entity_id, 'professional' AS entity_type, pp.name AS professional_name,
-            pp.company_name, (cs.total_meals - cs.used_meals) AS remaining_meals,
-            'Professional' AS meal_size
-     FROM professional_profiles pp
-     ${PROF_SUBJOIN.replace(/\$delivery/g, '$2')}
-     WHERE pp.corporate_location_id=$1
-       AND NOT EXISTS (
-         SELECT 1 FROM meal_skips sk
-         WHERE sk.entity_type='professional' AND sk.entity_id=pp.id
-           AND sk.status='approved'
-           AND sk.skip_start_date <= $2::date
-           AND sk.skip_end_date >= $2::date
-       )
-     ORDER BY pp.name ASC`,
-    [locationId, delivery]
-  );
+  const result = await mealEligibilityService.fetchProfessionalTokenRows({
+    locationId,
+    delivery,
+  });
 
   const downloadStatus = await db.query(
     `SELECT COALESCE(downloaded, false) AS downloaded,
@@ -1189,7 +1064,7 @@ exports.getCorporateTokens = catchAsync(async (req, res, next) => {
     data: {
       corporate_location_id: location.rows[0].id,
       corporate_location_name: location.rows[0].name,
-      count: result.rowCount,
+      count: result.rows.length,
       downloaded: status.downloaded,
       download_count: status.download_count,
       last_downloaded_at: status.last_downloaded_at,
@@ -1208,23 +1083,11 @@ exports.downloadCorporateTokensPdf = catchAsync(async (req, res, next) => {
   const location = await db.query('SELECT id, name FROM corporate_locations WHERE id = $1', [locationId]);
   if (location.rowCount === 0) return next(new AppError('Corporate location not found.', 404));
 
-  const result = await db.query(
-    `SELECT pp.name, pp.company_name,
-            (cs.total_meals - cs.used_meals) AS remaining_meals
-     FROM professional_profiles pp
-     ${PROF_SUBJOIN.replace(/\$delivery/g, '$2')}
-     WHERE pp.corporate_location_id=$1
-       AND NOT EXISTS (
-         SELECT 1 FROM meal_skips sk
-         WHERE sk.entity_type='professional' AND sk.entity_id=pp.id
-           AND sk.status='approved'
-           AND sk.skip_start_date <= $2::date
-           AND sk.skip_end_date >= $2::date
-       )
-     ORDER BY pp.name ASC`,
-    [locationId, delivery]
-  );
-  if (result.rowCount === 0) {
+  const result = await mealEligibilityService.fetchProfessionalTokenRows({
+    locationId,
+    delivery,
+  });
+  if (result.rows.length === 0) {
     return next(new AppError('No token records found for selected corporate location.', 404));
   }
 
@@ -1239,7 +1102,7 @@ exports.downloadCorporateTokensPdf = catchAsync(async (req, res, next) => {
   const safeLoc = location.rows[0].name.replace(/\s+/g, '_');
   const filename = `tokens_${safeLoc}_${delivery}.pdf`;
 
-  await sendCardsPdfAttachment(res, filename, result.rows, (doc, x, y, p, idx) => {
+  const buffer = await buildCardsPdfBuffer(result.rows, (doc, x, y, p, idx) => {
     drawTokenCard(doc, x, y, {
       header: `${location.rows[0].name} — ${delivery}`,
       badge: 'Professional',
@@ -1247,16 +1110,106 @@ exports.downloadCorporateTokensPdf = catchAsync(async (req, res, next) => {
       rows: [
         { label: 'Name:', value: p.name },
         { label: 'Company:', value: p.company_name },
+        { label: 'Meal Size:', value: p.meal_size || 'Large' },
+        { label: 'Meal Time:', value: p.meal_time || '1:00 PM' },
         { label: 'Remaining:', value: p.remaining_meals },
       ],
     });
   });
+
+  await persistTokenPdfExport({
+    buffer,
+    tokenScope: 'corporate',
+    scopeId: locationId,
+    mealSizeId: WHOLE_DOWNLOAD_MEAL_SIZE_KEY,
+    tokenDate: delivery,
+    adminId,
+    rowCount: result.rows.length,
+  });
+
+  sendPdfBuffer(res, filename, buffer);
+});
+
+exports.listTokenPdfExports = catchAsync(async (req, res, next) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+  const dateFilter = req.query.date ? mealEligibilityService.resolveDeliveryDate(req.query.date, next) : null;
+  if (req.query.date && !dateFilter) return;
+  const { token_scope: tokenScope } = req.query;
+
+  const params = [];
+  const cond = ['1=1'];
+  if (dateFilter) {
+    params.push(dateFilter);
+    cond.push(`token_date = $${params.length}::date`);
+  }
+  if (tokenScope) {
+    params.push(String(tokenScope));
+    cond.push(`token_scope = $${params.length}`);
+  }
+
+  const r = await db.query(
+    `SELECT id, token_scope, scope_id, meal_size_id, token_date, admin_id, row_count, content_sha256, created_at
+     FROM token_pdf_exports
+     WHERE ${cond.join(' AND ')}
+     ORDER BY created_at DESC
+     LIMIT ${limit}`,
+    params
+  );
+
+  res.status(200).json({
+    success: true,
+    count: r.rowCount,
+    data: r.rows,
+  });
+});
+
+exports.downloadStoredTokenPdfExport = catchAsync(async (req, res, next) => {
+  const id = parseInt(req.params.exportId, 10);
+  if (!Number.isFinite(id)) return next(new AppError('Invalid export id.', 400));
+
+  const r = await db.query(
+    `SELECT pdf_bytes, token_scope, scope_id, token_date, meal_size_id
+     FROM token_pdf_exports WHERE id = $1`,
+    [id]
+  );
+  if (r.rowCount === 0) return next(new AppError('Stored PDF export not found.', 404));
+
+  const row = r.rows[0];
+  const filename = `ARCHIVE_${row.token_scope}_${row.scope_id}_ms${row.meal_size_id}_${row.token_date}.pdf`;
+  sendPdfBuffer(res, filename, row.pdf_bytes);
 });
 
 exports.addExtraMeals = catchAsync(async (req, res, next) => {
   const adminId = req.user.id;
   const { subscriptionId } = req.params;
   const { extraMeals, reason } = req.body;
+
+  const YMD = /^\d{4}-\d{2}-\d{2}$/;
+  const addDaysYmd = (ymd, days) => {
+    const [y, m, d] = ymd.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+    dt.setUTCDate(dt.getUTCDate() + days);
+    const yy = dt.getUTCFullYear();
+    const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getUTCDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  };
+  const isSaturdayYmd = (ymd) => {
+    const [y, m, d] = ymd.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+    return dt.getUTCDay() === 6;
+  };
+  const extendEndYmdByMealDays = ({ endYmd, includeSaturday, extraMeals: extra }) => {
+    let remainingExtra = extra;
+    let cursor = endYmd;
+    while (remainingExtra > 0) {
+      cursor = addDaysYmd(cursor, 1);
+      const saturday = isSaturdayYmd(cursor);
+      const isMealDay = includeSaturday || !saturday;
+      if (isMealDay) remainingExtra -= 1;
+    }
+    return cursor;
+  };
 
   const parsedExtra = Number(extraMeals);
   if (!Number.isInteger(parsedExtra) || parsedExtra <= 0) {
@@ -1268,21 +1221,35 @@ exports.addExtraMeals = catchAsync(async (req, res, next) => {
   }
 
   const subscription = await db.query(
-    `SELECT id, total_meals, used_meals
+    `SELECT id, total_meals, used_meals, end_date, include_saturday
      FROM client_subscriptions
      WHERE id = $1`,
     [subscriptionId]
   );
   if (subscription.rowCount === 0) return next(new AppError('Subscription not found.', 404));
 
+  const sub = subscription.rows[0];
+  const endYmd = String(sub.end_date).slice(0, 10);
+  if (!YMD.test(endYmd)) return next(new AppError('Invalid end_date in subscription.', 500));
+
+  const includeSaturday = sub.include_saturday !== false;
+  const newEndYmd = extendEndYmdByMealDays({
+    endYmd,
+    includeSaturday,
+    extraMeals: parsedExtra,
+  });
+
   await db.query('BEGIN');
   try {
     const updated = await db.query(
       `UPDATE client_subscriptions
-       SET total_meals = total_meals + $1, updated_at = NOW()
+       SET total_meals = total_meals + $1,
+           is_active = true,
+           end_date = ($3::date + interval '12 hours'),
+           updated_at = NOW()
        WHERE id = $2
-       RETURNING id, total_meals, used_meals`,
-      [parsedExtra, subscriptionId]
+       RETURNING id, total_meals, used_meals, end_date`,
+      [parsedExtra, subscriptionId, newEndYmd]
     );
 
     await db.query(
@@ -1303,6 +1270,7 @@ exports.addExtraMeals = catchAsync(async (req, res, next) => {
         total_meals: item.total_meals,
         used_meals: item.used_meals,
         remaining_meals: item.total_meals - item.used_meals,
+        new_end_date: String(item.end_date).slice(0, 10),
       },
     });
   } catch (error) {
