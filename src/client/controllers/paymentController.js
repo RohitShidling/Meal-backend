@@ -697,10 +697,11 @@ exports.getMyActiveSubscriptions = catchAsync(async (req, res) => {
   const today = mealEligibilityService.parseSessionToday();
 
   const result = await db.query(
-    `SELECT cs.id, cs.entity_type, cs.entity_id, cs.start_date, cs.end_date, cs.is_active,
+    `SELECT cs.id, cs.entity_type, cs.entity_id, cs.is_active,
             s.plan_name, s.price, s.price_with_saturday, s.price_without_saturday, s.billing_cycle,
             o.amount as amount_paid,
             COALESCE(me.display_name, 'Large') AS meal_size_name,
+            (cs.total_meals - cs.used_meals) AS remaining_meals,
             CASE
               WHEN cs.entity_type='child' THEN ch.meal_time
               WHEN cs.entity_type='teacher' THEN tp.meal_time
@@ -711,8 +712,10 @@ exports.getMyActiveSubscriptions = catchAsync(async (req, res) => {
               WHEN cs.entity_type='teacher' THEN tp.name
               WHEN cs.entity_type='professional' THEN pp.name
             END as entity_name,
-            EXTRACT(DAY FROM DATE(cs.end_date) - $2::date) as days_remaining,
-            cs.include_saturday
+            (DATE(cs.end_date) - $2::date) as days_remaining,
+            cs.include_saturday,
+            TO_CHAR(cs.start_date, 'YYYY-MM-DD') AS start_date,
+            TO_CHAR(cs.end_date, 'YYYY-MM-DD') AS end_date
      FROM client_subscriptions cs
      JOIN subscriptions s ON cs.subscription_id=s.id
      LEFT JOIN orders o ON cs.order_id=o.id

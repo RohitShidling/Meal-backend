@@ -283,7 +283,11 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
 
   // Verify active subscription exists (remaining > 0 computed)
   const subCheck = await db.query(
-    `SELECT id, start_date, end_date FROM client_subscriptions
+    `SELECT
+        id,
+        TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date,
+        TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date
+     FROM client_subscriptions
      WHERE client_id=$1 AND entity_type=$2 AND entity_id=$3
        AND is_active=true
        AND (total_meals - used_meals) > 0`,
@@ -292,8 +296,8 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
   if (subCheck.rows.length === 0) return next(new AppError('No active subscription found for this entity.', 400));
 
   const sub = subCheck.rows[0];
-  const subStartYmd = String(sub.start_date).slice(0, 10);
-  const subEndYmd = String(sub.end_date).slice(0, 10);
+  const subStartYmd = sub.start_date;
+  const subEndYmd = sub.end_date;
   if (startYmd < subStartYmd) {
     return next(new AppError(`Cannot schedule skip before subscription start date (${subStartYmd}).`, 400));
   }

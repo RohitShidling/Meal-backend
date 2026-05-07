@@ -62,7 +62,9 @@ exports.getMySubscriptionStatus = async (req, res, next) => {
 
     const query = `
       SELECT cs.id as client_subscription_id, cs.entity_type, cs.entity_id, 
-             cs.start_date, cs.end_date, cs.is_active as subscription_status, cs.include_saturday,
+             TO_CHAR(cs.start_date, 'YYYY-MM-DD') AS start_date,
+             TO_CHAR(cs.end_date, 'YYYY-MM-DD') AS end_date,
+             cs.is_active as subscription_status, cs.include_saturday,
              cs.total_meals, cs.used_meals,
              s.id as plan_id, s.plan_name, s.price, s.price_with_saturday, s.price_without_saturday, s.billing_cycle,
              CASE
@@ -99,8 +101,8 @@ exports.getMySubscriptionStatus = async (req, res, next) => {
       (sub) =>
         sub.subscription_status === true &&
         sub.remaining_meals > 0 &&
-        String(sub.start_date).slice(0, 10) <= today &&
-        String(sub.end_date).slice(0, 10) >= today
+        sub.start_date <= today &&
+        sub.end_date >= today
     );
 
     const notificationRows = await pool.query(

@@ -156,7 +156,20 @@ exports.addToCart = catchAsync(async (req, res, next) => {
   await recalcCartTotal(cart.id);
   const updatedCart = await db.query("SELECT * FROM carts WHERE id=$1", [cart.id]);
   const items = await db.query(
-    `SELECT ci.*, s.plan_name, ms.display_name AS meal_size_name
+    `SELECT
+        ci.id,
+        ci.cart_id,
+        ci.subscription_id,
+        ci.entity_type,
+        ci.entity_id,
+        ci.entity_name,
+        ci.unit_price,
+        ci.meal_size_id,
+        ci.meal_timing,
+        ci.include_saturday,
+        TO_CHAR(ci.start_date, 'YYYY-MM-DD') AS start_date,
+        s.plan_name,
+        ms.display_name AS meal_size_name
      FROM cart_items ci
      JOIN subscriptions s ON ci.subscription_id=s.id
      LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
@@ -207,7 +220,21 @@ exports.updateCartItem = catchAsync(async (req, res, next) => {
   await db.query('UPDATE cart_items SET start_date=$1 WHERE id=$2', [effectiveStartDate, itemId]);
 
   const items = await db.query(
-    `SELECT ci.*, s.plan_name, s.billing_cycle, ms.display_name AS meal_size_name
+    `SELECT
+        ci.id,
+        ci.cart_id,
+        ci.subscription_id,
+        ci.entity_type,
+        ci.entity_id,
+        ci.entity_name,
+        ci.unit_price,
+        ci.meal_size_id,
+        ci.meal_timing,
+        ci.include_saturday,
+        TO_CHAR(ci.start_date, 'YYYY-MM-DD') AS start_date,
+        s.plan_name,
+        s.billing_cycle,
+        ms.display_name AS meal_size_name
      FROM cart_items ci
      JOIN subscriptions s ON ci.subscription_id=s.id
      LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
@@ -243,7 +270,20 @@ exports.removeFromCart = catchAsync(async (req, res, next) => {
   await recalcCartTotal(cartId);
 
   const items = await db.query(
-    `SELECT ci.*, s.plan_name, ms.display_name AS meal_size_name
+    `SELECT
+        ci.id,
+        ci.cart_id,
+        ci.subscription_id,
+        ci.entity_type,
+        ci.entity_id,
+        ci.entity_name,
+        ci.unit_price,
+        ci.meal_size_id,
+        ci.meal_timing,
+        ci.include_saturday,
+        TO_CHAR(ci.start_date, 'YYYY-MM-DD') AS start_date,
+        s.plan_name,
+        ms.display_name AS meal_size_name
      FROM cart_items ci
      JOIN subscriptions s ON ci.subscription_id=s.id
      LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
@@ -273,7 +313,21 @@ exports.viewCart = catchAsync(async (req, res, next) => {
   }
 
   const items = await db.query(
-    `SELECT ci.*, s.plan_name, s.billing_cycle, ms.display_name AS meal_size_name
+    `SELECT
+        ci.id,
+        ci.cart_id,
+        ci.subscription_id,
+        ci.entity_type,
+        ci.entity_id,
+        ci.entity_name,
+        ci.unit_price,
+        ci.meal_size_id,
+        ci.meal_timing,
+        ci.include_saturday,
+        TO_CHAR(ci.start_date, 'YYYY-MM-DD') AS start_date,
+        s.plan_name,
+        s.billing_cycle,
+        ms.display_name AS meal_size_name
      FROM cart_items ci
      JOIN subscriptions s ON ci.subscription_id=s.id
      LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
