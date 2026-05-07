@@ -1,6 +1,55 @@
 const { pool } = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
 const catchAsync = require('../../common/utils/catchAsync');
+const mealEligibilityService = require('../../common/services/mealEligibilityService');
+
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+const parseYmdStrict = (input) => {
+  const raw = String(input || '').trim();
+  if (!YMD.test(raw)) return null;
+  const [y, m, d] = raw.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+  return raw;
+};
+
+const buildRenewalAlert = (sub, remainingMeals) => {
+  const common = {
+    entity_name: sub.entity_name,
+    entity_type: sub.entity_type,
+    entity_id: sub.entity_id,
+    plan_name: sub.plan_name,
+    end_date: sub.end_date,
+    renew_options: {
+      same_plan: {
+        plan_id: sub.plan_id,
+        include_saturday: sub.include_saturday,
+        price: sub.include_saturday ? sub.price_with_saturday : sub.price_without_saturday,
+      },
+      different_plan_url: '/api/client/subscriptions',
+    },
+  };
+
+  if (remainingMeals <= 0) {
+    return {
+      type: 'SUBSCRIPTION_EXPIRED',
+      remaining_days: 0,
+      message: `Subscription for ${sub.entity_name} (${sub.plan_name}) is exhausted. Please renew now to continue meals.`,
+      ...common,
+    };
+  }
+
+  if (remainingMeals <= 4) {
+    return {
+      type: 'EXPIRY_WARNING',
+      remaining_days: remainingMeals,
+      message: `Your subscription for ${sub.entity_name} (${sub.plan_name}) is expiring in ${remainingMeals} day(s).`,
+      ...common,
+    };
+  }
+
+  return null;
+};
 
 /**
  * @desc    Get subscription status for the logged-in client (all entities)
@@ -13,7 +62,9 @@ exports.getMySubscriptionStatus = async (req, res, next) => {
 
     const query = `
       SELECT cs.id as client_subscription_id, cs.entity_type, cs.entity_id, 
-             cs.start_date, cs.end_date, cs.is_active as subscription_status, cs.include_saturday,
+             TO_CHAR(cs.start_date, 'YYYY-MM-DD') AS start_date,
+             TO_CHAR(cs.end_date, 'YYYY-MM-DD') AS end_date,
+             cs.is_active as subscription_status, cs.include_saturday,
              cs.total_meals, cs.used_meals,
              s.id as plan_id, s.plan_name, s.price, s.price_with_saturday, s.price_without_saturday, s.billing_cycle,
              CASE
@@ -36,27 +87,8 @@ exports.getMySubscriptionStatus = async (req, res, next) => {
     const subscriptions = result.rows.map(sub => {
       const remainingMeals = sub.total_meals - sub.used_meals;
       
-      // If 4 or fewer days/meals left and it is currently active
-      if (sub.subscription_status === true && remainingMeals > 0 && remainingMeals <= 4) {
-        alerts.push({
-          type: 'EXPIRY_WARNING',
-          entity_name: sub.entity_name,
-          entity_type: sub.entity_type,
-          entity_id: sub.entity_id,
-          plan_name: sub.plan_name,
-          remaining_days: remainingMeals,
-          end_date: sub.end_date,
-          message: `Your subscription for ${sub.entity_name} (${sub.plan_name}) is expiring in ${remainingMeals} day(s).`,
-          renew_options: {
-            same_plan: {
-              plan_id: sub.plan_id,
-              include_saturday: sub.include_saturday,
-              price: sub.include_saturday ? sub.price_with_saturday : sub.price_without_saturday,
-            },
-            different_plan_url: '/api/client/subscriptions'
-          }
-        });
-      }
+      const renewalAlert = buildRenewalAlert(sub, remainingMeals);
+      if (renewalAlert) alerts.push(renewalAlert);
       
       return {
         ...sub,
@@ -64,12 +96,30 @@ exports.getMySubscriptionStatus = async (req, res, next) => {
       };
     });
 
-    const hasActiveSubscription = subscriptions.some(sub => sub.subscription_status === true && new Date(sub.end_date) > new Date() && sub.remaining_meals > 0);
+    const today = mealEligibilityService.parseSessionToday();
+    const hasActiveSubscription = subscriptions.some(
+      (sub) =>
+        sub.subscription_status === true &&
+        sub.remaining_meals > 0 &&
+        sub.start_date <= today &&
+        sub.end_date >= today
+    );
+
+    const notificationRows = await pool.query(
+      `SELECT id, subscription_id, entity_type, entity_id, alert_type, trigger_remaining_meals,
+              title, message, is_read, is_sent, sent_channel, sent_at, created_at
+       FROM subscription_alerts
+       WHERE client_id = $1
+       ORDER BY created_at DESC
+       LIMIT 50`,
+      [clientId]
+    );
 
     res.status(200).json({
       success: true,
       has_active_subscription: hasActiveSubscription,
       alerts: alerts, // NEW ALERTS ARRAY
+      notifications: notificationRows.rows,
       count: subscriptions.length,
       data: subscriptions,
     });
@@ -91,11 +141,12 @@ exports.updateStartDate = catchAsync(async (req, res, next) => {
     return next(new AppError('entityType, entityId, and startDate are required', 400));
   }
 
-  const newStartDate = new Date(startDate);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  if (newStartDate < today) {
+  const newStartYmd = parseYmdStrict(startDate);
+  if (!newStartYmd) {
+    return next(new AppError('startDate must be valid YYYY-MM-DD', 400));
+  }
+  const todayYmd = mealEligibilityService.parseSessionToday();
+  if (newStartYmd < todayYmd) {
     return next(new AppError('New start date cannot be in the past.', 400));
   }
 
@@ -121,15 +172,16 @@ exports.updateStartDate = catchAsync(async (req, res, next) => {
   // Or maybe allow it if used_meals is 0? The fairest logic is to allow shifting if used_meals == 0.
   
   // Calculate the difference in days between the old start date and the new start date
-  const oldStartDate = new Date(subscription.start_date);
-  oldStartDate.setHours(0,0,0,0);
-  
-  const diffTime = newStartDate.getTime() - oldStartDate.getTime();
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-  // 4. Shift the end_date by the exact same number of days
-  const oldEndDate = new Date(subscription.end_date);
-  const newEndDate = new Date(oldEndDate.getTime() + (diffDays * 24 * 60 * 60 * 1000));
+  const oldStartYmd = String(subscription.start_date).slice(0, 10);
+  const oldEndYmd = String(subscription.end_date).slice(0, 10);
+  const toEpochNoon = (ymd) => {
+    const [y, m, d] = ymd.split('-').map(Number);
+    return Date.UTC(y, m - 1, d, 12, 0, 0);
+  };
+  const diffDays = Math.floor((toEpochNoon(newStartYmd) - toEpochNoon(oldStartYmd)) / 86400000);
+  const endNoon = new Date(toEpochNoon(oldEndYmd));
+  endNoon.setUTCDate(endNoon.getUTCDate() + diffDays);
+  const newEndYmd = `${endNoon.getUTCFullYear()}-${String(endNoon.getUTCMonth() + 1).padStart(2, '0')}-${String(endNoon.getUTCDate()).padStart(2, '0')}`;
 
   // 5. Update the database
   const updateQuery = `
@@ -138,7 +190,7 @@ exports.updateStartDate = catchAsync(async (req, res, next) => {
     WHERE id = $3
     RETURNING start_date, end_date
   `;
-  const updateResult = await pool.query(updateQuery, [newStartDate, newEndDate, subscription.id]);
+  const updateResult = await pool.query(updateQuery, [newStartYmd, newEndYmd, subscription.id]);
 
   res.status(200).json({
     success: true,
@@ -169,7 +221,7 @@ exports.getSubscriptionAlerts = catchAsync(async (req, res, next) => {
     LEFT JOIN children ch ON cs.entity_type='child' AND cs.entity_id=ch.id
     LEFT JOIN teacher_profiles tp ON cs.entity_type='teacher' AND cs.entity_id=tp.id
     LEFT JOIN professional_profiles pp ON cs.entity_type='professional' AND cs.entity_id=pp.id
-    WHERE cs.client_id = $1 AND cs.is_active = true
+    WHERE cs.client_id = $1
   `;
   
   const result = await pool.query(query, [clientId]);
@@ -179,21 +231,21 @@ exports.getSubscriptionAlerts = catchAsync(async (req, res, next) => {
   for (const sub of result.rows) {
     const remainingMeals = sub.total_meals - sub.used_meals;
     
-    // Only return alerts for those expiring within 4 days (but still active)
-    if (remainingMeals > 0 && remainingMeals <= 4) {
+    const renewalAlert = buildRenewalAlert(sub, remainingMeals);
+    if (renewalAlert) {
       alerts.push({
-        alert_type: 'EXPIRY_WARNING',
-        entity_name: sub.entity_name,
-        entity_type: sub.entity_type,
-        entity_id: sub.entity_id,
-        plan_name: sub.plan_name,
-        remaining_days: remainingMeals,
-        end_date: sub.end_date,
-        message: `Your subscription for ${sub.entity_name} (${sub.plan_name}) is expiring in ${remainingMeals} day(s).`,
+        alert_type: renewalAlert.type,
+        entity_name: renewalAlert.entity_name,
+        entity_type: renewalAlert.entity_type,
+        entity_id: renewalAlert.entity_id,
+        plan_name: renewalAlert.plan_name,
+        remaining_days: renewalAlert.remaining_days,
+        end_date: renewalAlert.end_date,
+        message: renewalAlert.message,
         renew_options: {
-          same_plan_id: sub.plan_id,
-          include_saturday: sub.include_saturday,
-          price: sub.include_saturday ? sub.price_with_saturday : sub.price_without_saturday
+          same_plan_id: renewalAlert.renew_options.same_plan.plan_id,
+          include_saturday: renewalAlert.renew_options.same_plan.include_saturday,
+          price: renewalAlert.renew_options.same_plan.price,
         }
       });
     }
@@ -203,5 +255,57 @@ exports.getSubscriptionAlerts = catchAsync(async (req, res, next) => {
     success: true,
     count: alerts.length,
     alerts: alerts
+  });
+});
+
+/**
+ * @desc    Get persistent subscription renewal notifications for the logged-in client
+ * @route   GET /api/client/subscriptions/notifications
+ * @access  Private (Client only)
+ */
+exports.getSubscriptionNotifications = catchAsync(async (req, res) => {
+  const clientId = req.user.id;
+  const result = await pool.query(
+    `SELECT id, subscription_id, entity_type, entity_id, alert_type, trigger_remaining_meals,
+            title, message, is_read, is_sent, sent_channel, sent_at, created_at
+     FROM subscription_alerts
+     WHERE client_id = $1
+     ORDER BY created_at DESC`,
+    [clientId]
+  );
+  res.status(200).json({
+    success: true,
+    count: result.rowCount,
+    data: result.rows,
+  });
+});
+
+/**
+ * @desc    Mark subscription notification as read
+ * @route   PATCH /api/client/subscriptions/notifications/:id/read
+ * @access  Private (Client only)
+ */
+exports.markSubscriptionNotificationRead = catchAsync(async (req, res, next) => {
+  const clientId = req.user.id;
+  const notificationId = Number(req.params.id);
+  if (!Number.isInteger(notificationId) || notificationId <= 0) {
+    return next(new AppError('Invalid notification id', 400));
+  }
+
+  const updated = await pool.query(
+    `UPDATE subscription_alerts
+     SET is_read = true
+     WHERE id = $1 AND client_id = $2
+     RETURNING id, is_read`,
+    [notificationId, clientId]
+  );
+  if (updated.rowCount === 0) {
+    return next(new AppError('Notification not found', 404));
+  }
+
+  res.status(200).json({
+    success: true,
+    message: 'Notification marked as read',
+    data: updated.rows[0],
   });
 });

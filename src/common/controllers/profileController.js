@@ -42,7 +42,7 @@ const getMyProfile = catchAsync(async (req, res, next) => {
 
   const professionalResult = await db.query(
     `
-      SELECT id, client_id, name, company_name, corporate_location_id, city, state, lunch_time, meal_size_id, created_at, updated_at
+      SELECT id, client_id, name, company_name, corporate_location_id, city, state, lunch_time, lunch_time AS meal_timing, meal_size_id, created_at, updated_at
       FROM professional_profiles
       WHERE client_id = $1
     `,
@@ -51,7 +51,7 @@ const getMyProfile = catchAsync(async (req, res, next) => {
 
   const teacherResult = await db.query(
     `
-      SELECT id, client_id, name, school_college_name, city, state, location, status, meal_time, meal_size_id, created_at, updated_at
+      SELECT id, client_id, name, school_college_name, city, state, location, status, meal_time, meal_time AS meal_timing, meal_size_id, created_at, updated_at
       FROM teacher_profiles
       WHERE client_id = $1
     `,
