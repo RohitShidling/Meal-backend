@@ -15,7 +15,7 @@ const generateTokens = (id, phoneNumber) => {
   });
   return { accessToken, refreshToken };
 };
-//hi
+
 /**
  * POST /api/admin/auth/login
  * Body: { phoneNumber, password }
