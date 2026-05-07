@@ -22,7 +22,9 @@ exports.reduceMealsForToday = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     success: true,
-    message: `Meal reduction completed for ${today}${result.repeated_reduction_mode ? ' (repeat run).' : '.'}`,
+    message: result.repeated_reduction_mode
+      ? `Meal reduction for ${today} was already completed earlier. No additional deduction was applied.`
+      : `Meal reduction completed for ${today}.`,
     data: {
       date: today,
       reduction_id: result.reductionId,
@@ -379,7 +381,7 @@ exports.getReductionHistory = catchAsync(async (req, res) => {
  */
 exports.getDailyLog = catchAsync(async (req, res) => {
   let { date } = req.params;
-  if (date === 'today') date = new Date().toISOString().split('T')[0];
+  if (date === 'today') date = mealEligibilityService.parseSessionToday();
 
   const result = await db.query(
     `SELECT dml.*, 
@@ -704,6 +706,8 @@ exports.getCorporateTokensPDF = catchAsync(async (req, res, next) => {
       rows: [
         { label: 'Name:', value: p.professional_name || p.name },
         { label: 'Company:', value: p.company_name },
+        { label: 'Meal Size:', value: p.meal_size || 'Large' },
+        { label: 'Meal Time:', value: p.meal_time || '1:00 PM' },
         { label: 'Remaining:', value: p.remaining_meals }
       ]
     });
@@ -812,6 +816,8 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
         rows: [
           { label: 'Name:', value: p.professional_name || p.name },
           { label: 'Company:', value: p.company_name },
+          { label: 'Meal Size:', value: p.meal_size || 'Large' },
+          { label: 'Meal Time:', value: p.meal_time || '1:00 PM' },
           { label: 'Remaining:', value: p.remaining_meals }
         ]
       });
@@ -830,7 +836,6 @@ exports.getAllTokensPDF = catchAsync(async (req, res) => {
  */
 exports.getKitchenReport = catchAsync(async (req, res, next) => {
   const today = mealEligibilityService.parseSessionToday();
-  const pred = mealEligibilityService.subscriptionEligiblePredicateSql('cs');
 
   // 1. Total Subscribed (Everyone who has a valid subscription, regardless of skip or start date)
   const totalSubscribedRes = await db.query(
@@ -840,39 +845,67 @@ exports.getKitchenReport = catchAsync(async (req, res, next) => {
   );
   const totalSubscribed = parseInt(totalSubscribedRes.rows[0].total);
 
-  // 2. Active Today — same rules as tokens / meal reduction (calendar day in session TZ)
-  const activeTodayRes = await db.query(
-    `SELECT cs.id, cs.entity_type, cs.entity_id 
-     FROM client_subscriptions cs
-     WHERE ${pred}`,
-    [today]
-  );
+  // 2. Active Today — EXACT same eligible set used by token generation + meal reduction.
+  const activeTodayRes = await mealEligibilityService.fetchTokenEligibleSubscriptionsForDate(today);
   const activeTodayCount = activeTodayRes.rowCount;
 
-  // 3. Meal size breakdown from subscription plan mapping (works for all entity types)
-  let formattedMealSizes = [];
-  const activeSubscriptionIds = activeTodayRes.rows.map((row) => row.id);
-  if (activeSubscriptionIds.length > 0) {
-    const mealSizeBreakdown = await db.query(
-      `
-      SELECT
-        COALESCE(ms.display_name, 'Unassigned') AS size,
-        COUNT(*)::int AS count,
-        COALESCE(ms.sort_order, 9999) AS sort_order
-      FROM client_subscriptions cs
-      JOIN subscriptions s ON s.id = cs.subscription_id
-      LEFT JOIN meal_sizes ms ON ms.id = s.meal_size_id
-      WHERE cs.id = ANY($1)
-      GROUP BY COALESCE(ms.display_name, 'Unassigned'), COALESCE(ms.sort_order, 9999)
-      ORDER BY COALESCE(ms.sort_order, 9999), COALESCE(ms.display_name, 'Unassigned')
-      `,
-      [activeSubscriptionIds]
-    );
-    formattedMealSizes = mealSizeBreakdown.rows.map((row) => ({
-      size: row.size,
-      count: row.count
-    }));
-  }
+  // 3. Meal size breakdown using same eligibility + profile fallback logic as tokens.
+  const predCs = mealEligibilityService.subscriptionEligiblePredicateSql('cs');
+  const predCs2 = mealEligibilityService.subscriptionEligiblePredicateSql('cs2');
+  const predCs3 = mealEligibilityService.subscriptionEligiblePredicateSql('cs3');
+  const mealSizeBreakdown = await db.query(
+    `
+      WITH large_size AS (
+        SELECT id, display_name, sort_order
+        FROM meal_sizes
+        WHERE is_active = true
+          AND (LOWER(name) = 'large' OR LOWER(display_name) = 'large')
+        ORDER BY sort_order ASC, id ASC
+        LIMIT 1
+      ),
+      active_entities AS (
+        SELECT COALESCE(ms.display_name, 'Unassigned') AS size,
+               COALESCE(ms.sort_order, 9999) AS sort_order
+        FROM client_subscriptions cs
+        JOIN children ch ON cs.entity_type = 'child' AND cs.entity_id = ch.id
+        LEFT JOIN meal_sizes ms ON ms.id = ch.meal_size_id
+        WHERE ${predCs}
+
+        UNION ALL
+
+        SELECT COALESCE(ms_profile.display_name, ms_sub.display_name, ls.display_name, 'Large') AS size,
+               COALESCE(ms_profile.sort_order, ms_sub.sort_order, ls.sort_order, 9999) AS sort_order
+        FROM client_subscriptions cs2
+        JOIN teacher_profiles tp ON cs2.entity_type = 'teacher' AND cs2.entity_id = tp.id
+        JOIN subscriptions sub2 ON sub2.id = cs2.subscription_id
+        LEFT JOIN meal_sizes ms_profile ON ms_profile.id = tp.meal_size_id
+        LEFT JOIN meal_sizes ms_sub ON ms_sub.id = sub2.meal_size_id
+        LEFT JOIN large_size ls ON TRUE
+        WHERE ${predCs2}
+
+        UNION ALL
+
+        SELECT COALESCE(ms_profile.display_name, ms_sub.display_name, ls.display_name, 'Large') AS size,
+               COALESCE(ms_profile.sort_order, ms_sub.sort_order, ls.sort_order, 9999) AS sort_order
+        FROM client_subscriptions cs3
+        JOIN professional_profiles pp ON cs3.entity_type = 'professional' AND cs3.entity_id = pp.id
+        JOIN subscriptions sub3 ON sub3.id = cs3.subscription_id
+        LEFT JOIN meal_sizes ms_profile ON ms_profile.id = pp.meal_size_id
+        LEFT JOIN meal_sizes ms_sub ON ms_sub.id = sub3.meal_size_id
+        LEFT JOIN large_size ls ON TRUE
+        WHERE ${predCs3}
+      )
+      SELECT size, COUNT(*)::int AS count, MIN(sort_order)::int AS sort_order
+      FROM active_entities
+      GROUP BY size
+      ORDER BY MIN(sort_order), size
+    `,
+    [today]
+  );
+  const formattedMealSizes = mealSizeBreakdown.rows.map((row) => ({
+    size: row.size,
+    count: row.count
+  }));
 
   res.status(200).json({
     success: true,

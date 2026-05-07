@@ -276,7 +276,6 @@ const initDB = async () => {
       meal_time           TIME NOT NULL DEFAULT '12:30:00',
       location            TEXT NOT NULL,
       status              VARCHAR(50) NOT NULL DEFAULT 'active',
-      meal_time           TIME,
       meal_size_id        INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL,
       created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -291,6 +290,8 @@ const initDB = async () => {
       entity_type     VARCHAR(20) NOT NULL, -- 'child', 'teacher', 'professional'
       entity_id       VARCHAR(20) NOT NULL, -- ID of the child/teacher/professional
       amount          DECIMAL(10, 2) NOT NULL,
+      meal_size_id    INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL,
+      meal_timing     TIME,
       include_saturday BOOLEAN NOT NULL DEFAULT true,
       status          VARCHAR(20) NOT NULL DEFAULT 'pending', -- 'pending', 'completed', 'failed', 'cancelled'
       start_date      DATE, -- User selected start date for the subscription
@@ -376,6 +377,8 @@ const initDB = async () => {
       entity_id       VARCHAR(20) NOT NULL,
       entity_name     VARCHAR(255),
       unit_price      DECIMAL(10, 2) NOT NULL,
+      meal_size_id    INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL,
+      meal_timing     TIME,
       include_saturday BOOLEAN NOT NULL DEFAULT true,
       start_date      DATE, -- User selected start date for this cart item
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -433,6 +436,25 @@ const initDB = async () => {
       last_downloaded_by INTEGER REFERENCES admins(id) ON DELETE SET NULL,
       created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  const createSubscriptionAlertsTable = `
+    CREATE TABLE IF NOT EXISTS subscription_alerts (
+      id                     SERIAL PRIMARY KEY,
+      subscription_id        VARCHAR(20) NOT NULL REFERENCES client_subscriptions(id) ON DELETE CASCADE,
+      client_id              VARCHAR(20) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      entity_type            VARCHAR(20) NOT NULL,
+      entity_id              VARCHAR(20) NOT NULL,
+      alert_type             VARCHAR(50) NOT NULL,
+      trigger_remaining_meals INTEGER NOT NULL,
+      title                  VARCHAR(255) NOT NULL,
+      message                TEXT NOT NULL,
+      is_read                BOOLEAN NOT NULL DEFAULT false,
+      is_sent                BOOLEAN NOT NULL DEFAULT false,
+      sent_channel           VARCHAR(30) DEFAULT 'in_app',
+      sent_at                TIMESTAMP,
+      created_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `;
 
@@ -618,6 +640,11 @@ const initDB = async () => {
 
     await pool.query(createSubscriptionMealAdjustmentsTable);
     await pool.query(createTokenDownloadLogsTable);
+    await pool.query(createSubscriptionAlertsTable);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_subscription_alert_once
+      ON subscription_alerts (subscription_id, alert_type, trigger_remaining_meals)
+    `);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS token_pdf_exports (
@@ -660,6 +687,10 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS start_date DATE;`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS meal_timing TIME;`);
+    await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS meal_timing TIME;`);
     await pool.query(`ALTER TABLE client_subscriptions ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
 
     // Teacher → school mapping (needed for school token PDFs that include teachers)
@@ -704,8 +735,67 @@ const initDB = async () => {
 
     // Migration: profile enhancements (meal size + time)
     await pool.query(`ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS lunch_time TIME;`);
     await pool.query(`ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS meal_time TIME;`);
     await pool.query(`ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
+    await pool.query(`UPDATE teacher_profiles SET meal_time = '12:30:00' WHERE meal_time IS NULL;`);
+    await pool.query(`UPDATE professional_profiles SET lunch_time = '13:00:00' WHERE lunch_time IS NULL;`);
+
+    // Backfill historical cart/order rows for old data where meal metadata was absent.
+    await pool.query(`
+      UPDATE cart_items ci
+      SET meal_size_id = ch.meal_size_id,
+          meal_timing = ch.meal_time
+      FROM children ch
+      WHERE ci.entity_type = 'child'
+        AND ci.entity_id = ch.id
+        AND (ci.meal_size_id IS NULL OR ci.meal_timing IS NULL)
+    `);
+    await pool.query(`
+      UPDATE cart_items ci
+      SET meal_size_id = tp.meal_size_id,
+          meal_timing = tp.meal_time
+      FROM teacher_profiles tp
+      WHERE ci.entity_type = 'teacher'
+        AND ci.entity_id = tp.id
+        AND (ci.meal_size_id IS NULL OR ci.meal_timing IS NULL)
+    `);
+    await pool.query(`
+      UPDATE cart_items ci
+      SET meal_size_id = pp.meal_size_id,
+          meal_timing = pp.lunch_time
+      FROM professional_profiles pp
+      WHERE ci.entity_type = 'professional'
+        AND ci.entity_id = pp.id
+        AND (ci.meal_size_id IS NULL OR ci.meal_timing IS NULL)
+    `);
+    await pool.query(`
+      UPDATE orders o
+      SET meal_size_id = ch.meal_size_id,
+          meal_timing = ch.meal_time
+      FROM children ch
+      WHERE o.entity_type = 'child'
+        AND o.entity_id = ch.id
+        AND (o.meal_size_id IS NULL OR o.meal_timing IS NULL)
+    `);
+    await pool.query(`
+      UPDATE orders o
+      SET meal_size_id = tp.meal_size_id,
+          meal_timing = tp.meal_time
+      FROM teacher_profiles tp
+      WHERE o.entity_type = 'teacher'
+        AND o.entity_id = tp.id
+        AND (o.meal_size_id IS NULL OR o.meal_timing IS NULL)
+    `);
+    await pool.query(`
+      UPDATE orders o
+      SET meal_size_id = pp.meal_size_id,
+          meal_timing = pp.lunch_time
+      FROM professional_profiles pp
+      WHERE o.entity_type = 'professional'
+        AND o.entity_id = pp.id
+        AND (o.meal_size_id IS NULL OR o.meal_timing IS NULL)
+    `);
 
     // Migration: Ensure subscription_features exists and stays clean
     await pool.query(`

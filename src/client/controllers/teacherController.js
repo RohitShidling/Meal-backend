@@ -28,6 +28,12 @@ const normalizeMealTime = (input) => {
   return DEFAULT_MEAL_TIME;
 };
 
+const withTeacherAliases = (row) => (row ? {
+  ...row,
+  mealTiming: row.meal_time || DEFAULT_MEAL_TIME,
+  mealSizeId: row.meal_size_id || null,
+} : row);
+
 /**
  * @desc    Create or update teacher profile
  * @route   POST /api/client/teacher/profile
@@ -35,22 +41,24 @@ const normalizeMealTime = (input) => {
  */
 exports.saveTeacherProfile = async (req, res, next) => {
   try {
-    const { name, school_college_name, city, state, status, meal_time, meal_size_id } = req.body;
+    const { name, school_college_name, city, state, status } = req.body;
+    const mealTimeInput = req.body.meal_time ?? req.body.mealTiming;
+    const mealSizeInput = req.body.meal_size_id ?? req.body.mealSizeId;
     const clientId = req.user.id;
 
-    if (!name || !school_college_name || !city || !state || !meal_time || !meal_size_id) {
+    if (!name || !school_college_name || !city || !state || !mealTimeInput || !mealSizeInput) {
       return next(new AppError('All fields (name, school_college_name, city, state, meal_time, meal_size_id) are required', 400));
     }
 
     // Validate meal size exists and is active
     const mealSizeCheck = await query(
       'SELECT id FROM meal_sizes WHERE id = $1 AND is_active = true',
-      [Number(meal_size_id)]
+      [Number(mealSizeInput)]
     );
     if (mealSizeCheck.rows.length === 0) {
       return next(new AppError('Invalid or inactive meal size', 400));
     }
-    const normalizedMealTime = normalizeMealTime(meal_time);
+    const normalizedMealTime = normalizeMealTime(mealTimeInput);
 
     // INDUSTRIAL RULE: Check for mutual exclusivity with Professional profile
     const profCheck = await query('SELECT id FROM professional_profiles WHERE client_id = $1', [clientId]);
@@ -91,7 +99,7 @@ exports.saveTeacherProfile = async (req, res, next) => {
         WHERE client_id = $9
         RETURNING *;
       `;
-      const values = [name, school_college_name, resolvedSchoolId, city, state, normalizedMealTime, status || 'active', Number(meal_size_id), clientId];
+      const values = [name, school_college_name, resolvedSchoolId, city, state, normalizedMealTime, status || 'active', Number(mealSizeInput), clientId];
       const updateResult = await query(updateQuery, values);
       result = updateResult.rows[0];
     } else {
@@ -102,7 +110,7 @@ exports.saveTeacherProfile = async (req, res, next) => {
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING *;
       `;
-      const values = [clientId, name, school_college_name, resolvedSchoolId, city, state, normalizedMealTime, '', status || 'active', Number(meal_size_id)];
+      const values = [clientId, name, school_college_name, resolvedSchoolId, city, state, normalizedMealTime, '', status || 'active', Number(mealSizeInput)];
       const insertResult = await query(insertQuery, values);
       result = insertResult.rows[0];
     }
@@ -110,7 +118,7 @@ exports.saveTeacherProfile = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: profileCheck.rows.length > 0 ? 'Teacher profile updated successfully' : 'Teacher profile created successfully',
-      data: result,
+      data: withTeacherAliases(result),
     });
   } catch (error) {
     next(new AppError(error.message || 'Error saving teacher profile', 500));
@@ -140,7 +148,7 @@ exports.getTeacherProfile = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      data: result.rows[0],
+      data: withTeacherAliases(result.rows[0]),
     });
   } catch (error) {
     next(new AppError(error.message || 'Error fetching teacher profile', 500));

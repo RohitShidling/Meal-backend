@@ -188,6 +188,7 @@ const buildSchoolCardRows = (row) => {
       { label: 'Name:', value: row.child_name },
       { label: 'Role:', value: 'Teacher' },
       { label: 'Meal Size:', value: row.meal_size },
+      { label: 'Meal Time:', value: row.meal_time || '1:00 PM' },
       { label: 'Remaining:', value: row.remaining_meals },
     ];
   }
@@ -600,6 +601,8 @@ exports.downloadExportCorporateBundlePdf = catchAsync(async (req, res, next) => 
           rows: [
             { label: 'Name:', value: p.name },
             { label: 'Company:', value: p.company_name },
+            { label: 'Meal Size:', value: p.meal_size || 'Large' },
+            { label: 'Meal Time:', value: p.meal_time || '1:00 PM' },
             { label: 'Remaining:', value: p.remaining_meals },
           ],
         });
@@ -699,6 +702,8 @@ exports.downloadExportAllBundlePdf = catchAsync(async (req, res, next) => {
           rows: [
             { label: 'Name:', value: p.name },
             { label: 'Company:', value: p.company_name },
+            { label: 'Meal Size:', value: p.meal_size || 'Large' },
+            { label: 'Meal Time:', value: p.meal_time || '1:00 PM' },
             { label: 'Remaining:', value: p.remaining_meals },
           ],
         });
@@ -1105,6 +1110,8 @@ exports.downloadCorporateTokensPdf = catchAsync(async (req, res, next) => {
       rows: [
         { label: 'Name:', value: p.name },
         { label: 'Company:', value: p.company_name },
+        { label: 'Meal Size:', value: p.meal_size || 'Large' },
+        { label: 'Meal Time:', value: p.meal_time || '1:00 PM' },
         { label: 'Remaining:', value: p.remaining_meals },
       ],
     });
@@ -1238,7 +1245,7 @@ exports.addExtraMeals = catchAsync(async (req, res, next) => {
       `UPDATE client_subscriptions
        SET total_meals = total_meals + $1,
            is_active = true,
-           end_date = ($2::date + interval '12 hours'),
+           end_date = ($3::date + interval '12 hours'),
            updated_at = NOW()
        WHERE id = $2
        RETURNING id, total_meals, used_meals, end_date`,

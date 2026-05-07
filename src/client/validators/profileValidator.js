@@ -4,7 +4,9 @@ const AppError = require('../../common/utils/AppError');
  * Validator for professional profile
  */
 const validateProfessionalProfile = (req, res, next) => {
-  const { name, company_name, corporate_location_id, city, state, lunch_time, meal_size_id } = req.body;
+  const { name, company_name, corporate_location_id, city, state } = req.body;
+  const mealTiming = req.body.mealTiming ?? req.body.lunch_time;
+  const mealSizeId = req.body.mealSizeId ?? req.body.meal_size_id;
   const errors = [];
 
   if (!name || name.trim().length < 2) {
@@ -29,10 +31,12 @@ const validateProfessionalProfile = (req, res, next) => {
     errors.push('State is required.');
   }
 
-  if (!lunch_time) {
-    errors.push('Lunch time is required.');
+  if (!mealTiming) {
+    errors.push('Meal timing is required.');
+  } else if (!/^(\d{1,2}:[0-5]\d(\s?(AM|PM))?|\d{2}:\d{2}:\d{2})$/i.test(String(mealTiming).trim())) {
+    errors.push('Meal timing must be in HH:MM, HH:MM AM/PM, or HH:MM:SS format.');
   }
-  if (!meal_size_id) {
+  if (!mealSizeId) {
     errors.push('Meal size selection is required.');
   }
 
@@ -47,7 +51,9 @@ const validateProfessionalProfile = (req, res, next) => {
  * Validator for teacher profile
  */
 const validateTeacherProfile = (req, res, next) => {
-  const { name, school_college_name, city, state, meal_time, meal_size_id } = req.body;
+  const { name, school_college_name, city, state } = req.body;
+  const mealTime = req.body.meal_time ?? req.body.mealTiming;
+  const mealSizeId = req.body.meal_size_id ?? req.body.mealSizeId;
   const errors = [];
 
   if (!name || name.trim().length < 2) {
@@ -67,14 +73,14 @@ const validateTeacherProfile = (req, res, next) => {
   if (!state) {
     errors.push('State is required.');
   }
-  if (!meal_size_id) {
+  if (!mealSizeId) {
     errors.push('Meal size selection is required.');
   }
 
-  if (!meal_time) {
+  if (!mealTime) {
     errors.push('Meal time is required.');
-  } else if (!/^\d{2}:\d{2}(:\d{2})?$/.test(String(meal_time).trim())) {
-    errors.push('Meal time must be in HH:MM or HH:MM:SS format.');
+  } else if (!/^(\d{1,2}:[0-5]\d(\s?(AM|PM))?|\d{2}:\d{2}:\d{2})$/i.test(String(mealTime).trim())) {
+    errors.push('Meal time must be in HH:MM, HH:MM AM/PM, or HH:MM:SS format.');
   }
 
   if (errors.length > 0) {

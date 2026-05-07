@@ -38,6 +38,8 @@ const getMealSkipPolicy = async () => {
 // HELPER: Check if client has ANY active subscription (computed remaining)
 // ─────────────────────────────────────────────────────────────────────────────
 const getSubscriptionStatus = async (clientId) => {
+  const today = mealEligibilityService.parseSessionToday();
+  const activePred = mealEligibilityService.subscriptionActiveOnDatePredicateSql('cs', '$2');
   const result = await db.query(
     `SELECT cs.entity_type, cs.entity_id, cs.total_meals, cs.used_meals,
             (cs.total_meals - cs.used_meals) AS remaining_meals,
@@ -51,9 +53,9 @@ const getSubscriptionStatus = async (clientId) => {
      LEFT JOIN children ch ON cs.entity_type='child' AND cs.entity_id=ch.id
      LEFT JOIN teacher_profiles tp ON cs.entity_type='teacher' AND cs.entity_id=tp.id
      LEFT JOIN professional_profiles pp ON cs.entity_type='professional' AND cs.entity_id=pp.id
-     WHERE cs.client_id=$1 AND cs.is_active=true
-       AND (cs.total_meals - cs.used_meals) > 0`,
-    [clientId]
+     WHERE cs.client_id=$1
+       AND ${activePred}`,
+    [clientId, today]
   );
   return result.rows;
 };
@@ -281,7 +283,7 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
 
   // Verify active subscription exists (remaining > 0 computed)
   const subCheck = await db.query(
-    `SELECT id, end_date FROM client_subscriptions
+    `SELECT id, start_date, end_date FROM client_subscriptions
      WHERE client_id=$1 AND entity_type=$2 AND entity_id=$3
        AND is_active=true
        AND (total_meals - used_meals) > 0`,
@@ -290,7 +292,11 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
   if (subCheck.rows.length === 0) return next(new AppError('No active subscription found for this entity.', 400));
 
   const sub = subCheck.rows[0];
+  const subStartYmd = String(sub.start_date).slice(0, 10);
   const subEndYmd = String(sub.end_date).slice(0, 10);
+  if (startYmd < subStartYmd) {
+    return next(new AppError(`Cannot schedule skip before subscription start date (${subStartYmd}).`, 400));
+  }
   if (endYmd > subEndYmd) {
     return next(new AppError(`Cannot schedule skip beyond your subscription expiry date (${subEndYmd}).`, 400));
   }
