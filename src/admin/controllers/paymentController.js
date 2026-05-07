@@ -87,11 +87,15 @@ exports.getAllPayments = catchAsync(async (req, res) => {
       END AS sector_label,
       CASE
         WHEN o.entity_type = 'cart' THEN COALESCE(cart_summary.institution_names, 'Mixed')
-        ELSE sch_ch.name
+        WHEN o.entity_type = 'child' THEN sch_ch.name
+        WHEN o.entity_type = 'teacher' THEN t2.school_college_name
+        WHEN o.entity_type = 'professional' THEN cl.name
+        ELSE '—'
       END AS school_name,
       CASE
         WHEN o.entity_type = 'cart' THEN COALESCE(cart_summary.institution_names, 'Mixed')
-        ELSE cl.name
+        WHEN o.entity_type = 'professional' THEN cl.name
+        ELSE NULL
       END AS corporate_location_name,
       CASE
         WHEN o.entity_type = 'cart' THEN cart_summary.cart_start_date
