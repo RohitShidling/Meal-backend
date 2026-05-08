@@ -11,8 +11,8 @@ const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
   port: process.env.DB_PORT || 5432,
   database: process.env.DB_NAME || 'meal',
-  user: process.env.DB_USER || 'RohitRohit',
-  password: process.env.DB_PASSWORD || 'RohitRohit',
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
   // Calendar-day logic (subscription start/end vs token date) expects consistent DATE() casting.
   options: `-c TimeZone=${sessionTz}`,
 });
@@ -309,6 +309,7 @@ const initDB = async () => {
       amount                  DECIMAL(10, 2) NOT NULL,
       status                  VARCHAR(20) NOT NULL DEFAULT 'pending', -- 'pending', 'success', 'failure'
       payment_method          VARCHAR(50),
+      processed_at            TIMESTAMPTZ,
       gateway_response        JSONB,
       created_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -330,6 +331,32 @@ const initDB = async () => {
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(client_id, entity_id, entity_type)
+    );
+  `;
+
+  const createClientSubscriptionHistoryTable = `
+    CREATE TABLE IF NOT EXISTS client_subscription_history (
+      id                        BIGSERIAL PRIMARY KEY,
+      client_subscription_id    VARCHAR(20) NOT NULL REFERENCES client_subscriptions(id) ON DELETE CASCADE,
+      client_id                 VARCHAR(20) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      entity_type               VARCHAR(20) NOT NULL,
+      entity_id                 VARCHAR(20) NOT NULL,
+      previous_subscription_id  VARCHAR(20) REFERENCES subscriptions(id),
+      previous_order_id         VARCHAR(20) REFERENCES orders(id) ON DELETE SET NULL,
+      previous_start_date       TIMESTAMP,
+      previous_end_date         TIMESTAMP,
+      previous_total_meals      INTEGER,
+      previous_used_meals       INTEGER,
+      previous_include_saturday BOOLEAN,
+      new_subscription_id       VARCHAR(20) REFERENCES subscriptions(id),
+      new_order_id              VARCHAR(20) REFERENCES orders(id) ON DELETE SET NULL,
+      new_start_date            TIMESTAMP,
+      new_end_date              TIMESTAMP,
+      new_total_meals           INTEGER,
+      new_used_meals            INTEGER,
+      new_include_saturday      BOOLEAN,
+      change_reason             VARCHAR(100) NOT NULL DEFAULT 'renewal_or_reactivation',
+      created_at                TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `;
 
@@ -533,6 +560,7 @@ const initDB = async () => {
     await pool.query(createOrdersTable);
     await pool.query(createTransactionsTable);
     await pool.query(createClientSubscriptionsTable);
+    await pool.query(createClientSubscriptionHistoryTable);
     await pool.query(createSubscriptionFeaturesTable);
     await pool.query(createDailyMenuNutritionTable);
     await pool.query(createEntitiesTable);
@@ -582,6 +610,41 @@ const initDB = async () => {
     // ──────────────────────────────────────────────
     await pool.query(`ALTER TABLE client_subscriptions ADD COLUMN IF NOT EXISTS total_meals INTEGER DEFAULT 30;`);
     await pool.query(`ALTER TABLE client_subscriptions ADD COLUMN IF NOT EXISTS used_meals INTEGER DEFAULT 0;`);
+    await pool.query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ;`);
+    await pool.query(`
+      ALTER TABLE client_subscriptions
+      DROP CONSTRAINT IF EXISTS chk_client_subscriptions_meals_range;
+    `);
+    await pool.query(`
+      ALTER TABLE client_subscriptions
+      ADD CONSTRAINT chk_client_subscriptions_meals_range
+      CHECK (used_meals >= 0 AND used_meals <= total_meals);
+    `);
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS btree_gist;`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_meal_skips_client_entity_status_dates ON meal_skips(client_id, entity_type, entity_id, status, skip_start_date, skip_end_date);`);
+    await pool.query(`ALTER TABLE meal_skips DROP CONSTRAINT IF EXISTS chk_meal_skips_dates;`);
+    await pool.query(`ALTER TABLE meal_skips DROP CONSTRAINT IF EXISTS chk_meal_skips_total_days;`);
+    try {
+      await pool.query(`ALTER TABLE meal_skips ADD CONSTRAINT chk_meal_skips_dates CHECK (skip_end_date >= skip_start_date);`);
+      await pool.query(`ALTER TABLE meal_skips ADD CONSTRAINT chk_meal_skips_total_days CHECK (total_skip_days > 0);`);
+    } catch (_) {
+      console.warn('Skipping meal_skips check constraints due to existing invalid rows. Clean data and re-run migration.');
+    }
+    await pool.query(`ALTER TABLE meal_skips DROP CONSTRAINT IF EXISTS no_overlap_skips;`);
+    try {
+      await pool.query(`
+        ALTER TABLE meal_skips
+        ADD CONSTRAINT no_overlap_skips
+        EXCLUDE USING gist (
+          client_id WITH =,
+          entity_id WITH =,
+          entity_type WITH =,
+          daterange(skip_start_date, skip_end_date, '[]') WITH &&
+        ) WHERE (status = 'approved');
+      `);
+    } catch (_) {
+      console.warn('Skipping no_overlap_skips constraint due to existing overlapping rows. Clean data and re-run migration.');
+    }
     // Drop old remaining_meals column if it exists (we now compute remaining = total - used)
     await pool.query(`ALTER TABLE client_subscriptions DROP COLUMN IF EXISTS remaining_meals;`);
 
@@ -641,6 +704,8 @@ const initDB = async () => {
     await pool.query(createSubscriptionMealAdjustmentsTable);
     await pool.query(createTokenDownloadLogsTable);
     await pool.query(createSubscriptionAlertsTable);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_client_subscription_history_subscription ON client_subscription_history (client_subscription_id, created_at DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_client_subscription_history_client_entity ON client_subscription_history (client_id, entity_type, entity_id, created_at DESC)`);
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS uniq_subscription_alert_once
       ON subscription_alerts (subscription_id, alert_type, trigger_remaining_meals)

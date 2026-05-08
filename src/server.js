@@ -7,6 +7,7 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const { initDB } = require('./common/database');
 const { swaggerUi, specs } = require('./docs/swagger');
+const docsAuthMiddleware = require('./common/middlewares/docsAuthMiddleware');
 
 // Import routes
 const clientAuthRoutes = require('./client/routes/authRoutes');
@@ -62,8 +63,25 @@ app.use('/api', (req, res, next) => {
 
 // Middleware
 app.use(helmet()); // Security Headers
-app.use(cors());
-app.use(express.json());
+const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin) return cb(null, true); // allow server-to-server and mobile app calls
+    if (allowedOrigins.length === 0) {
+      return process.env.NODE_ENV === 'development'
+        ? cb(null, true)
+        : cb(new Error('CORS origin blocked'));
+    }
+    return allowedOrigins.includes(origin)
+      ? cb(null, true)
+      : cb(new Error('CORS origin blocked'));
+  },
+  credentials: true,
+}));
+app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // HTTP Logging (Industrial Standard)
@@ -85,9 +103,10 @@ const limiter = rateLimit({
 // Apply rate limiting to client and common routes
 app.use('/api/client', limiter);
 app.use('/api/common', limiter);
+app.use('/api/admin', limiter);
 
 // Swagger Documentation
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
+app.use('/api-docs', docsAuthMiddleware, swaggerUi.serve, swaggerUi.setup(specs));
 
 // Health Check
 app.get('/', (req, res) => {

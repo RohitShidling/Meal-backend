@@ -7,10 +7,13 @@ const AppError = require('../../common/utils/AppError');
 
 // Helper to generate Admin Tokens
 const generateTokens = (id, phoneNumber) => {
+  if (!process.env.ADMIN_JWT_SECRET || !process.env.ADMIN_REFRESH_SECRET) {
+    throw new Error('ADMIN_JWT_SECRET and ADMIN_REFRESH_SECRET must be configured');
+  }
   const accessToken = jwt.sign({ id, phoneNumber, role: 'admin' }, process.env.ADMIN_JWT_SECRET, {
     expiresIn: process.env.ADMIN_JWT_EXPIRES_IN || '30d',   // ← 30 days for admin
   });
-  const refreshToken = jwt.sign({ id, phoneNumber, role: 'admin' }, process.env.ADMIN_REFRESH_SECRET || 'admin_refresh_secret', {
+  const refreshToken = jwt.sign({ id, phoneNumber, role: 'admin' }, process.env.ADMIN_REFRESH_SECRET, {
     expiresIn: process.env.ADMIN_REFRESH_TOKEN_EXPIRES_IN || '90d',  // ← 90 days refresh
   });
   return { accessToken, refreshToken };
@@ -154,7 +157,10 @@ const refreshTokenController = catchAsync(async (req, res, next) => {
 
   let decoded;
   try {
-    decoded = jwt.verify(refreshToken, process.env.ADMIN_REFRESH_SECRET || 'admin_refresh_secret');
+    if (!process.env.ADMIN_REFRESH_SECRET) {
+      return next(new AppError('Refresh token secret is not configured.', 500));
+    }
+    decoded = jwt.verify(refreshToken, process.env.ADMIN_REFRESH_SECRET);
   } catch (err) {
     return next(new AppError('Invalid or expired refresh token.', 403));
   }

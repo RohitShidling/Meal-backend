@@ -54,12 +54,22 @@ const parseBoolean = (value, defaultValue = true) => {
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 const parseYmdStrict = (input) => {
   if (!input) return null;
+  if (input instanceof Date) {
+    if (Number.isNaN(input.getTime())) return null;
+    const yy = input.getUTCFullYear();
+    const mm = String(input.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(input.getUTCDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  }
   const raw = String(input).trim();
-  if (!YMD.test(raw)) return null;
-  const [y, m, d] = raw.split('-').map(Number);
+  const normalized = YMD.test(raw)
+    ? raw
+    : (raw.length >= 10 && YMD.test(raw.slice(0, 10)) ? raw.slice(0, 10) : null);
+  if (!normalized) return null;
+  const [y, m, d] = normalized.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
   if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
-  return raw;
+  return normalized;
 };
 
 const addDaysYmd = (ymd, days) => {
@@ -87,11 +97,60 @@ const computeMealCount = (startDate, durationDays, includeSaturday) => {
   return count;
 };
 
+const recordSubscriptionHistory = async (dbClient, payload) => {
+  await dbClient.query(
+    `INSERT INTO client_subscription_history (
+      client_subscription_id,
+      client_id,
+      entity_type,
+      entity_id,
+      previous_subscription_id,
+      previous_order_id,
+      previous_start_date,
+      previous_end_date,
+      previous_total_meals,
+      previous_used_meals,
+      previous_include_saturday,
+      new_subscription_id,
+      new_order_id,
+      new_start_date,
+      new_end_date,
+      new_total_meals,
+      new_used_meals,
+      new_include_saturday,
+      change_reason
+    ) VALUES (
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
+    )`,
+    [
+      payload.clientSubscriptionId,
+      payload.clientId,
+      payload.entityType,
+      payload.entityId,
+      payload.previousSubscriptionId,
+      payload.previousOrderId,
+      payload.previousStartDate,
+      payload.previousEndDate,
+      payload.previousTotalMeals,
+      payload.previousUsedMeals,
+      payload.previousIncludeSaturday,
+      payload.newSubscriptionId,
+      payload.newOrderId,
+      payload.newStartDate,
+      payload.newEndDate,
+      payload.newTotalMeals,
+      payload.newUsedMeals,
+      payload.newIncludeSaturday,
+      payload.changeReason,
+    ]
+  );
+};
+
 /**
  * Core function: finalize ONE subscription after successful payment
  */
-const activateSingleSubscription = async (clientId, subscriptionId, entityType, entityId, orderId, requestedStartDate, includeSaturday) => {
-  const subRes = await db.query(
+const activateSingleSubscription = async (dbClient, clientId, subscriptionId, entityType, entityId, orderId, requestedStartDate, includeSaturday) => {
+  const subRes = await dbClient.query(
     'SELECT duration_days, duration_days_with_saturday, duration_days_without_saturday FROM subscriptions WHERE id=$1',
     [subscriptionId]
   );
@@ -100,29 +159,31 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
     ? Number(subRes.rows[0]?.duration_days_with_saturday || baseDurationDays)
     : Number(subRes.rows[0]?.duration_days_without_saturday || baseDurationDays);
 
-  const existingSub = await db.query(
-    'SELECT end_date, total_meals, used_meals FROM client_subscriptions WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true AND order_id != $4',
-    [clientId, entityId, entityType, orderId]
+  const currentSubRes = await dbClient.query(
+    `SELECT id, subscription_id, start_date, end_date, order_id, is_active, total_meals, used_meals, include_saturday
+     FROM client_subscriptions
+     WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3
+     FOR UPDATE`,
+    [clientId, entityId, entityType]
   );
+  const currentSub = currentSubRes.rows[0] || null;
 
   const sessionToday = mealEligibilityService.parseSessionToday();
   let baseDateYmd = parseYmdStrict(requestedStartDate) || sessionToday;
-  let baseDate = new Date(`${baseDateYmd}T00:00:00`);
   let newTotalMeals = computeMealCount(baseDateYmd, durationDays, includeSaturday);
   let newUsedMeals = 0;
 
-  if (existingSub.rows.length > 0) {
-    const currentEndYmd = String(existingSub.rows[0].end_date).slice(0, 10);
+  if (currentSub && currentSub.is_active && currentSub.order_id !== orderId) {
+    const currentEndYmd = String(currentSub.end_date).slice(0, 10);
     if (currentEndYmd >= sessionToday) {
       const nextAfterCurrentEnd = addDaysYmd(currentEndYmd, 1);
       // No overlap and no day duplication: new pack starts the day after existing end.
       if (nextAfterCurrentEnd > baseDateYmd) {
         baseDateYmd = nextAfterCurrentEnd;
-        baseDate = new Date(`${baseDateYmd}T00:00:00`);
       }
 
-      const oldTotal = existingSub.rows[0].total_meals || 0;
-      const oldUsed = existingSub.rows[0].used_meals || 0;
+      const oldTotal = currentSub.total_meals || 0;
+      const oldUsed = currentSub.used_meals || 0;
 
       // Preserve old totals and used, just add new meals to total
       newTotalMeals = oldTotal + computeMealCount(baseDateYmd, durationDays, includeSaturday);
@@ -133,57 +194,135 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
   // Inclusive validity window: 7-day plan from May 7 => May 7..May 13 (not May 14).
   const endDateYmd = addDaysYmd(baseDateYmd, durationDays - 1);
 
-  await db.query(
+  const upsertRes = await dbClient.query(
     `INSERT INTO client_subscriptions (client_id,subscription_id,entity_type,entity_id,start_date,end_date,order_id,is_active,total_meals,used_meals,include_saturday)
      VALUES ($1,$2,$3,$4,$8,$5,$6,true,$7,$9,$10)
      ON CONFLICT (client_id,entity_id,entity_type) DO UPDATE SET
        start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date, subscription_id=EXCLUDED.subscription_id,
        order_id=EXCLUDED.order_id, is_active=true, updated_at=NOW(),
-       total_meals=EXCLUDED.total_meals, used_meals=EXCLUDED.used_meals, include_saturday=EXCLUDED.include_saturday`,
+       total_meals=EXCLUDED.total_meals, used_meals=EXCLUDED.used_meals, include_saturday=EXCLUDED.include_saturday
+     RETURNING *`,
     [clientId, subscriptionId, entityType, entityId, endDateYmd, orderId, newTotalMeals, baseDateYmd, newUsedMeals, includeSaturday]
   );
+  const nextSub = upsertRes.rows[0];
+  if (currentSub && nextSub) {
+    await recordSubscriptionHistory(dbClient, {
+      clientSubscriptionId: nextSub.id,
+      clientId,
+      entityType,
+      entityId,
+      previousSubscriptionId: currentSub.subscription_id,
+      previousOrderId: currentSub.order_id,
+      previousStartDate: currentSub.start_date,
+      previousEndDate: currentSub.end_date,
+      previousTotalMeals: currentSub.total_meals,
+      previousUsedMeals: currentSub.used_meals,
+      previousIncludeSaturday: currentSub.include_saturday,
+      newSubscriptionId: nextSub.subscription_id,
+      newOrderId: nextSub.order_id,
+      newStartDate: nextSub.start_date,
+      newEndDate: nextSub.end_date,
+      newTotalMeals: nextSub.total_meals,
+      newUsedMeals: nextSub.used_meals,
+      newIncludeSaturday: nextSub.include_saturday,
+      changeReason: 'renewal_or_reactivation',
+    });
+  }
 };
 
 /**
  * Master finalize: handles BOTH single-order and cart-order
  */
 const finalizeSuccessfulPayment = async (orderId) => {
-  // 1. Mark order as completed
-  await db.query('UPDATE orders SET status=$1, updated_at=NOW() WHERE id=$2', ['completed', orderId]);
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderRes = await client.query(
+      `UPDATE orders
+       SET status='completed', updated_at=NOW()
+       WHERE id=$1 AND status='pending'
+       RETURNING *`,
+      [orderId]
+    );
+    // Idempotency: already finalized or terminal state.
+    if (orderRes.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return { finalized: false, reason: 'already_processed' };
+    }
+    const order = orderRes.rows[0];
 
-  const orderRes = await db.query('SELECT * FROM orders WHERE id=$1', [orderId]);
-  const order = orderRes.rows[0];
+    if (order.order_type === 'cart' && order.cart_id) {
+      const cartItems = await client.query(
+        `SELECT ci.*, s.is_active AS plan_active,
+                COALESCE(
+                  CASE WHEN ci.include_saturday THEN s.price_with_saturday ELSE s.price_without_saturday END,
+                  s.price
+                )::numeric AS live_price
+         FROM cart_items ci
+         JOIN subscriptions s ON s.id = ci.subscription_id
+         WHERE ci.cart_id=$1
+         FOR UPDATE`,
+        [order.cart_id]
+      );
+      if (cartItems.rowCount === 0) {
+        throw new Error('Cart order has no items.');
+      }
+      // Defensive guard: do not activate inactive plans.
+      const inactive = cartItems.rows.find((r) => r.plan_active !== true);
+      if (inactive) throw new Error('Cart contains inactive subscription plan.');
 
-  if (order.order_type === 'cart' && order.cart_id) {
-    // CART ORDER — activate subscriptions for every cart item
-    const cartItems = await db.query('SELECT * FROM cart_items WHERE cart_id=$1', [order.cart_id]);
-    for (const item of cartItems.rows) {
+      for (const item of cartItems.rows) {
+        await activateSingleSubscription(
+          client,
+          order.client_id,
+          item.subscription_id,
+          item.entity_type,
+          item.entity_id,
+          orderId,
+          item.start_date,
+          item.include_saturday !== false
+        );
+      }
+      await client.query("UPDATE carts SET status='checked_out', updated_at=NOW() WHERE id=$1", [order.cart_id]);
+    } else {
       await activateSingleSubscription(
+        client,
         order.client_id,
-        item.subscription_id,
-        item.entity_type,
-        item.entity_id,
+        order.subscription_id,
+        order.entity_type,
+        order.entity_id,
         orderId,
-        item.start_date,
-        item.include_saturday !== false
+        order.start_date,
+        order.include_saturday !== false
       );
     }
-    // Mark cart as checked out
-    await db.query("UPDATE carts SET status='checked_out', updated_at=NOW() WHERE id=$1", [order.cart_id]);
-  } else {
-    // SINGLE ORDER
-    await activateSingleSubscription(
-      order.client_id,
-      order.subscription_id,
-      order.entity_type,
-      order.entity_id,
-      orderId,
-      order.start_date,
-      order.include_saturday !== false
-    );
-  }
 
-  console.log(`✅ Payment finalized for order: ${orderId} (type: ${order.order_type})`);
+    await client.query('COMMIT');
+    console.log(`✅ Payment finalized for order: ${orderId} (type: ${order.order_type})`);
+    return { finalized: true };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+};
+
+const sanitizeFrontendRedirectUrl = (candidate) => {
+  const fallback = process.env.PHONEPE_REDIRECT_URL || 'https://yourdomain.com/payment-result';
+  if (!candidate) return fallback;
+  try {
+    const u = new URL(candidate);
+    const allowed = (process.env.PHONEPE_REDIRECT_ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (allowed.length > 0 && !allowed.includes(u.origin)) return fallback;
+    if (!/^https?:$/.test(u.protocol)) return fallback;
+    return u.toString();
+  } catch (_) {
+    return fallback;
+  }
 };
 
 // ─── SINGLE PAYMENT ──────────────────────────────────────────────────────────
@@ -245,7 +384,7 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
 
   const clientData = await db.query('SELECT phone_number FROM clients WHERE id=$1', [clientId]);
   const finalRedirectUrl = customRedirect || process.env.PHONEPE_REDIRECT_URL || 'https://yourdomain.com/payment-result';
-  const backendCallbackUrl = `${req.protocol}://${req.get('host')}/api/client/payment/callback?tid=${merchantTransactionId}&frontendUrl=${encodeURIComponent(finalRedirectUrl)}`;
+  const backendCallbackUrl = `${req.protocol}://${req.get('host')}/api/client/payment/callback?tid=${merchantTransactionId}&frontendUrl=${encodeURIComponent(sanitizeFrontendRedirectUrl(finalRedirectUrl))}`;
 
   const response = await phonepe.initiatePayment({
     transactionId: merchantTransactionId,
@@ -284,39 +423,89 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
   const clientId = req.user.id;
   const { redirectUrl: customRedirect } = req.body;
 
-  const cartRes = await db.query("SELECT * FROM carts WHERE client_id=$1 AND status='active'", [clientId]);
-  if (cartRes.rows.length === 0) return next(new AppError('Your cart is empty', 400));
+  const tx = await db.pool.connect();
+  let cart;
+  let items;
+  let order;
+  let merchantTransactionId;
+  let totalAmount = 0;
+  try {
+    await tx.query('BEGIN');
+    const cartRes = await tx.query(
+      "SELECT * FROM carts WHERE client_id=$1 AND status='active' FOR UPDATE",
+      [clientId]
+    );
+    if (cartRes.rows.length === 0) {
+      await tx.query('ROLLBACK');
+      return next(new AppError('Your cart is empty', 400));
+    }
 
-  const cart = cartRes.rows[0];
-  const items = await db.query(
-    `SELECT ci.*, s.plan_name, s.meal_size_id, ms.display_name AS meal_size_name
-     FROM cart_items ci
-     JOIN subscriptions s ON ci.subscription_id=s.id
-     LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
-     WHERE ci.cart_id=$1`,
-    [cart.id]
-  );
-  if (items.rows.length === 0) return next(new AppError('Your cart has no items', 400));
+    cart = cartRes.rows[0];
+    items = await tx.query(
+      `SELECT ci.*, s.plan_name, s.meal_size_id, s.price, s.price_with_saturday, s.price_without_saturday, ms.display_name AS meal_size_name
+       FROM cart_items ci
+       JOIN subscriptions s ON ci.subscription_id=s.id
+       LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
+       WHERE ci.cart_id=$1
+       FOR UPDATE OF ci, s`,
+      [cart.id]
+    );
+    if (items.rows.length === 0) {
+      await tx.query('ROLLBACK');
+      return next(new AppError('Your cart has no items', 400));
+    }
 
-  const totalAmount = parseFloat(cart.total_amount);
+    // Re-validate prices at checkout time to avoid stale cart totals.
+    totalAmount = 0;
+    for (const item of items.rows) {
+      const includeSat = item.include_saturday !== false;
+      const livePrice = Number(
+        includeSat
+          ? (item.price_with_saturday ?? item.price)
+          : (item.price_without_saturday ?? item.price)
+      );
+      if (!Number.isFinite(livePrice) || livePrice < 0) {
+        await tx.query('ROLLBACK');
+        return next(new AppError('Invalid pricing on one or more cart items', 400));
+      }
+      totalAmount += livePrice;
+    }
 
-  // Create a single cart-order (subscription_id from first item for reference, entity_type='cart')
-  const orderResult = await db.query(
-    `INSERT INTO orders (client_id,subscription_id,entity_type,entity_id,amount,status,order_type,cart_id)
-     VALUES ($1,$2,'cart','CART',   $3,'pending','cart',$4) RETURNING *`,
-    [clientId, items.rows[0].subscription_id, totalAmount, cart.id]
-  );
-  const order = orderResult.rows[0];
+    const existingPending = await tx.query(
+      `SELECT id FROM orders
+       WHERE client_id=$1 AND cart_id=$2 AND order_type='cart' AND status='pending'
+       LIMIT 1`,
+      [clientId, cart.id]
+    );
+    if (existingPending.rowCount > 0) {
+      await tx.query('ROLLBACK');
+      return next(new AppError('A payment is already pending for this cart.', 409));
+    }
 
-  const merchantTransactionId = `TXNC_${order.id.replace('ORD-', '')}_${Date.now()}`;
-  await db.query(
-    'INSERT INTO transactions (order_id,merchant_transaction_id,amount,status) VALUES ($1,$2,$3,$4)',
-    [order.id, merchantTransactionId, totalAmount, 'pending']
-  );
+    // Create a single cart-order (subscription_id from first item for reference, entity_type='cart')
+    const orderResult = await tx.query(
+      `INSERT INTO orders (client_id,subscription_id,entity_type,entity_id,amount,status,order_type,cart_id)
+       VALUES ($1,$2,'cart','CART',   $3,'pending','cart',$4) RETURNING *`,
+      [clientId, items.rows[0].subscription_id, totalAmount, cart.id]
+    );
+    order = orderResult.rows[0];
+
+    merchantTransactionId = `TXNC_${order.id.replace('ORD-', '')}_${Date.now()}`;
+    await tx.query(
+      'INSERT INTO transactions (order_id,merchant_transaction_id,amount,status) VALUES ($1,$2,$3,$4)',
+      [order.id, merchantTransactionId, totalAmount, 'pending']
+    );
+    await tx.query('COMMIT');
+  } catch (e) {
+    await tx.query('ROLLBACK');
+    throw e;
+  } finally {
+    tx.release();
+  }
 
   const clientData = await db.query('SELECT phone_number FROM clients WHERE id=$1', [clientId]);
   const finalRedirectUrl = customRedirect || process.env.PHONEPE_REDIRECT_URL || 'https://yourdomain.com/payment-result';
-  const backendCallbackUrl = `${req.protocol}://${req.get('host')}/api/client/payment/callback?tid=${merchantTransactionId}&frontendUrl=${encodeURIComponent(finalRedirectUrl)}`;
+  const backendCallbackUrl = `${req.protocol}://${req.get('host')}/api/client/payment/callback?tid=${merchantTransactionId}&frontendUrl=${encodeURIComponent(sanitizeFrontendRedirectUrl(finalRedirectUrl))}`;
 
   const response = await phonepe.initiatePayment({
     transactionId: merchantTransactionId,
@@ -358,6 +547,25 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
  * @route POST /api/client/payment/webhook
  */
 exports.handleWebhook = catchAsync(async (req, res) => {
+  const xVerify = req.headers['x-verify'];
+  const webhookUser = process.env.PHONEPE_WEBHOOK_USERNAME || '';
+  const webhookPass = process.env.PHONEPE_WEBHOOK_PASSWORD || '';
+  if (!xVerify || !webhookUser || !webhookPass) {
+    return res.status(401).send('Unauthorized Webhook');
+  }
+  let valid = false;
+  try {
+    valid = phonepe.validateCallback(
+      webhookUser,
+      webhookPass,
+      String(xVerify),
+      JSON.stringify(req.body)
+    );
+  } catch (_) {
+    valid = false;
+  }
+  if (!valid) return res.status(401).send('Invalid Signature');
+
   const payload = req.body.response || req.body.request;
   if (!payload) return res.status(400).send('Invalid Webhook');
 
@@ -375,7 +583,14 @@ exports.handleWebhook = catchAsync(async (req, res) => {
   const status = (success && code === 'PAYMENT_SUCCESS') ? 'success' : 'failure';
 
   const txnResult = await db.query(
-    'UPDATE transactions SET status=$1, gateway_transaction_id=$2, gateway_response=$3, updated_at=NOW() WHERE merchant_transaction_id=$4 RETURNING *',
+    `UPDATE transactions
+     SET status=$1,
+         gateway_transaction_id=$2,
+         gateway_response=$3,
+         processed_at = CASE WHEN $1='success' THEN COALESCE(processed_at, NOW()) ELSE processed_at END,
+         updated_at=NOW()
+     WHERE merchant_transaction_id=$4
+     RETURNING *`,
     [status, data.transactionId, decoded, mtxnId]
   );
 
@@ -399,7 +614,7 @@ exports.handleWebhook = catchAsync(async (req, res) => {
 exports.handleRedirectCallback = catchAsync(async (req, res) => {
   // PhonePe usually sends a POST request with transactionId, code, etc.
   const txnId = (req.body && req.body.transactionId) || req.query.tid || req.query.transactionId;
-  const frontendUrl = req.query.frontendUrl || 'https://yourdomain.com/payment-result';
+  const frontendUrl = sanitizeFrontendRedirectUrl(req.query.frontendUrl);
 
   if (!txnId) return res.redirect(`${frontendUrl}?status=error&message=NoTransactionId`);
 
@@ -420,7 +635,11 @@ exports.handleRedirectCallback = catchAsync(async (req, res) => {
         const localTxn = txnRes.rows[0];
         if (isSuccess) {
           await db.query(
-            'UPDATE transactions SET status=$1,gateway_transaction_id=$2,gateway_response=$3,updated_at=NOW() WHERE merchant_transaction_id=$4',
+            `UPDATE transactions
+             SET status=$1,gateway_transaction_id=$2,gateway_response=$3,
+                 processed_at = COALESCE(processed_at, NOW()),
+                 updated_at=NOW()
+             WHERE merchant_transaction_id=$4`,
             ['success', gwRes.data.transactionId, gwRes.data, txnId]
           );
           await finalizeSuccessfulPayment(localTxn.order_id);
@@ -497,7 +716,11 @@ exports.checkPaymentStatus = catchAsync(async (req, res, next) => {
   // Sync if still pending
   if (isSuccess && localTxn.status === 'pending') {
     await db.query(
-      'UPDATE transactions SET status=$1,gateway_transaction_id=$2,gateway_response=$3,updated_at=NOW() WHERE merchant_transaction_id=$4',
+      `UPDATE transactions
+       SET status=$1,gateway_transaction_id=$2,gateway_response=$3,
+           processed_at = COALESCE(processed_at, NOW()),
+           updated_at=NOW()
+       WHERE merchant_transaction_id=$4`,
       ['success', gatewayRes.data.transactionId, gatewayRes.data, txnId]
     );
     await finalizeSuccessfulPayment(localTxn.order_id);
@@ -584,7 +807,11 @@ exports.statusPage = catchAsync(async (req, res) => {
     if (isSuccess && localTxn.status === 'pending') {
       try {
         await db.query(
-          'UPDATE transactions SET status=$1,gateway_transaction_id=$2,gateway_response=$3,updated_at=NOW() WHERE merchant_transaction_id=$4',
+          `UPDATE transactions
+           SET status=$1,gateway_transaction_id=$2,gateway_response=$3,
+               processed_at = COALESCE(processed_at, NOW()),
+               updated_at=NOW()
+           WHERE merchant_transaction_id=$4`,
           ['success', gwRes.data?.transactionId || null, gwRes.data || null, tid]
         );
         await finalizeSuccessfulPayment(localTxn.order_id);
@@ -653,7 +880,8 @@ exports.statusPage = catchAsync(async (req, res) => {
  */
 exports.getMyPaymentHistory = catchAsync(async (req, res) => {
   const clientId = req.user.id;
-  const { page = 1, limit = 10 } = req.query;
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
   const offset = (page - 1) * limit;
 
   const result = await db.query(
@@ -781,7 +1009,11 @@ exports.forceSync = catchAsync(async (req, res, next) => {
 
   if (isSuccess) {
     await db.query(
-      'UPDATE transactions SET status=$1,gateway_transaction_id=$2,gateway_response=$3,updated_at=NOW() WHERE merchant_transaction_id=$4',
+      `UPDATE transactions
+       SET status=$1,gateway_transaction_id=$2,gateway_response=$3,
+           processed_at = COALESCE(processed_at, NOW()),
+           updated_at=NOW()
+       WHERE merchant_transaction_id=$4`,
       ['success', gwRes.data.transactionId, gwRes.data, txnId]
     );
     await finalizeSuccessfulPayment(localTxn.order_id);

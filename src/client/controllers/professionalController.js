@@ -165,6 +165,12 @@ exports.getProfessionalProfile = async (req, res, next) => {
 exports.deleteProfessionalProfile = async (req, res, next) => {
   try {
     const clientId = (req.user.role === 'admin' && req.query.clientId) ? req.query.clientId : req.user.id;
+    if (req.user.role === 'admin' && req.query.clientId) {
+      const clientCheck = await query('SELECT id FROM clients WHERE id = $1', [clientId]);
+      if (clientCheck.rows.length === 0) {
+        return next(new AppError('Invalid clientId supplied by admin.', 400));
+      }
+    }
 
     const profileRes = await query(`SELECT id FROM professional_profiles WHERE client_id = $1`, [clientId]);
     if (profileRes.rows.length === 0) {

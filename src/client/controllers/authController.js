@@ -6,10 +6,13 @@ const AppError = require('../../common/utils/AppError');
 
 // Helper to generate Client Tokens
 const generateTokens = (id, phoneNumber) => {
+  if (!process.env.CLIENT_JWT_SECRET || !process.env.CLIENT_REFRESH_SECRET) {
+    throw new Error('CLIENT_JWT_SECRET and CLIENT_REFRESH_SECRET must be configured');
+  }
   const accessToken = jwt.sign({ id, phoneNumber, role: 'client' }, process.env.CLIENT_JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRES_IN || '1h',
   });
-  const refreshToken = jwt.sign({ id, phoneNumber, role: 'client' }, process.env.CLIENT_REFRESH_SECRET || 'client_refresh_secret', {
+  const refreshToken = jwt.sign({ id, phoneNumber, role: 'client' }, process.env.CLIENT_REFRESH_SECRET, {
     expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || '7d',
   });
   return { accessToken, refreshToken };
@@ -224,7 +227,10 @@ const refreshTokenController = catchAsync(async (req, res, next) => {
 
   let decoded;
   try {
-    decoded = jwt.verify(refreshToken, process.env.CLIENT_REFRESH_SECRET || 'client_refresh_secret');
+    if (!process.env.CLIENT_REFRESH_SECRET) {
+      return next(new AppError('Refresh token secret is not configured.', 500));
+    }
+    decoded = jwt.verify(refreshToken, process.env.CLIENT_REFRESH_SECRET);
   } catch (err) {
     return next(new AppError('Invalid or expired refresh token.', 403));
   }
