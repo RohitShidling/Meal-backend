@@ -4,12 +4,27 @@ const { sendOTP, verifyOTP } = require('../../common/services/otpService');
 const catchAsync = require('../../common/utils/catchAsync');
 const AppError = require('../../common/utils/AppError');
 
+const requireEnv = (key) => {
+  const value = process.env[key];
+  if (!value) {
+    throw new Error(`${key} environment variable is required`);
+  }
+  return value;
+};
+
+const CLIENT_JWT_SECRET = requireEnv('CLIENT_JWT_SECRET');
+const CLIENT_REFRESH_SECRET = requireEnv('CLIENT_REFRESH_SECRET');
+const buildOtpMetadata = (req) => ({
+  ip: req.ip,
+  userAgent: req.get('user-agent')
+});
+
 // Helper to generate Client Tokens
 const generateTokens = (id, phoneNumber) => {
-  const accessToken = jwt.sign({ id, phoneNumber, role: 'client' }, process.env.CLIENT_JWT_SECRET, {
+  const accessToken = jwt.sign({ id, phoneNumber, role: 'client' }, CLIENT_JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRES_IN || '1h',
   });
-  const refreshToken = jwt.sign({ id, phoneNumber, role: 'client' }, process.env.CLIENT_REFRESH_SECRET || 'client_refresh_secret', {
+  const refreshToken = jwt.sign({ id, phoneNumber, role: 'client' }, CLIENT_REFRESH_SECRET, {
     expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || '7d',
   });
   return { accessToken, refreshToken };
@@ -34,7 +49,7 @@ const registerSendOtp = catchAsync(async (req, res, next) => {
 
   // 2. Send OTP via Firebase
   try {
-    await sendOTP(phoneNumber);
+    await sendOTP(phoneNumber, buildOtpMetadata(req));
   } catch (error) {
     const firebaseMsg = error.response?.data?.error?.message || error.message;
     return next(new AppError(`Failed to send OTP: ${firebaseMsg}`, 400));
@@ -60,7 +75,7 @@ const registerVerifyOtp = catchAsync(async (req, res, next) => {
 
   // 1. Verify OTP via Firebase
   try {
-    await verifyOTP(phoneNumber, code);
+    await verifyOTP(phoneNumber, code, buildOtpMetadata(req));
   } catch (error) {
     if (error.code === 'NO_SESSION') {
       return next(new AppError('No OTP session found. Please request OTP first.', 400));
@@ -124,7 +139,7 @@ const loginSendOtp = catchAsync(async (req, res, next) => {
 
   // 2. Send OTP via Firebase
   try {
-    await sendOTP(phoneNumber);
+    await sendOTP(phoneNumber, buildOtpMetadata(req));
   } catch (error) {
     const firebaseMsg = error.response?.data?.error?.message || error.message;
     return next(new AppError(`Failed to send OTP: ${firebaseMsg}`, 400));
@@ -150,7 +165,7 @@ const loginVerifyOtp = catchAsync(async (req, res, next) => {
 
   // 1. Verify OTP via Firebase
   try {
-    await verifyOTP(phoneNumber, code);
+    await verifyOTP(phoneNumber, code, buildOtpMetadata(req));
   } catch (error) {
     if (error.code === 'NO_SESSION') {
       return next(new AppError('No OTP session found. Please request OTP first.', 400));
@@ -224,7 +239,7 @@ const refreshTokenController = catchAsync(async (req, res, next) => {
 
   let decoded;
   try {
-    decoded = jwt.verify(refreshToken, process.env.CLIENT_REFRESH_SECRET || 'client_refresh_secret');
+    decoded = jwt.verify(refreshToken, CLIENT_REFRESH_SECRET);
   } catch (err) {
     return next(new AppError('Invalid or expired refresh token.', 403));
   }

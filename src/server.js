@@ -49,6 +49,8 @@ const adminMenuNutritionRoutes = require('./admin/routes/menuNutritionRoutes');
 const adminTrialPlanFeatureRoutes = require('./admin/routes/trialPlanFeatureRoutes');
 
 const app = express();
+const apiJsonParser = express.json({ limit: process.env.REQUEST_BODY_LIMIT || '100kb' });
+const apiUrlEncodedParser = express.urlencoded({ extended: true, limit: process.env.REQUEST_BODY_LIMIT || '100kb' });
 
 // Disable ETag so clients don't receive `304 Not Modified` and miss fresh DB data.
 app.disable('etag');
@@ -62,9 +64,29 @@ app.use('/api', (req, res, next) => {
 
 // Middleware
 app.use(helmet()); // Security Headers
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+const corsOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+app.use(cors(corsOrigins.length > 0 ? {
+  origin(origin, callback) {
+    if (!origin || corsOrigins.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('Not allowed by CORS'));
+  }
+} : {}));
+app.use((req, res, next) => {
+  if (req.originalUrl.startsWith('/api/client/payment/webhook')) {
+    next();
+    return;
+  }
+  apiJsonParser(req, res, (err) => {
+    if (err) return next(err);
+    apiUrlEncodedParser(req, res, next);
+  });
+});
 
 // HTTP Logging (Industrial Standard)
 if (process.env.NODE_ENV === 'development') {
@@ -85,9 +107,39 @@ const limiter = rateLimit({
 // Apply rate limiting to client and common routes
 app.use('/api/client', limiter);
 app.use('/api/common', limiter);
+app.use('/api/admin', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  message: { success: false, message: 'Too many admin requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+}));
+app.use([
+  '/api/admin/auth/login',
+  '/api/admin/auth/verify-otp',
+  '/api/client/auth/login/send-otp',
+  '/api/client/auth/login/verify-otp',
+  '/api/client/auth/register/send-otp',
+  '/api/client/auth/register/verify-otp'
+], rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 20,
+  message: { success: false, message: 'Too many authentication attempts. Please retry after 10 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+}));
+app.use(['/api/client/payment/webhook', '/api/client/payment/status', '/api/client/payment/force-sync'], rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 120,
+  message: { success: false, message: 'Too many payment sync requests. Please retry later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+}));
 
 // Swagger Documentation
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
+if (process.env.ENABLE_SWAGGER_DOCS === 'true') {
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
+}
 
 // Health Check
 app.get('/', (req, res) => {
@@ -95,7 +147,7 @@ app.get('/', (req, res) => {
     status: 'running',
     message: 'Meal Subscription Backend API',
     version: '1.0.0',
-    docs: '/api-docs',
+    docs: process.env.ENABLE_SWAGGER_DOCS === 'true' ? '/api-docs' : null,
   });
 });
 
@@ -191,9 +243,15 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT,"0.0.0.0", async () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Swagger Docs available at http://localhost:${PORT}/api-docs`);
-
-  await initDB();
+  if (process.env.ENABLE_SWAGGER_DOCS === 'true') {
+    console.log(`Swagger Docs available at http://localhost:${PORT}/api-docs`);
+  }
+  const autoBootstrap = process.env.DB_AUTO_BOOTSTRAP === 'true' || process.env.NODE_ENV !== 'production';
+  if (autoBootstrap) {
+    await initDB();
+  } else {
+    console.log('DB_AUTO_BOOTSTRAP disabled. Skipping runtime schema initialization.');
+  }
 });
 
 

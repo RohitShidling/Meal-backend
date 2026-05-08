@@ -5,13 +5,72 @@ const { sendOTP, verifyOTP } = require('../../common/services/otpService');
 const catchAsync = require('../../common/utils/catchAsync');
 const AppError = require('../../common/utils/AppError');
 
+const requireEnv = (key) => {
+  const value = process.env[key];
+  if (!value) {
+    throw new Error(`${key} environment variable is required`);
+  }
+  return value;
+};
+
+const ADMIN_JWT_SECRET = requireEnv('ADMIN_JWT_SECRET');
+const ADMIN_REFRESH_SECRET = requireEnv('ADMIN_REFRESH_SECRET');
+const buildOtpMetadata = (req) => ({
+  ip: req.ip,
+  userAgent: req.get('user-agent')
+});
+const OTP_CHALLENGE_TTL_MS = Number.parseInt(process.env.ADMIN_OTP_CHALLENGE_TTL_SECONDS || '300', 10) * 1000;
+const pendingAdminChallenges = new Map();
+
+const issueAdminChallenge = ({ adminId, phoneNumber, username }) => {
+  const challengeToken = jwt.sign(
+    {
+      typ: 'admin_otp_challenge',
+      adminId,
+      phoneNumber,
+      username,
+      nonce: `${Date.now()}_${Math.random().toString(36).slice(2)}`
+    },
+    ADMIN_JWT_SECRET,
+    { expiresIn: `${Math.max(30, Math.floor(OTP_CHALLENGE_TTL_MS / 1000))}s` }
+  );
+  pendingAdminChallenges.set(challengeToken, {
+    adminId,
+    phoneNumber,
+    username,
+    expiresAt: Date.now() + OTP_CHALLENGE_TTL_MS
+  });
+  setTimeout(() => {
+    const existing = pendingAdminChallenges.get(challengeToken);
+    if (existing && existing.expiresAt <= Date.now()) {
+      pendingAdminChallenges.delete(challengeToken);
+    }
+  }, OTP_CHALLENGE_TTL_MS + 5000);
+  return challengeToken;
+};
+
+const consumeAdminChallenge = (challengeToken, phoneNumber) => {
+  if (!challengeToken) return null;
+  const challenge = pendingAdminChallenges.get(challengeToken);
+  if (!challenge) return null;
+  if (challenge.expiresAt <= Date.now()) {
+    pendingAdminChallenges.delete(challengeToken);
+    return null;
+  }
+  if (String(challenge.phoneNumber) !== String(phoneNumber)) {
+    return null;
+  }
+  pendingAdminChallenges.delete(challengeToken);
+  return challenge;
+};
+
 // Helper to generate Admin Tokens
 const generateTokens = (id, phoneNumber) => {
-  const accessToken = jwt.sign({ id, phoneNumber, role: 'admin' }, process.env.ADMIN_JWT_SECRET, {
-    expiresIn: process.env.ADMIN_JWT_EXPIRES_IN || '30d',   // ← 30 days for admin
+  const accessToken = jwt.sign({ id, phoneNumber, role: 'admin' }, ADMIN_JWT_SECRET, {
+    expiresIn: process.env.ADMIN_JWT_EXPIRES_IN || '15m',
   });
-  const refreshToken = jwt.sign({ id, phoneNumber, role: 'admin' }, process.env.ADMIN_REFRESH_SECRET || 'admin_refresh_secret', {
-    expiresIn: process.env.ADMIN_REFRESH_TOKEN_EXPIRES_IN || '90d',  // ← 90 days refresh
+  const refreshToken = jwt.sign({ id, phoneNumber, role: 'admin' }, ADMIN_REFRESH_SECRET, {
+    expiresIn: process.env.ADMIN_REFRESH_TOKEN_EXPIRES_IN || '30d',
   });
   return { accessToken, refreshToken };
 };
@@ -48,7 +107,7 @@ const loginController = catchAsync(async (req, res, next) => {
 
   // Credentials are correct, send OTP via Firebase
   try {
-    await sendOTP(phoneNumber);
+    await sendOTP(phoneNumber, buildOtpMetadata(req));
   } catch (error) {
     const firebaseMsg = error.response?.data?.error?.message || error.message;
     return next(new AppError(`Failed to send OTP: ${firebaseMsg}`, 400));
@@ -57,6 +116,11 @@ const loginController = catchAsync(async (req, res, next) => {
   return res.status(200).json({
     success: true,
     message: `Credentials verified. OTP sent to ${phoneNumber}.`,
+    challengeToken: issueAdminChallenge({
+      adminId: adminUser.id,
+      phoneNumber: adminUser.phone_number,
+      username: adminUser.username
+    })
   });
 });
 
@@ -65,15 +129,20 @@ const loginController = catchAsync(async (req, res, next) => {
  * Body: { phoneNumber, code }
  */
 const verifyOtpController = catchAsync(async (req, res, next) => {
-  const { phoneNumber, code } = req.body;
+  const { phoneNumber, code, challengeToken } = req.body;
 
-  if (!phoneNumber || !code) {
-    return next(new AppError('phoneNumber and code are required.', 400));
+  if (!phoneNumber || !code || !challengeToken) {
+    return next(new AppError('phoneNumber, code and challengeToken are required.', 400));
+  }
+
+  const challenge = consumeAdminChallenge(challengeToken, phoneNumber);
+  if (!challenge) {
+    return next(new AppError('Invalid or expired login challenge. Please login again.', 401));
   }
 
   // Verify OTP via Firebase
   try {
-    await verifyOTP(phoneNumber, code);
+    await verifyOTP(phoneNumber, code, buildOtpMetadata(req));
   } catch (error) {
     if (error.code === 'NO_SESSION') {
       return next(new AppError('No OTP session found. Please login first.', 400));
@@ -154,7 +223,7 @@ const refreshTokenController = catchAsync(async (req, res, next) => {
 
   let decoded;
   try {
-    decoded = jwt.verify(refreshToken, process.env.ADMIN_REFRESH_SECRET || 'admin_refresh_secret');
+    decoded = jwt.verify(refreshToken, ADMIN_REFRESH_SECRET);
   } catch (err) {
     return next(new AppError('Invalid or expired refresh token.', 403));
   }

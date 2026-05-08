@@ -157,9 +157,10 @@ exports.adminAddExtraMealsByEntity = catchAsync(async (req, res, next) => {
     extraMeals: parsedExtra,
   });
 
-  await db.query('BEGIN');
+  const tx = await db.pool.connect();
   try {
-    await db.query(
+    await tx.query('BEGIN');
+    await tx.query(
       `UPDATE client_subscriptions
        SET total_meals = total_meals + $1,
            is_active = true,
@@ -169,14 +170,14 @@ exports.adminAddExtraMealsByEntity = catchAsync(async (req, res, next) => {
       [parsedExtra, newEndYmd, sub.id]
     );
 
-    await db.query(
+    await tx.query(
       `INSERT INTO subscription_meal_adjustments
         (subscription_id, adjusted_by, adjustment_type, meal_delta, reason)
        VALUES ($1, $2, 'extra_meals', $3, $4)`,
       [sub.id, adminId, parsedExtra, String(reason).trim()]
     );
 
-    const updated = await db.query(
+    const updated = await tx.query(
       `SELECT id, total_meals, used_meals, end_date, include_saturday
        FROM client_subscriptions
        WHERE id=$1`,
@@ -186,7 +187,7 @@ exports.adminAddExtraMealsByEntity = catchAsync(async (req, res, next) => {
     const u = updated.rows[0];
     const remainingAfter = Number(u.total_meals) - Number(u.used_meals);
 
-    await db.query('COMMIT');
+    await tx.query('COMMIT');
 
     return res.status(200).json({
       success: true,
@@ -204,8 +205,10 @@ exports.adminAddExtraMealsByEntity = catchAsync(async (req, res, next) => {
       },
     });
   } catch (e) {
-    await db.query('ROLLBACK');
+    await tx.query('ROLLBACK');
     throw e;
+  } finally {
+    tx.release();
   }
 });
 
