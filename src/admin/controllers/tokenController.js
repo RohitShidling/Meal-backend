@@ -515,13 +515,19 @@ exports.downloadExportSchoolsBundlePdf = catchAsync(async (req, res, next) => {
 
   const sections = [];
   let totalRows = 0;
-  for (const sch of schools.rows) {
-    const allRowsRes = await mealEligibilityService.fetchChildTokenRows({
-      schoolId: sch.school_id,
-      mealSizeId: null,
-      delivery,
-    });
-    const allRows = allRowsRes.rows || [];
+  const schoolRowsBatch = await Promise.all(
+    schools.rows.map(async (sch) => {
+      const allRowsRes = await mealEligibilityService.fetchChildTokenRows({
+        schoolId: sch.school_id,
+        mealSizeId: null,
+        delivery,
+      });
+      return { school: sch, rows: allRowsRes.rows || [] };
+    })
+  );
+  for (const pack of schoolRowsBatch) {
+    const sch = pack.school;
+    const allRows = pack.rows;
     totalRows += allRows.length;
 
     const grouped = groupSchoolRowsForExport(allRows, meals.rows);
@@ -581,12 +587,18 @@ exports.downloadExportCorporateBundlePdf = catchAsync(async (req, res, next) => 
 
   const sections = [];
   let totalRows = 0;
-  for (const loc of locations.rows) {
-    const q = await mealEligibilityService.fetchProfessionalTokenRows({
-      locationId: loc.location_id,
-      delivery,
-    });
-    const rows = q.rows;
+  const locationRowsBatch = await Promise.all(
+    locations.rows.map(async (loc) => {
+      const q = await mealEligibilityService.fetchProfessionalTokenRows({
+        locationId: loc.location_id,
+        delivery,
+      });
+      return { location: loc, rows: q.rows || [] };
+    })
+  );
+  for (const pack of locationRowsBatch) {
+    const loc = pack.location;
+    const rows = pack.rows;
     totalRows += rows.length;
     if (rows.length === 0) continue;
     sections.push({
@@ -651,13 +663,19 @@ exports.downloadExportAllBundlePdf = catchAsync(async (req, res, next) => {
 
   const realSections = [];
   let totalSchoolRows = 0;
-  for (const sch of schools.rows) {
-    const allRowsRes = await mealEligibilityService.fetchChildTokenRows({
-      schoolId: sch.school_id,
-      mealSizeId: null,
-      delivery,
-    });
-    const allRows = allRowsRes.rows || [];
+  const schoolRowsBatch = await Promise.all(
+    schools.rows.map(async (sch) => {
+      const allRowsRes = await mealEligibilityService.fetchChildTokenRows({
+        schoolId: sch.school_id,
+        mealSizeId: null,
+        delivery,
+      });
+      return { school: sch, rows: allRowsRes.rows || [] };
+    })
+  );
+  for (const pack of schoolRowsBatch) {
+    const sch = pack.school;
+    const allRows = pack.rows;
     totalSchoolRows += allRows.length;
 
     const grouped = groupSchoolRowsForExport(allRows, meals.rows);
@@ -682,12 +700,18 @@ exports.downloadExportAllBundlePdf = catchAsync(async (req, res, next) => {
 
   const corpBlocks = [];
   let totalCorpRows = 0;
-  for (const loc of locations.rows) {
-    const q = await mealEligibilityService.fetchProfessionalTokenRows({
-      locationId: loc.location_id,
-      delivery,
-    });
-    const crows = q.rows;
+  const corporateRowsBatch = await Promise.all(
+    locations.rows.map(async (loc) => {
+      const q = await mealEligibilityService.fetchProfessionalTokenRows({
+        locationId: loc.location_id,
+        delivery,
+      });
+      return { location: loc, rows: q.rows || [] };
+    })
+  );
+  for (const pack of corporateRowsBatch) {
+    const loc = pack.location;
+    const crows = pack.rows;
     totalCorpRows += crows.length;
     if (crows.length === 0) continue;
     corpBlocks.push({
@@ -1239,9 +1263,10 @@ exports.addExtraMeals = catchAsync(async (req, res, next) => {
     extraMeals: parsedExtra,
   });
 
-  await db.query('BEGIN');
+  const tx = await db.pool.connect();
   try {
-    const updated = await db.query(
+    await tx.query('BEGIN');
+    const updated = await tx.query(
       `UPDATE client_subscriptions
        SET total_meals = total_meals + $1,
            is_active = true,
@@ -1252,13 +1277,13 @@ exports.addExtraMeals = catchAsync(async (req, res, next) => {
       [parsedExtra, subscriptionId, newEndYmd]
     );
 
-    await db.query(
+    await tx.query(
       `INSERT INTO subscription_meal_adjustments
        (subscription_id, adjusted_by, adjustment_type, meal_delta, reason)
        VALUES ($1, $2, 'extra_meals', $3, $4)`,
       [subscriptionId, adminId, parsedExtra, reason.trim()]
     );
-    await db.query('COMMIT');
+    await tx.query('COMMIT');
 
     const item = updated.rows[0];
     res.status(200).json({
@@ -1274,8 +1299,10 @@ exports.addExtraMeals = catchAsync(async (req, res, next) => {
       },
     });
   } catch (error) {
-    await db.query('ROLLBACK');
+    await tx.query('ROLLBACK');
     throw error;
+  } finally {
+    tx.release();
   }
 });
 

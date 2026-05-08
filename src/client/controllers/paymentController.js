@@ -4,6 +4,10 @@ const AppError = require('../../common/utils/AppError');
 const catchAsync = require('../../common/utils/catchAsync');
 const mealEligibilityService = require('../../common/services/mealEligibilityService');
 const DEFAULT_MEAL_TIME = '1:00 PM';
+const DEFAULT_FRONTEND_REDIRECT = process.env.DEFAULT_FRONTEND_REDIRECT_URL;
+const MAX_HISTORY_LIMIT = 100;
+const GATEWAY_STATUS_CACHE_TTL_MS = Number.parseInt(process.env.PAYMENT_STATUS_CACHE_TTL_MS || '10000', 10);
+const gatewayStatusCache = new Map();
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
@@ -51,6 +55,50 @@ const parseBoolean = (value, defaultValue = true) => {
   return defaultValue;
 };
 
+const parsePositiveInt = (value, defaultValue) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : defaultValue;
+};
+
+const getAllowedFrontendOrigins = () => {
+  const configured = process.env.ALLOWED_PAYMENT_REDIRECT_ORIGINS || process.env.CORS_ORIGINS || '';
+  return configured
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+};
+
+const sanitizeFrontendRedirectUrl = (candidateUrl) => {
+  if (!candidateUrl) return DEFAULT_FRONTEND_REDIRECT || process.env.PHONEPE_REDIRECT_URL;
+  const allowlist = getAllowedFrontendOrigins();
+  if (allowlist.length === 0) return DEFAULT_FRONTEND_REDIRECT || process.env.PHONEPE_REDIRECT_URL;
+  try {
+    const parsed = new URL(candidateUrl);
+    if (allowlist.includes(parsed.origin)) return candidateUrl;
+    return DEFAULT_FRONTEND_REDIRECT || process.env.PHONEPE_REDIRECT_URL;
+  } catch {
+    return DEFAULT_FRONTEND_REDIRECT || process.env.PHONEPE_REDIRECT_URL;
+  }
+};
+
+const resolveApiBaseUrl = (req) => {
+  if (process.env.PUBLIC_API_BASE_URL) {
+    return process.env.PUBLIC_API_BASE_URL.replace(/\/$/, '');
+  }
+  return `${req.protocol}://${req.get('host')}`;
+};
+
+const getCachedGatewayStatus = async (txnId) => {
+  const now = Date.now();
+  const cached = gatewayStatusCache.get(txnId);
+  if (cached && cached.expiresAt > now) {
+    return cached.payload;
+  }
+  const payload = await phonepe.checkStatus(txnId);
+  gatewayStatusCache.set(txnId, { payload, expiresAt: now + GATEWAY_STATUS_CACHE_TTL_MS });
+  return payload;
+};
+
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 const parseYmdStrict = (input) => {
   if (!input) return null;
@@ -90,8 +138,8 @@ const computeMealCount = (startDate, durationDays, includeSaturday) => {
 /**
  * Core function: finalize ONE subscription after successful payment
  */
-const activateSingleSubscription = async (clientId, subscriptionId, entityType, entityId, orderId, requestedStartDate, includeSaturday) => {
-  const subRes = await db.query(
+const activateSingleSubscription = async (queryRunner, clientId, subscriptionId, entityType, entityId, orderId, requestedStartDate, includeSaturday) => {
+  const subRes = await queryRunner.query(
     'SELECT duration_days, duration_days_with_saturday, duration_days_without_saturday FROM subscriptions WHERE id=$1',
     [subscriptionId]
   );
@@ -100,8 +148,8 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
     ? Number(subRes.rows[0]?.duration_days_with_saturday || baseDurationDays)
     : Number(subRes.rows[0]?.duration_days_without_saturday || baseDurationDays);
 
-  const existingSub = await db.query(
-    'SELECT end_date, total_meals, used_meals FROM client_subscriptions WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true AND order_id != $4',
+  const existingSub = await queryRunner.query(
+    'SELECT end_date, total_meals, used_meals FROM client_subscriptions WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true AND order_id != $4 FOR UPDATE',
     [clientId, entityId, entityType, orderId]
   );
 
@@ -133,7 +181,7 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
   // Inclusive validity window: 7-day plan from May 7 => May 7..May 13 (not May 14).
   const endDateYmd = addDaysYmd(baseDateYmd, durationDays - 1);
 
-  await db.query(
+  await queryRunner.query(
     `INSERT INTO client_subscriptions (client_id,subscription_id,entity_type,entity_id,start_date,end_date,order_id,is_active,total_meals,used_meals,include_saturday)
      VALUES ($1,$2,$3,$4,$8,$5,$6,true,$7,$9,$10)
      ON CONFLICT (client_id,entity_id,entity_type) DO UPDATE SET
@@ -147,43 +195,98 @@ const activateSingleSubscription = async (clientId, subscriptionId, entityType, 
 /**
  * Master finalize: handles BOTH single-order and cart-order
  */
-const finalizeSuccessfulPayment = async (orderId) => {
-  // 1. Mark order as completed
-  await db.query('UPDATE orders SET status=$1, updated_at=NOW() WHERE id=$2', ['completed', orderId]);
+const finalizeSuccessfulPayment = async (orderId, source = 'unknown') => {
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderRes = await client.query('SELECT * FROM orders WHERE id=$1 FOR UPDATE', [orderId]);
+    if (orderRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return { finalized: false, reason: 'order_not_found' };
+    }
+    const order = orderRes.rows[0];
+    if (order.status === 'completed') {
+      await client.query('COMMIT');
+      return { finalized: false, reason: 'already_completed' };
+    }
+    if (order.status !== 'pending') {
+      await client.query('COMMIT');
+      return { finalized: false, reason: `invalid_order_status_${order.status}` };
+    }
 
-  const orderRes = await db.query('SELECT * FROM orders WHERE id=$1', [orderId]);
-  const order = orderRes.rows[0];
+    await client.query('UPDATE orders SET status=$1, updated_at=NOW(), payment_finalized_at=NOW(), payment_finalized_source=$2 WHERE id=$3', ['completed', source, orderId]);
 
-  if (order.order_type === 'cart' && order.cart_id) {
-    // CART ORDER — activate subscriptions for every cart item
-    const cartItems = await db.query('SELECT * FROM cart_items WHERE cart_id=$1', [order.cart_id]);
-    for (const item of cartItems.rows) {
+    if (order.order_type === 'cart' && order.cart_id) {
+      const cartItems = await client.query('SELECT * FROM cart_items WHERE cart_id=$1 FOR UPDATE', [order.cart_id]);
+      for (const item of cartItems.rows) {
+        await activateSingleSubscription(
+          client,
+          order.client_id,
+          item.subscription_id,
+          item.entity_type,
+          item.entity_id,
+          orderId,
+          item.start_date,
+          item.include_saturday !== false
+        );
+      }
+      await client.query("UPDATE carts SET status='checked_out', updated_at=NOW() WHERE id=$1", [order.cart_id]);
+    } else {
       await activateSingleSubscription(
+        client,
         order.client_id,
-        item.subscription_id,
-        item.entity_type,
-        item.entity_id,
+        order.subscription_id,
+        order.entity_type,
+        order.entity_id,
         orderId,
-        item.start_date,
-        item.include_saturday !== false
+        order.start_date,
+        order.include_saturday !== false
       );
     }
-    // Mark cart as checked out
-    await db.query("UPDATE carts SET status='checked_out', updated_at=NOW() WHERE id=$1", [order.cart_id]);
-  } else {
-    // SINGLE ORDER
-    await activateSingleSubscription(
-      order.client_id,
-      order.subscription_id,
-      order.entity_type,
-      order.entity_id,
-      orderId,
-      order.start_date,
-      order.include_saturday !== false
-    );
-  }
 
-  console.log(`✅ Payment finalized for order: ${orderId} (type: ${order.order_type})`);
+    await client.query('COMMIT');
+    return { finalized: true, reason: 'success' };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+const markTransactionStatus = async (merchantTransactionId, status, gatewayTransactionId, gatewayResponse) => {
+  const result = await db.query(
+    'UPDATE transactions SET status=$1, gateway_transaction_id=$2, gateway_response=$3, updated_at=NOW() WHERE merchant_transaction_id=$4 RETURNING *',
+    [status, gatewayTransactionId || null, gatewayResponse || null, merchantTransactionId]
+  );
+  return result.rows[0] || null;
+};
+
+const processSuccessfulTransaction = async (merchantTransactionId, gatewayTransactionId, gatewayPayload, source) => {
+  const txn = await markTransactionStatus(merchantTransactionId, 'success', gatewayTransactionId, gatewayPayload);
+  if (!txn) return null;
+  await finalizeSuccessfulPayment(txn.order_id, source);
+  return txn;
+};
+
+const processFailedTransaction = async (merchantTransactionId, gatewayPayload, source) => {
+  const txn = await markTransactionStatus(merchantTransactionId, 'failure', null, gatewayPayload);
+  if (!txn) return null;
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const orderRes = await client.query('SELECT status FROM orders WHERE id=$1 FOR UPDATE', [txn.order_id]);
+    if (orderRes.rows.length > 0 && orderRes.rows[0].status === 'pending') {
+      await client.query('UPDATE orders SET status=$1, updated_at=NOW(), payment_finalized_source=$2 WHERE id=$3', ['failed', source, txn.order_id]);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+  return txn;
 };
 
 // ─── SINGLE PAYMENT ──────────────────────────────────────────────────────────
@@ -244,8 +347,8 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
   );
 
   const clientData = await db.query('SELECT phone_number FROM clients WHERE id=$1', [clientId]);
-  const finalRedirectUrl = customRedirect || process.env.PHONEPE_REDIRECT_URL || 'https://yourdomain.com/payment-result';
-  const backendCallbackUrl = `${req.protocol}://${req.get('host')}/api/client/payment/callback?tid=${merchantTransactionId}&frontendUrl=${encodeURIComponent(finalRedirectUrl)}`;
+  const finalRedirectUrl = sanitizeFrontendRedirectUrl(customRedirect || process.env.PHONEPE_REDIRECT_URL || DEFAULT_FRONTEND_REDIRECT);
+  const backendCallbackUrl = `${resolveApiBaseUrl(req)}/api/client/payment/callback?tid=${merchantTransactionId}&frontendUrl=${encodeURIComponent(finalRedirectUrl)}`;
 
   const response = await phonepe.initiatePayment({
     transactionId: merchantTransactionId,
@@ -284,39 +387,83 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
   const clientId = req.user.id;
   const { redirectUrl: customRedirect } = req.body;
 
-  const cartRes = await db.query("SELECT * FROM carts WHERE client_id=$1 AND status='active'", [clientId]);
-  if (cartRes.rows.length === 0) return next(new AppError('Your cart is empty', 400));
+  const checkoutClient = await db.pool.connect();
+  let cart;
+  let items;
+  let totalAmount;
+  let order;
+  let merchantTransactionId;
+  try {
+    await checkoutClient.query('BEGIN');
+    const cartRes = await checkoutClient.query("SELECT * FROM carts WHERE client_id=$1 AND status='active' FOR UPDATE", [clientId]);
+    if (cartRes.rows.length === 0) {
+      await checkoutClient.query('ROLLBACK');
+      return next(new AppError('Your cart is empty', 400));
+    }
 
-  const cart = cartRes.rows[0];
-  const items = await db.query(
-    `SELECT ci.*, s.plan_name, s.meal_size_id, ms.display_name AS meal_size_name
-     FROM cart_items ci
-     JOIN subscriptions s ON ci.subscription_id=s.id
-     LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
-     WHERE ci.cart_id=$1`,
-    [cart.id]
-  );
-  if (items.rows.length === 0) return next(new AppError('Your cart has no items', 400));
+    cart = cartRes.rows[0];
+    const itemsRes = await checkoutClient.query(
+      `SELECT ci.*, s.plan_name, s.meal_size_id,
+              s.price, s.price_with_saturday, s.price_without_saturday, s.is_active as subscription_active,
+              ms.display_name AS meal_size_name
+       FROM cart_items ci
+       JOIN subscriptions s ON ci.subscription_id=s.id
+       LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
+       WHERE ci.cart_id=$1
+       FOR UPDATE`,
+      [cart.id]
+    );
+    if (itemsRes.rows.length === 0) {
+      await checkoutClient.query('ROLLBACK');
+      return next(new AppError('Your cart has no items', 400));
+    }
+    items = itemsRes;
 
-  const totalAmount = parseFloat(cart.total_amount);
+    for (const item of items.rows) {
+      if (!item.subscription_active) {
+        await checkoutClient.query('ROLLBACK');
+        return next(new AppError(`Plan ${item.plan_name} is no longer active. Please refresh cart.`, 409));
+      }
+      const latestPrice = Number(item.include_saturday !== false
+        ? (item.price_with_saturday ?? item.price)
+        : (item.price_without_saturday ?? item.price));
+      const storedPrice = Number(item.unit_price);
+      if (!Number.isFinite(latestPrice) || latestPrice < 0) {
+        await checkoutClient.query('ROLLBACK');
+        return next(new AppError(`Invalid pricing for plan ${item.plan_name}.`, 500));
+      }
+      if (Math.abs(latestPrice - storedPrice) > 0.0001) {
+        await checkoutClient.query('ROLLBACK');
+        return next(new AppError(`Price changed for ${item.entity_name || item.plan_name}. Please refresh your cart before checkout.`, 409));
+      }
+    }
 
-  // Create a single cart-order (subscription_id from first item for reference, entity_type='cart')
-  const orderResult = await db.query(
-    `INSERT INTO orders (client_id,subscription_id,entity_type,entity_id,amount,status,order_type,cart_id)
-     VALUES ($1,$2,'cart','CART',   $3,'pending','cart',$4) RETURNING *`,
-    [clientId, items.rows[0].subscription_id, totalAmount, cart.id]
-  );
-  const order = orderResult.rows[0];
+    totalAmount = items.rows.reduce((sum, item) => sum + Number(item.unit_price || 0), 0);
+    await checkoutClient.query('UPDATE carts SET total_amount=$1, updated_at=NOW() WHERE id=$2', [totalAmount, cart.id]);
 
-  const merchantTransactionId = `TXNC_${order.id.replace('ORD-', '')}_${Date.now()}`;
-  await db.query(
-    'INSERT INTO transactions (order_id,merchant_transaction_id,amount,status) VALUES ($1,$2,$3,$4)',
-    [order.id, merchantTransactionId, totalAmount, 'pending']
-  );
+    const orderResult = await checkoutClient.query(
+      `INSERT INTO orders (client_id,subscription_id,entity_type,entity_id,amount,status,order_type,cart_id)
+       VALUES ($1,$2,'cart','CART',$3,'pending','cart',$4) RETURNING *`,
+      [clientId, items.rows[0].subscription_id, totalAmount, cart.id]
+    );
+    order = orderResult.rows[0];
+
+    merchantTransactionId = `TXNC_${order.id.replace('ORD-', '')}_${Date.now()}`;
+    await checkoutClient.query(
+      'INSERT INTO transactions (order_id,merchant_transaction_id,amount,status) VALUES ($1,$2,$3,$4)',
+      [order.id, merchantTransactionId, totalAmount, 'pending']
+    );
+    await checkoutClient.query('COMMIT');
+  } catch (error) {
+    await checkoutClient.query('ROLLBACK');
+    throw error;
+  } finally {
+    checkoutClient.release();
+  }
 
   const clientData = await db.query('SELECT phone_number FROM clients WHERE id=$1', [clientId]);
-  const finalRedirectUrl = customRedirect || process.env.PHONEPE_REDIRECT_URL || 'https://yourdomain.com/payment-result';
-  const backendCallbackUrl = `${req.protocol}://${req.get('host')}/api/client/payment/callback?tid=${merchantTransactionId}&frontendUrl=${encodeURIComponent(finalRedirectUrl)}`;
+  const finalRedirectUrl = sanitizeFrontendRedirectUrl(customRedirect || process.env.PHONEPE_REDIRECT_URL || DEFAULT_FRONTEND_REDIRECT);
+  const backendCallbackUrl = `${resolveApiBaseUrl(req)}/api/client/payment/callback?tid=${merchantTransactionId}&frontendUrl=${encodeURIComponent(finalRedirectUrl)}`;
 
   const response = await phonepe.initiatePayment({
     transactionId: merchantTransactionId,
@@ -358,7 +505,30 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
  * @route POST /api/client/payment/webhook
  */
 exports.handleWebhook = catchAsync(async (req, res) => {
-  const payload = req.body.response || req.body.request;
+  const rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body || {});
+  const xVerify = req.headers['x-verify'];
+  const webhookUsername = process.env.PHONEPE_WEBHOOK_USERNAME;
+  const webhookPassword = process.env.PHONEPE_WEBHOOK_PASSWORD;
+  if (!xVerify || !webhookUsername || !webhookPassword) {
+    return res.status(401).send('Missing webhook verification headers');
+  }
+  let isValidSignature = false;
+  try {
+    isValidSignature = phonepe.validateCallback(webhookUsername, webhookPassword, xVerify, rawBody);
+  } catch {
+    return res.status(401).send('Invalid signature');
+  }
+  if (!isValidSignature) {
+    return res.status(401).send('Invalid signature');
+  }
+
+  let body;
+  try {
+    body = Buffer.isBuffer(req.body) ? JSON.parse(rawBody) : req.body;
+  } catch {
+    return res.status(400).send('Malformed webhook body');
+  }
+  const payload = body.response || body.request;
   if (!payload) return res.status(400).send('Invalid Webhook');
 
   let decoded;
@@ -374,17 +544,10 @@ exports.handleWebhook = catchAsync(async (req, res) => {
   const mtxnId = data.merchantTransactionId || data.merchantOrderId;
   const status = (success && code === 'PAYMENT_SUCCESS') ? 'success' : 'failure';
 
-  const txnResult = await db.query(
-    'UPDATE transactions SET status=$1, gateway_transaction_id=$2, gateway_response=$3, updated_at=NOW() WHERE merchant_transaction_id=$4 RETURNING *',
-    [status, data.transactionId, decoded, mtxnId]
-  );
-
-  if (txnResult.rows.length > 0) {
-    if (status === 'success') {
-      await finalizeSuccessfulPayment(txnResult.rows[0].order_id);
-    } else {
-      await db.query('UPDATE orders SET status=$1, updated_at=NOW() WHERE id=$2', ['failed', txnResult.rows[0].order_id]);
-    }
+  if (status === 'success') {
+    await processSuccessfulTransaction(mtxnId, data.transactionId, decoded, 'webhook');
+  } else {
+    await processFailedTransaction(mtxnId, decoded, 'webhook');
   }
 
   res.status(200).send('OK');
@@ -399,13 +562,13 @@ exports.handleWebhook = catchAsync(async (req, res) => {
 exports.handleRedirectCallback = catchAsync(async (req, res) => {
   // PhonePe usually sends a POST request with transactionId, code, etc.
   const txnId = (req.body && req.body.transactionId) || req.query.tid || req.query.transactionId;
-  const frontendUrl = req.query.frontendUrl || 'https://yourdomain.com/payment-result';
+  const frontendUrl = sanitizeFrontendRedirectUrl(req.query.frontendUrl || process.env.PHONEPE_REDIRECT_URL || DEFAULT_FRONTEND_REDIRECT);
 
   if (!txnId) return res.redirect(`${frontendUrl}?status=error&message=NoTransactionId`);
 
   try {
     // 1. Instantly check status with PhonePe
-    const gwRes = await phonepe.checkStatus(txnId);
+    const gwRes = await getCachedGatewayStatus(txnId);
     
     // 2. Update DB locally
     if (gwRes.success && gwRes.data) {
@@ -414,19 +577,14 @@ exports.handleRedirectCallback = catchAsync(async (req, res) => {
       const isSuccess = ['COMPLETED', 'SUCCESS', 'PAYMENT_SUCCESS'].includes(gwState);
       const isFailure = ['FAILED', 'FAILURE', 'ERROR'].includes(gwState);
 
-      const txnRes = await db.query('SELECT * FROM transactions WHERE merchant_transaction_id=$1 AND status=$2', [txnId, 'pending']);
+      const txnRes = await db.query('SELECT * FROM transactions WHERE merchant_transaction_id=$1', [txnId]);
       
       if (txnRes.rows.length > 0) {
         const localTxn = txnRes.rows[0];
         if (isSuccess) {
-          await db.query(
-            'UPDATE transactions SET status=$1,gateway_transaction_id=$2,gateway_response=$3,updated_at=NOW() WHERE merchant_transaction_id=$4',
-            ['success', gwRes.data.transactionId, gwRes.data, txnId]
-          );
-          await finalizeSuccessfulPayment(localTxn.order_id);
+          await processSuccessfulTransaction(txnId, gwRes.data.transactionId, gwRes.data, 'redirect');
         } else if (isFailure) {
-          await db.query('UPDATE transactions SET status=$1,updated_at=NOW() WHERE merchant_transaction_id=$2', ['failure', txnId]);
-          await db.query('UPDATE orders SET status=$1,updated_at=NOW() WHERE id=$2', ['failed', localTxn.order_id]);
+          await processFailedTransaction(txnId, gwRes.data, 'redirect');
         }
       }
     }
@@ -480,7 +638,7 @@ exports.checkPaymentStatus = catchAsync(async (req, res, next) => {
   }
 
   // Poll PhonePe
-  const gatewayRes = await phonepe.checkStatus(txnId);
+  const gatewayRes = await getCachedGatewayStatus(txnId);
   if (!gatewayRes.success || !gatewayRes.data) {
     // Return local DB data even if gateway fails
     return res.status(200).json({
@@ -496,16 +654,11 @@ exports.checkPaymentStatus = catchAsync(async (req, res, next) => {
 
   // Sync if still pending
   if (isSuccess && localTxn.status === 'pending') {
-    await db.query(
-      'UPDATE transactions SET status=$1,gateway_transaction_id=$2,gateway_response=$3,updated_at=NOW() WHERE merchant_transaction_id=$4',
-      ['success', gatewayRes.data.transactionId, gatewayRes.data, txnId]
-    );
-    await finalizeSuccessfulPayment(localTxn.order_id);
+    await processSuccessfulTransaction(txnId, gatewayRes.data.transactionId, gatewayRes.data, 'status_check');
     localTxn.status = 'success';
     localTxn.order_status = 'completed';
   } else if (isFailure && localTxn.status === 'pending') {
-    await db.query('UPDATE transactions SET status=$1,updated_at=NOW() WHERE merchant_transaction_id=$2', ['failure', txnId]);
-    await db.query('UPDATE orders SET status=$1,updated_at=NOW() WHERE id=$2', ['failed', localTxn.order_id]);
+    await processFailedTransaction(txnId, gatewayRes.data, 'status_check');
     localTxn.status = 'failure';
     localTxn.order_status = 'failed';
   }
@@ -565,9 +718,7 @@ exports.statusPage = catchAsync(async (req, res) => {
   let amountPaid = null;
   let entityName = null;
 
-  const gwRes = await phonepe.checkStatus(tid);
-  // DEBUG: log raw PhonePe response to identify actual field names
-  console.log('📲 PhonePe statusPage RAW for', tid, ':', JSON.stringify(gwRes, null, 2));
+  const gwRes = await getCachedGatewayStatus(tid);
 
   if (gwRes.success && gwRes.data) {
     const rawState = gwRes.data.state || gwRes.data.status || gwRes.data.paymentState || '';
@@ -581,19 +732,14 @@ exports.statusPage = catchAsync(async (req, res) => {
     const isSuccess = ['COMPLETED', 'SUCCESS'].includes(state.toUpperCase());
     const isFailure = ['FAILED', 'FAILURE'].includes(state.toUpperCase());
 
-    if (isSuccess && localTxn.status === 'pending') {
+  if (isSuccess && localTxn.status === 'pending') {
       try {
-        await db.query(
-          'UPDATE transactions SET status=$1,gateway_transaction_id=$2,gateway_response=$3,updated_at=NOW() WHERE merchant_transaction_id=$4',
-          ['success', gwRes.data?.transactionId || null, gwRes.data || null, tid]
-        );
-        await finalizeSuccessfulPayment(localTxn.order_id);
+        await processSuccessfulTransaction(tid, gwRes.data?.transactionId || null, gwRes.data || null, 'status_page');
       } catch (err) {
         console.error('❌ Finalize error on redirect:', err.message);
       }
     } else if (isFailure && localTxn.status === 'pending') {
-      await db.query('UPDATE transactions SET status=$1,updated_at=NOW() WHERE merchant_transaction_id=$2', ['failure', tid]);
-      await db.query('UPDATE orders SET status=$1,updated_at=NOW() WHERE id=$2', ['failed', localTxn.order_id]);
+      await processFailedTransaction(tid, gwRes.data || null, 'status_page');
     }
 
     // Fetch entity name for display
@@ -653,7 +799,8 @@ exports.statusPage = catchAsync(async (req, res) => {
  */
 exports.getMyPaymentHistory = catchAsync(async (req, res) => {
   const clientId = req.user.id;
-  const { page = 1, limit = 10 } = req.query;
+  const page = parsePositiveInt(req.query.page, 1);
+  const limit = Math.min(parsePositiveInt(req.query.limit, 10), MAX_HISTORY_LIMIT);
   const offset = (page - 1) * limit;
 
   const result = await db.query(
@@ -683,7 +830,7 @@ exports.getMyPaymentHistory = catchAsync(async (req, res) => {
 
   res.status(200).json({
     success: true,
-    pagination: { total: parseInt(total.rows[0].count), page: parseInt(page), limit: parseInt(limit) },
+    pagination: { total: parseInt(total.rows[0].count, 10), page, limit },
     data: result.rows
   });
 });
@@ -767,8 +914,7 @@ exports.forceSync = catchAsync(async (req, res, next) => {
     });
   }
 
-  const gwRes = await phonepe.checkStatus(txnId);
-  console.log('🔄 Force-sync RAW response:', JSON.stringify(gwRes, null, 2));
+  const gwRes = await getCachedGatewayStatus(txnId);
 
   if (!gwRes.success || !gwRes.data) {
     return next(new AppError('Unable to reach PhonePe gateway. Try again in a few seconds.', 502));
@@ -780,15 +926,10 @@ exports.forceSync = catchAsync(async (req, res, next) => {
   const isFailure = ['FAILED', 'FAILURE', 'ERROR'].includes(gwState);
 
   if (isSuccess) {
-    await db.query(
-      'UPDATE transactions SET status=$1,gateway_transaction_id=$2,gateway_response=$3,updated_at=NOW() WHERE merchant_transaction_id=$4',
-      ['success', gwRes.data.transactionId, gwRes.data, txnId]
-    );
-    await finalizeSuccessfulPayment(localTxn.order_id);
+    await processSuccessfulTransaction(txnId, gwRes.data.transactionId, gwRes.data, 'force_sync');
     return res.status(200).json({ success: true, message: 'Payment synced and subscription activated!', gatewayState: gwState });
   } else if (isFailure) {
-    await db.query('UPDATE transactions SET status=$1,updated_at=NOW() WHERE merchant_transaction_id=$2', ['failure', txnId]);
-    await db.query('UPDATE orders SET status=$1,updated_at=NOW() WHERE id=$2', ['failed', localTxn.order_id]);
+    await processFailedTransaction(txnId, gwRes.data, 'force_sync');
     return res.status(200).json({ success: true, message: 'Payment marked as failed.', gatewayState: gwState });
   } else {
     return res.status(200).json({ success: true, message: `Payment still ${gwState}. Not finalized yet.`, gatewayState: gwState });

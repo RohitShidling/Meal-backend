@@ -2,6 +2,16 @@ const db = require('../../common/database');
 const catchAsync = require('../../common/utils/catchAsync');
 const AppError = require('../../common/utils/AppError');
 
+const parsePagination = (pageRaw, limitRaw, defaultLimit = 20, maxLimit = 100) => {
+  const parsedPage = Number.parseInt(pageRaw, 10);
+  const parsedLimit = Number.parseInt(limitRaw, 10);
+  const page = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+  const limit = Number.isInteger(parsedLimit) && parsedLimit > 0
+    ? Math.min(parsedLimit, maxLimit)
+    : defaultLimit;
+  return { page, limit, offset: (page - 1) * limit };
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER: shared filter builder
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,8 +77,8 @@ exports.getSubscriptionOverview = catchAsync(async (req, res) => {
  * @route GET /api/admin/subscriptions/analytics/by-school
  */
 exports.getBySchool = catchAsync(async (req, res) => {
-  const { schoolId, isActive, startDate, endDate, page = 1, limit = 20 } = req.query;
-  const offset = (page - 1) * limit;
+  const { schoolId, isActive, startDate, endDate } = req.query;
+  const { page, limit, offset } = parsePagination(req.query.page, req.query.limit, 20, 100);
   const params = [];
   let paramCount = 1;
   let where = 'WHERE sc.id IS NOT NULL';
@@ -134,8 +144,8 @@ exports.getBySchool = catchAsync(async (req, res) => {
  */
 exports.getChildrenBySchool = catchAsync(async (req, res, next) => {
   const { schoolId } = req.params;
-  const { isActive, page = 1, limit = 20 } = req.query;
-  const offset = (page - 1) * limit;
+  const { isActive } = req.query;
+  const { page, limit, offset } = parsePagination(req.query.page, req.query.limit, 20, 100);
 
   const school = await db.query('SELECT id, name FROM schools WHERE id=$1', [schoolId]);
   if (school.rows.length === 0) return next(new AppError('School not found', 404));
@@ -204,8 +214,8 @@ exports.getChildrenBySchool = catchAsync(async (req, res, next) => {
  * @route GET /api/admin/subscriptions/analytics/teachers
  */
 exports.getTeacherSubscriptions = catchAsync(async (req, res) => {
-  const { schoolName, isActive, startDate, endDate, page = 1, limit = 20 } = req.query;
-  const offset = (page - 1) * limit;
+  const { schoolName, isActive, startDate, endDate } = req.query;
+  const { page, limit, offset } = parsePagination(req.query.page, req.query.limit, 20, 100);
   const params = [];
   let paramCount = 1;
   let where = "WHERE cs.entity_type = 'teacher'";
@@ -274,8 +284,8 @@ exports.getTeacherSubscriptions = catchAsync(async (req, res) => {
  * @route GET /api/admin/subscriptions/analytics/professionals
  */
 exports.getProfessionalSubscriptions = catchAsync(async (req, res) => {
-  const { locationId, city, isActive, startDate, endDate, page = 1, limit = 20 } = req.query;
-  const offset = (page - 1) * limit;
+  const { locationId, city, isActive, startDate, endDate } = req.query;
+  const { page, limit, offset } = parsePagination(req.query.page, req.query.limit, 20, 100);
   const params = [];
   let paramCount = 1;
   let where = "WHERE cs.entity_type = 'professional'";
@@ -352,7 +362,8 @@ exports.getProfessionalSubscriptions = catchAsync(async (req, res) => {
  */
 exports.getExpiringSoon = catchAsync(async (req, res) => {
   const { days = 7, entityType } = req.query;
-  const params = [parseInt(days)];
+  const safeDays = Number.isInteger(Number.parseInt(days, 10)) ? Number.parseInt(days, 10) : 7;
+  const params = [safeDays];
   let entityFilter = '';
   if (entityType) {
     entityFilter = ` AND cs.entity_type = $2`;
@@ -387,14 +398,14 @@ exports.getExpiringSoon = catchAsync(async (req, res) => {
     LEFT JOIN corporate_locations cl ON pp.corporate_location_id = cl.id
     WHERE cs.is_active = true
       AND cs.end_date > NOW()
-      AND cs.end_date <= NOW() + ($1 || ' days')::INTERVAL
+      AND cs.end_date <= NOW() + ($1::int * INTERVAL '1 day')
       ${entityFilter}
     ORDER BY cs.end_date ASC
   `, params);
 
   res.status(200).json({
     success: true,
-    message: `Subscriptions expiring within ${days} days`,
+    message: `Subscriptions expiring within ${safeDays} days`,
     count: result.rowCount,
     data: result.rows
   });
@@ -409,8 +420,9 @@ exports.getExpiringSoon = catchAsync(async (req, res) => {
  * @route GET /api/admin/subscriptions/analytics/all-members
  */
 exports.getAllMembersSubscriptionStatus = catchAsync(async (req, res) => {
-  const { entityType, status, schoolId, page = 1, limit = 20 } = req.query;
-  const offset = (page - 1) * limit;
+  const { entityType, status, schoolId } = req.query;
+  const { page, limit, offset } = parsePagination(req.query.page, req.query.limit, 20, 100);
+  const params = [];
 
   // ── CHILDREN ────────────────────────────────────────────────────────────────
   let childQuery = `
@@ -441,7 +453,10 @@ exports.getAllMembersSubscriptionStatus = catchAsync(async (req, res) => {
     LEFT JOIN orders o ON cs.order_id = o.id
     WHERE 1=1
   `;
-  if (schoolId) childQuery += ` AND ch.school_id = '${schoolId}'`;
+  if (schoolId) {
+    params.push(schoolId);
+    childQuery += ` AND ch.school_id = $${params.length}`;
+  }
 
   // ── TEACHERS ────────────────────────────────────────────────────────────────
   const teacherQuery = `
@@ -535,6 +550,7 @@ exports.getAllMembersSubscriptionStatus = catchAsync(async (req, res) => {
   else if (status === 'never_subscribed') outerWhere = "WHERE combined.status = 'never_subscribed'";
   else if (status === 'subscribed')       outerWhere = "WHERE combined.status IN ('active','expired')";
 
+  params.push(limit, offset);
   const finalSQL = `
     SELECT * FROM (${unionSQL}) AS combined
     ${outerWhere}
@@ -546,7 +562,7 @@ exports.getAllMembersSubscriptionStatus = catchAsync(async (req, res) => {
         ELSE 4
       END,
       combined.days_remaining ASC NULLS LAST
-    LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}
+    LIMIT $${params.length - 1} OFFSET $${params.length}
   `;
 
   const countSQL = `
@@ -554,8 +570,8 @@ exports.getAllMembersSubscriptionStatus = catchAsync(async (req, res) => {
   `;
 
   const [result, countRes] = await Promise.all([
-    db.query(finalSQL),
-    db.query(countSQL)
+    db.query(finalSQL, params),
+    db.query(countSQL, params.slice(0, params.length - 2))
   ]);
 
   // Summary counts
@@ -567,7 +583,7 @@ exports.getAllMembersSubscriptionStatus = catchAsync(async (req, res) => {
       COUNT(*) AS total
     FROM (${unionSQL}) AS combined
   `;
-  const summary = await db.query(summarySQL);
+  const summary = await db.query(summarySQL, params.slice(0, params.length - 2));
 
   res.status(200).json({
     success: true,
@@ -594,8 +610,14 @@ exports.getAllMembersSubscriptionStatus = catchAsync(async (req, res) => {
  * @route GET /api/admin/subscriptions/analytics/not-subscribed
  */
 exports.getUnsubscribedMembers = catchAsync(async (req, res) => {
-  const { entityType, schoolId, page = 1, limit = 20 } = req.query;
-  const offset = (page - 1) * limit;
+  const { entityType, schoolId } = req.query;
+  const { page, limit, offset } = parsePagination(req.query.page, req.query.limit, 20, 100);
+  const params = [];
+  let childSchoolFilter = '';
+  if (schoolId) {
+    params.push(schoolId);
+    childSchoolFilter = `AND ch.school_id = $${params.length}`;
+  }
 
   const childQuery = `
     SELECT 'child' AS entity_type, ch.id AS entity_id, ch.name AS entity_name,
@@ -608,7 +630,7 @@ exports.getUnsubscribedMembers = catchAsync(async (req, res) => {
       SELECT 1 FROM client_subscriptions cs
       WHERE cs.entity_type = 'child' AND cs.entity_id = ch.id AND cs.is_active = true
     )
-    ${schoolId ? `AND ch.school_id = '${schoolId}'` : ''}
+    ${childSchoolFilter}
   `;
 
   const teacherQuery = `
@@ -643,14 +665,18 @@ exports.getUnsubscribedMembers = catchAsync(async (req, res) => {
 
   const unionSQL = unionParts.join(' UNION ALL ');
 
+  params.push(limit, offset);
   const finalSQL = `
     SELECT * FROM (${unionSQL}) AS unsubscribed
     ORDER BY entity_type, entity_name
-    LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}
+    LIMIT $${params.length - 1} OFFSET $${params.length}
   `;
   const countSQL = `SELECT COUNT(*) FROM (${unionSQL}) AS unsubscribed`;
 
-  const [result, countRes] = await Promise.all([db.query(finalSQL), db.query(countSQL)]);
+  const [result, countRes] = await Promise.all([
+    db.query(finalSQL, params),
+    db.query(countSQL, params.slice(0, params.length - 2))
+  ]);
 
   res.status(200).json({
     success: true,
@@ -669,8 +695,8 @@ exports.getUnsubscribedMembers = catchAsync(async (req, res) => {
  * @route GET /api/admin/subscriptions/analytics/active-meal-status
  */
 exports.getActiveSubscriptionsWithMeals = catchAsync(async (req, res) => {
-  const { entityType, page = 1, limit = 50 } = req.query;
-  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const { entityType } = req.query;
+  const { page, limit, offset } = parsePagination(req.query.page, req.query.limit, 50, 200);
   
   const params = [];
   let where = "WHERE cs.is_active = true AND cs.end_date > NOW()";
@@ -714,7 +740,7 @@ exports.getActiveSubscriptionsWithMeals = catchAsync(async (req, res) => {
     ${where}
     ORDER BY remaining_meals ASC, cs.end_date ASC
     LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-  `, [...params, parseInt(limit), offset]);
+  `, [...params, limit, offset]);
 
   const countRes = await db.query(
     `SELECT COUNT(*) FROM client_subscriptions cs ${where}`,

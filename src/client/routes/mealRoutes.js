@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const mealController = require('../controllers/mealController');
 const clientAuthMiddleware = require('../middlewares/authMiddleware');
+const { validateMealSkipRequest, validateSkipIdParam } = require('../validators/mealValidator');
 
 router.use(clientAuthMiddleware);
 
@@ -226,7 +227,7 @@ router.get('/status', mealController.getMealStatus);
  *       409:
  *         description: Overlapping skip exists
  */
-router.post('/skip', mealController.requestMealSkip);
+router.post('/skip', validateMealSkipRequest, mealController.requestMealSkip);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VIEW MY SKIPS
@@ -295,6 +296,6 @@ router.get('/skips', mealController.getMyMealSkips);
  *       404:
  *         description: Skip not found
  */
-router.delete('/skip/:skipId', mealController.cancelMealSkip);
+router.delete('/skip/:skipId', validateSkipIdParam, mealController.cancelMealSkip);
 
 module.exports = router;
