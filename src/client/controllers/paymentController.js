@@ -102,12 +102,22 @@ const getCachedGatewayStatus = async (txnId) => {
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 const parseYmdStrict = (input) => {
   if (!input) return null;
+  if (input instanceof Date) {
+    if (Number.isNaN(input.getTime())) return null;
+    const yy = input.getUTCFullYear();
+    const mm = String(input.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(input.getUTCDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  }
   const raw = String(input).trim();
-  if (!YMD.test(raw)) return null;
-  const [y, m, d] = raw.split('-').map(Number);
+  const normalized = YMD.test(raw)
+    ? raw
+    : (raw.length >= 10 && YMD.test(raw.slice(0, 10)) ? raw.slice(0, 10) : null);
+  if (!normalized) return null;
+  const [y, m, d] = normalized.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
   if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
-  return raw;
+  return normalized;
 };
 
 const addDaysYmd = (ymd, days) => {
@@ -135,6 +145,55 @@ const computeMealCount = (startDate, durationDays, includeSaturday) => {
   return count;
 };
 
+const recordSubscriptionHistory = async (dbClient, payload) => {
+  await dbClient.query(
+    `INSERT INTO client_subscription_history (
+      client_subscription_id,
+      client_id,
+      entity_type,
+      entity_id,
+      previous_subscription_id,
+      previous_order_id,
+      previous_start_date,
+      previous_end_date,
+      previous_total_meals,
+      previous_used_meals,
+      previous_include_saturday,
+      new_subscription_id,
+      new_order_id,
+      new_start_date,
+      new_end_date,
+      new_total_meals,
+      new_used_meals,
+      new_include_saturday,
+      change_reason
+    ) VALUES (
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
+    )`,
+    [
+      payload.clientSubscriptionId,
+      payload.clientId,
+      payload.entityType,
+      payload.entityId,
+      payload.previousSubscriptionId,
+      payload.previousOrderId,
+      payload.previousStartDate,
+      payload.previousEndDate,
+      payload.previousTotalMeals,
+      payload.previousUsedMeals,
+      payload.previousIncludeSaturday,
+      payload.newSubscriptionId,
+      payload.newOrderId,
+      payload.newStartDate,
+      payload.newEndDate,
+      payload.newTotalMeals,
+      payload.newUsedMeals,
+      payload.newIncludeSaturday,
+      payload.changeReason,
+    ]
+  );
+};
+
 /**
  * Core function: finalize ONE subscription after successful payment
  */
@@ -152,25 +211,24 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
     'SELECT end_date, total_meals, used_meals FROM client_subscriptions WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true AND order_id != $4 FOR UPDATE',
     [clientId, entityId, entityType, orderId]
   );
+  const currentSub = currentSubRes.rows[0] || null;
 
   const sessionToday = mealEligibilityService.parseSessionToday();
   let baseDateYmd = parseYmdStrict(requestedStartDate) || sessionToday;
-  let baseDate = new Date(`${baseDateYmd}T00:00:00`);
   let newTotalMeals = computeMealCount(baseDateYmd, durationDays, includeSaturday);
   let newUsedMeals = 0;
 
-  if (existingSub.rows.length > 0) {
-    const currentEndYmd = String(existingSub.rows[0].end_date).slice(0, 10);
+  if (currentSub && currentSub.is_active && currentSub.order_id !== orderId) {
+    const currentEndYmd = String(currentSub.end_date).slice(0, 10);
     if (currentEndYmd >= sessionToday) {
       const nextAfterCurrentEnd = addDaysYmd(currentEndYmd, 1);
       // No overlap and no day duplication: new pack starts the day after existing end.
       if (nextAfterCurrentEnd > baseDateYmd) {
         baseDateYmd = nextAfterCurrentEnd;
-        baseDate = new Date(`${baseDateYmd}T00:00:00`);
       }
 
-      const oldTotal = existingSub.rows[0].total_meals || 0;
-      const oldUsed = existingSub.rows[0].used_meals || 0;
+      const oldTotal = currentSub.total_meals || 0;
+      const oldUsed = currentSub.used_meals || 0;
 
       // Preserve old totals and used, just add new meals to total
       newTotalMeals = oldTotal + computeMealCount(baseDateYmd, durationDays, includeSaturday);
@@ -187,9 +245,34 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
      ON CONFLICT (client_id,entity_id,entity_type) DO UPDATE SET
        start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date, subscription_id=EXCLUDED.subscription_id,
        order_id=EXCLUDED.order_id, is_active=true, updated_at=NOW(),
-       total_meals=EXCLUDED.total_meals, used_meals=EXCLUDED.used_meals, include_saturday=EXCLUDED.include_saturday`,
+       total_meals=EXCLUDED.total_meals, used_meals=EXCLUDED.used_meals, include_saturday=EXCLUDED.include_saturday
+     RETURNING *`,
     [clientId, subscriptionId, entityType, entityId, endDateYmd, orderId, newTotalMeals, baseDateYmd, newUsedMeals, includeSaturday]
   );
+  const nextSub = upsertRes.rows[0];
+  if (currentSub && nextSub) {
+    await recordSubscriptionHistory(dbClient, {
+      clientSubscriptionId: nextSub.id,
+      clientId,
+      entityType,
+      entityId,
+      previousSubscriptionId: currentSub.subscription_id,
+      previousOrderId: currentSub.order_id,
+      previousStartDate: currentSub.start_date,
+      previousEndDate: currentSub.end_date,
+      previousTotalMeals: currentSub.total_meals,
+      previousUsedMeals: currentSub.used_meals,
+      previousIncludeSaturday: currentSub.include_saturday,
+      newSubscriptionId: nextSub.subscription_id,
+      newOrderId: nextSub.order_id,
+      newStartDate: nextSub.start_date,
+      newEndDate: nextSub.end_date,
+      newTotalMeals: nextSub.total_meals,
+      newUsedMeals: nextSub.used_meals,
+      newIncludeSaturday: nextSub.include_saturday,
+      changeReason: 'renewal_or_reactivation',
+    });
+  }
 };
 
 /**

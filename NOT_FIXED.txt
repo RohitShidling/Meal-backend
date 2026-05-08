@@ -1,0 +1,26 @@
+
+NOT FIXED ITEMS
+==================================
+
+1. CRIT-07: .env secrets are still weak and unrotated (NOT FIXED)
+   - JWT secrets like client_super_secret_key_123 are still in .env unchanged
+   - PhonePe, Firebase, Cloudinary secrets not rotated
+   - Fix: Generate strong random secrets and rotate all credentials
+
+2. BUG: Cart checkout crashes with 500 (NEW BUG)
+   - Error: "FOR UPDATE cannot be applied to the nullable side of an outer join"
+   - Route: POST /api/client/payment/checkout-cart returning 500
+   - File: src/client/controllers/paymentController.js lines 444-451
+   - Root cause: The query does LEFT JOIN meal_sizes ms followed by FOR UPDATE
+     on the entire result set. PostgreSQL does not allow FOR UPDATE when a 
+     LEFT JOIN is present because the nullable side cannot be locked.
+   - Fix: Change FOR UPDATE to FOR UPDATE OF ci, s (scope to specific tables)
+     or remove the LEFT JOIN and fetch meal_size_name separately.
+
+3. BUG: Nested CTE in getPaymentStats is invalid SQL (NOT FIXED)
+   - File: src/admin/controllers/paymentController.js lines 329-332
+   - The recentPayments query nests a WITH CTE inside a FROM (...) subquery.
+     PostgreSQL does not allow WITH clauses inside subqueries.
+   - Currently returning 200 but will break with certain data or PG versions.
+   - Fix: Move the CTE to the top level of the query, not inside FROM (...).
+

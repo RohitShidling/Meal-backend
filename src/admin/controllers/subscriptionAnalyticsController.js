@@ -425,6 +425,13 @@ exports.getAllMembersSubscriptionStatus = catchAsync(async (req, res) => {
   const params = [];
 
   // ── CHILDREN ────────────────────────────────────────────────────────────────
+  const queryParams = [];
+  let schoolParamRef = '';
+  if (schoolId) {
+    queryParams.push(String(schoolId));
+    schoolParamRef = `$${queryParams.length}`;
+  }
+
   let childQuery = `
     SELECT
       'child'                                       AS entity_type,
