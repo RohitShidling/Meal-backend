@@ -23,8 +23,12 @@ exports.getAllPayments = catchAsync(async (req, res) => {
   const schoolId = req.query.schoolId || req.query.school_id;
   const entityType = req.query.entityType || req.query.entity_type || req.query.sector;
   const status = req.query.status || req.query.order_status;
-  const { startDate, endDate, page = 1, limit = 10 } = req.query;
-  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const parsedPage = Number.parseInt(req.query.page, 10);
+  const parsedLimit = Number.parseInt(req.query.limit, 10);
+  const page = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+  const limit = Number.isInteger(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 100) : 10;
+  const { startDate, endDate } = req.query;
+  const offset = (page - 1) * limit;
 
   const params = [];
   let paramCount = 1;
@@ -169,7 +173,7 @@ exports.getAllPayments = catchAsync(async (req, res) => {
   const total = parseInt(countRes.rows[0].count);
 
   // Data query
-  const dataParams = [...params, parseInt(limit), offset];
+  const dataParams = [...params, limit, offset];
   const result = await db.query(
     `
     ${normalizedPaymentsCte}
@@ -182,20 +186,12 @@ exports.getAllPayments = catchAsync(async (req, res) => {
       np.entity_id,
       np.payment_date AS created_at,
       np.client_phone,
-      np.subscription_name,
       np.merchant_transaction_id,
       np.payment_status,
-      np.customer_name AS entity_name,
-      CASE
-        WHEN np.entity_type = 'child' THEN 'Student'
-        WHEN np.entity_type = 'teacher' THEN 'Teacher'
-        WHEN np.entity_type = 'professional' THEN 'Professional'
-        ELSE np.entity_type
-      END AS sector_label,
+      COALESCE(np.customer_name, 'Unknown') AS customer_name,
       np.school_name,
-      np.corporate_location_name,
-      np.subscription_start_date,
       np.school_id,
+      np.corporate_location_name,
       np.is_cart_order
     FROM normalized_payments np
     ${whereClause}
@@ -233,9 +229,9 @@ exports.getAllPayments = catchAsync(async (req, res) => {
     success: true,
     pagination: {
       total,
-      page: parseInt(page),
-      limit: parseInt(limit),
-      totalPages: Math.ceil(total / parseInt(limit))
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
     },
     data: normalized
   });

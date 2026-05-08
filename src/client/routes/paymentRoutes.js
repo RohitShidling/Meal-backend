@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const paymentController = require('../controllers/paymentController');
 const clientAuth = require('../middlewares/authMiddleware');
+const { validateInitiatePayment, validateCheckoutCart, validateTxnPathParam } = require('../validators/paymentValidator');
+const webhookRawParser = express.raw({ type: '*/*' });
 
 /**
  * @swagger
@@ -58,7 +60,7 @@ const clientAuth = require('../middlewares/authMiddleware');
  *       404:
  *         description: Entity or subscription not found
  */
-router.post('/initiate', clientAuth, paymentController.initiatePayment);
+router.post('/initiate', clientAuth, validateInitiatePayment, paymentController.initiatePayment);
 
 // ─── CART CHECKOUT ───────────────────────────────────────────────────────────
 /**
@@ -106,7 +108,7 @@ router.post('/initiate', clientAuth, paymentController.initiatePayment);
  *       400:
  *         description: Cart is empty
  */
-router.post('/checkout-cart', clientAuth, paymentController.checkoutCart);
+router.post('/checkout-cart', clientAuth, validateCheckoutCart, paymentController.checkoutCart);
 
 // ─── WEBHOOK (no auth — called by PhonePe server) ────────────────────────────
 /**
@@ -120,7 +122,7 @@ router.post('/checkout-cart', clientAuth, paymentController.checkoutCart);
  *       200:
  *         description: OK
  */
-router.post('/webhook', paymentController.handleWebhook);
+router.post('/webhook', webhookRawParser, paymentController.handleWebhook);
 
 // ─── INSTANT CALLBACK (Backend Redirect) ──────────────────────────────────
 /**
@@ -203,7 +205,7 @@ router.get('/status-page', paymentController.statusPage);
  *       404:
  *         description: Transaction not found
  */
-router.get('/status/:txnId', clientAuth, paymentController.checkPaymentStatus);
+router.get('/status/:txnId', clientAuth, validateTxnPathParam, paymentController.checkPaymentStatus);
 
 // ─── HISTORY & SUBSCRIPTIONS ─────────────────────────────────────────────────
 /**
@@ -318,7 +320,7 @@ router.get('/active-subscriptions', clientAuth, paymentController.getMyActiveSub
  *       502:
  *         description: PhonePe gateway unreachable
  */
-router.post('/force-sync/:txnId', clientAuth, paymentController.forceSync);
+router.post('/force-sync/:txnId', clientAuth, validateTxnPathParam, paymentController.forceSync);
 
 module.exports = router;
 
