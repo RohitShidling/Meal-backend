@@ -2,6 +2,12 @@ const jwt = require('jsonwebtoken');
 const db = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
 
+const normalizeRole = (value) => {
+  const role = String(value || '').trim().toLowerCase();
+  if (role === 'superadmin') return 'super_admin';
+  return role;
+};
+
 const adminAuthMiddleware = async (req, res, next) => {
   try {
     let token;
@@ -15,8 +21,9 @@ const adminAuthMiddleware = async (req, res, next) => {
     }
     const decoded = jwt.verify(token, process.env.ADMIN_JWT_SECRET);
     
-    if (decoded.role !== 'admin') {
-       return next(new AppError('Forbidden. Invalid role.', 403));
+    const role = normalizeRole(decoded.role);
+    if (!['admin', 'super_admin'].includes(role)) {
+       return next(new AppError('Forbidden. Invalid role. Admin access token is required.', 403));
     }
 
     // Verify admin still exists in DB
@@ -25,7 +32,10 @@ const adminAuthMiddleware = async (req, res, next) => {
       return next(new AppError('Admin session invalid or user deleted. Please login again.', 401));
     }
 
-    req.user = decoded;
+    req.user = {
+      ...decoded,
+      role,
+    };
     next();
   } catch (error) {
     if (error.name === 'TokenExpiredError') {

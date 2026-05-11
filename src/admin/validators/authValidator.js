@@ -9,11 +9,13 @@ const validateAdminLogin = (req, res, next) => {
   if (!phoneNumber || typeof phoneNumber !== 'string' || !PHONE_REGEX.test(phoneNumber.trim())) {
     errors.push('phoneNumber must be a valid E.164-compatible mobile number.');
   }
-  if (!username || typeof username !== 'string' || username.trim().length < 2 || username.trim().length > 120) {
-    errors.push('username is required and must be 2-120 characters.');
+  if (username !== undefined && username !== null) {
+    if (typeof username !== 'string' || username.trim().length < 2 || username.trim().length > 120) {
+      errors.push('username must be 2-120 characters when provided.');
+    }
   }
-  if (!password || typeof password !== 'string' || password.length < 8 || password.length > 128) {
-    errors.push('password is required and must be 8-128 characters.');
+  if (!password || typeof password !== 'string' || password.length < 6 || password.length > 128) {
+    errors.push('password is required and must be 6-128 characters.');
   }
   if (errors.length > 0) {
     return next(new AppError('Validation failed.', 400, errors));

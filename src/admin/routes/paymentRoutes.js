@@ -39,6 +39,23 @@ router.use(adminAuthMiddleware);
  *           type: string
  *         description: Filter children payments by school ID
  *       - in: query
+ *         name: planType
+ *         schema:
+ *           type: string
+ *           enum: [trial, regular]
+ *         description: Filter by plan type
+ *       - in: query
+ *         name: mealSize
+ *         schema:
+ *           type: string
+ *           enum: [small, medium, large]
+ *         description: Filter by meal size variant
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *         description: Search by order id, customer, phone, plan, plan type or meal size
+ *       - in: query
  *         name: startDate
  *         schema:
  *           type: string
@@ -118,6 +135,24 @@ router.use(adminAuthMiddleware);
  *                         type: string
  *                         example: "+919876543210"
  *                       subscription_name:
+ *                         type: string
+ *                         example: "Monthly Plan"
+ *                       planType:
+ *                         type: string
+ *                         example: "regular"
+ *                       mealVariant:
+ *                         type: string
+ *                         example: "Medium"
+ *                       subscriptionType:
+ *                         type: string
+ *                         example: "monthly"
+ *                       price:
+ *                         type: number
+ *                         example: 800.00
+ *                       isTrial:
+ *                         type: boolean
+ *                         example: false
+ *                       plan:
  *                         type: string
  *                         example: "Monthly Plan"
  *                       merchant_transaction_id:

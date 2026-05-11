@@ -15,14 +15,40 @@ const mapEntityTypeToSectorLabel = (entityType) => {
   return entityType || null;
 };
 
+const normalizeEntityTypeFilter = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'student') return 'child';
+  if (normalized === 'professional_worker' || normalized === 'professional worker') return 'professional';
+  return normalized;
+};
+
+const normalizePlanTypeFilter = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'trial' || normalized === 'trial_plan' || normalized === 'trial plan') return 'trial';
+  if (normalized === 'regular' || normalized === 'regular_plan' || normalized === 'regular plan') return 'regular';
+  return null;
+};
+
+const normalizeMealSizeFilter = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (['small', 'medium', 'large'].includes(normalized)) return normalized;
+  return null;
+};
+
 /**
  * @desc    Get all payments with advanced filters — fixed count query
  * @route   GET /api/admin/payment/all
  */
 exports.getAllPayments = catchAsync(async (req, res) => {
   const schoolId = req.query.schoolId || req.query.school_id;
-  const entityType = req.query.entityType || req.query.entity_type || req.query.sector;
+  const entityType = normalizeEntityTypeFilter(req.query.entityType || req.query.entity_type || req.query.sector);
   const status = req.query.status || req.query.order_status;
+  const planType = normalizePlanTypeFilter(req.query.planType || req.query.plan_type || req.query.subscriptionType);
+  const mealSize = normalizeMealSizeFilter(req.query.mealSize || req.query.meal_size);
+  const search = String(req.query.search || '').trim();
   const parsedPage = Number.parseInt(req.query.page, 10);
   const parsedLimit = Number.parseInt(req.query.limit, 10);
   const page = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
@@ -45,19 +71,41 @@ exports.getAllPayments = catchAsync(async (req, res) => {
     params.push(status);
     paramCount++;
   }
+  if (planType) {
+    whereClause += ` AND np.plan_type = $${paramCount}`;
+    params.push(planType);
+    paramCount++;
+  }
+  if (mealSize) {
+    whereClause += ` AND LOWER(np.meal_variant) = $${paramCount}`;
+    params.push(mealSize);
+    paramCount++;
+  }
   if (startDate) {
     whereClause += ` AND np.payment_date >= $${paramCount}`;
     params.push(startDate);
     paramCount++;
   }
   if (endDate) {
-    whereClause += ` AND np.payment_date <= $${paramCount}`;
+    whereClause += ` AND np.payment_date < ($${paramCount}::date + INTERVAL '1 day')`;
     params.push(endDate);
     paramCount++;
   }
   if (schoolId) {
     whereClause += ` AND np.school_id = $${paramCount}`;
     params.push(schoolId);
+    paramCount++;
+  }
+  if (search) {
+    whereClause += ` AND (
+      np.order_id ILIKE $${paramCount}
+      OR COALESCE(np.customer_name, '') ILIKE $${paramCount}
+      OR COALESCE(np.client_phone, '') ILIKE $${paramCount}
+      OR COALESCE(np.subscription_name, '') ILIKE $${paramCount}
+      OR COALESCE(np.plan_type, '') ILIKE $${paramCount}
+      OR COALESCE(np.meal_variant, '') ILIKE $${paramCount}
+    )`;
+    params.push(`%${search}%`);
     paramCount++;
   }
 
@@ -93,12 +141,22 @@ exports.getAllPayments = catchAsync(async (req, res) => {
         o.amount::numeric AS amount,
         false AS is_cart_order,
         s.plan_name AS subscription_name,
+        ms.display_name AS meal_variant,
+        ms.name AS meal_size_code,
+        s.billing_cycle AS subscription_type,
+        CASE
+          WHEN COALESCE(s.trial_days, 0) > 0 THEN 'trial'
+          ELSE 'regular'
+        END AS plan_type,
+        (COALESCE(s.trial_days, 0) > 0) AS is_trial,
+        COALESCE(s.trial_days, 0) AS trial_days,
         o.start_date::date AS subscription_start_date,
         tx.merchant_transaction_id,
         tx.status AS payment_status
       FROM orders o
       LEFT JOIN clients c ON o.client_id = c.id
       LEFT JOIN subscriptions s ON o.subscription_id = s.id
+      LEFT JOIN meal_sizes ms ON ms.id = COALESCE(o.meal_size_id, s.meal_size_id)
       LEFT JOIN transactions tx ON tx.order_id = o.id
       LEFT JOIN children ch ON o.entity_type = 'child' AND o.entity_id = ch.id
       LEFT JOIN schools sch ON ch.school_id = sch.id
@@ -143,6 +201,15 @@ exports.getAllPayments = catchAsync(async (req, res) => {
         ci.unit_price::numeric AS amount,
         true AS is_cart_order,
         s2.plan_name AS subscription_name,
+        ms2.display_name AS meal_variant,
+        ms2.name AS meal_size_code,
+        s2.billing_cycle AS subscription_type,
+        CASE
+          WHEN COALESCE(s2.trial_days, 0) > 0 THEN 'trial'
+          ELSE 'regular'
+        END AS plan_type,
+        (COALESCE(s2.trial_days, 0) > 0) AS is_trial,
+        COALESCE(s2.trial_days, 0) AS trial_days,
         ci.start_date::date AS subscription_start_date,
         tx.merchant_transaction_id,
         tx.status AS payment_status
@@ -150,6 +217,7 @@ exports.getAllPayments = catchAsync(async (req, res) => {
       INNER JOIN cart_items ci ON ci.cart_id = o.cart_id
       LEFT JOIN clients c ON o.client_id = c.id
       LEFT JOIN subscriptions s2 ON ci.subscription_id = s2.id
+      LEFT JOIN meal_sizes ms2 ON ms2.id = COALESCE(ci.meal_size_id, s2.meal_size_id)
       LEFT JOIN transactions tx ON tx.order_id = o.id
       LEFT JOIN children ch2 ON ci.entity_type = 'child' AND ci.entity_id = ch2.id
       LEFT JOIN schools sch2 ON ch2.school_id = sch2.id
@@ -182,6 +250,13 @@ exports.getAllPayments = catchAsync(async (req, res) => {
       np.order_status,
       np.order_type,
       np.amount,
+      np.subscription_name,
+      np.subscription_type,
+      np.plan_type,
+      np.is_trial,
+      np.trial_days,
+      np.meal_variant,
+      np.meal_size_code,
       np.entity_type,
       np.entity_id,
       np.payment_date AS created_at,
@@ -204,8 +279,12 @@ exports.getAllPayments = catchAsync(async (req, res) => {
   const normalized = result.rows.map((row) => {
     const sector = mapEntityTypeToSector(row.entity_type);
     const sectorLabel = mapEntityTypeToSectorLabel(row.entity_type);
-    const customerName = row.entity_name || row.customer_name || 'Unknown';
+    const customerName = row.customer_name || 'Unknown';
     const schoolName = row.school_name || null;
+    const mealVariant = row.meal_variant || row.meal_size_code || 'Unknown';
+    const subscriptionType = row.subscription_type || row.plan_type || 'regular';
+    const planTypeValue = row.plan_type || (row.is_trial ? 'trial' : 'regular');
+    const normalizedPlanName = String(row.subscription_name || '').trim() || `${planTypeValue === 'trial' ? 'Trial Plan' : 'Regular Plan'} - ${mealVariant}`;
     return {
       ...row,
       amount: Number(row.amount),
@@ -219,6 +298,14 @@ exports.getAllPayments = catchAsync(async (req, res) => {
       schoolName,
       paymentStatus: row.payment_status || row.order_status,
       paymentDate: row.created_at,
+      subscription_name: normalizedPlanName,
+      plan: normalizedPlanName,
+      planType: planTypeValue,
+      mealVariant,
+      subscriptionType,
+      price: Number(row.amount),
+      isTrial: !!row.is_trial,
+      trialDays: Number(row.trial_days || 0),
       // Legacy compatibility keys (for existing UI bindings)
       entity_name: customerName,
       sector_label: sectorLabel,

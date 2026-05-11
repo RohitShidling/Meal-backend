@@ -82,13 +82,17 @@ const generateTokens = (id, phoneNumber) => {
 const loginController = catchAsync(async (req, res, next) => {
   const { phoneNumber, password, username } = req.body;
 
-  if (!phoneNumber || !password || !username) {
-    return next(new AppError('phoneNumber, password and username are required.', 400));
+  if (!phoneNumber || !password) {
+    return next(new AppError('phoneNumber and password are required.', 400));
   }
 
-  // Check if admin exists in DB
-  // Check if admin exists in DB with matching phone AND username (Case-Sensitive)
-  const result = await db.query('SELECT * FROM admins WHERE phone_number = $1 AND username = $2', [phoneNumber, username]);
+  const trimmedUsername = typeof username === 'string' ? username.trim() : '';
+  const result = trimmedUsername
+    ? await db.query(
+      'SELECT * FROM admins WHERE phone_number = $1 AND username = $2',
+      [phoneNumber, trimmedUsername]
+    )
+    : await db.query('SELECT * FROM admins WHERE phone_number = $1', [phoneNumber]);
 
   if (result.rows.length === 0) {
     return next(new AppError('Invalid credentials.', 401));
