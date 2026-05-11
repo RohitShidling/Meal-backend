@@ -24,20 +24,31 @@ const daysBetweenInclusive = (startYmd, endYmd) => {
 const addDaysYmd = (ymd, days) => {
   const [y, m, d] = ymd.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
-  dt.setUTCDate(dt.getUTCDate() + days);
-  return dt.toISOString().slice(0, 10);
+  dt.setUTCDate(dt.getUTCDate() + Number(days));
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
 };
 
-const countEligibleMealDays = (startYmd, totalDays, includeSaturday) => {
-  let eligible = 0;
-  for (let i = 0; i < totalDays; i += 1) {
-    const currentYmd = addDaysYmd(startYmd, i);
-    const day = new Date(`${currentYmd}T00:00:00Z`).getUTCDay();
-    if (includeSaturday || day !== 6) {
-      eligible += 1;
+const isSkippableMealDayYmd = (ymd, includeSaturday) => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  const dow = dt.getUTCDay(); // 0=Sun ... 6=Sat
+  if (dow === 0) return false;
+  if (!includeSaturday && dow === 6) return false;
+  return true;
+};
+
+const countSkippableMealDays = (startYmd, endYmd, includeSaturday) => {
+  const total = daysBetweenInclusive(startYmd, endYmd);
+  let count = 0;
+  for (let i = 0; i < total; i += 1) {
+    if (isSkippableMealDayYmd(addDaysYmd(startYmd, i), includeSaturday)) {
+      count += 1;
     }
   }
-  return eligible;
+  return count;
 };
 
 const getMealSkipPolicy = async () => {
@@ -52,6 +63,17 @@ const getMealSkipPolicy = async () => {
     minNoticeDays: Number.isFinite(settings.meal_skip_min_notice_days) ? settings.meal_skip_min_notice_days : 1,
   };
 };
+
+exports.getMealSkipPolicy = catchAsync(async (_req, res) => {
+  const policy = await getMealSkipPolicy();
+  res.status(200).json({
+    success: true,
+    data: {
+      min_skip_days: policy.minSkipDays,
+      min_notice_days: policy.minNoticeDays,
+    },
+  });
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER: Check if client has ANY active subscription (computed remaining)
@@ -300,78 +322,65 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
   }
   if (entityCheck.rows.length === 0) return next(new AppError('Entity not found or does not belong to you.', 404));
 
-  const tx = await db.pool.connect();
-  let created;
-  let mealDaysSkipped = 0;
-  try {
-    await tx.query('BEGIN');
-    const subCheck = await tx.query(
-      `SELECT
-          id,
-          include_saturday,
-          TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date,
-          TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date
-       FROM client_subscriptions
-       WHERE client_id=$1 AND entity_type=$2 AND entity_id=$3
-         AND is_active=true
-         AND (total_meals - used_meals) > 0
-       FOR UPDATE`,
-      [clientId, entityType, entityId]
-    );
-    if (subCheck.rows.length === 0) {
-      await tx.query('ROLLBACK');
-      return next(new AppError('No active subscription found for this entity.', 400));
-    }
+  // Verify active subscription exists (remaining > 0 computed)
+  const subCheck = await db.query(
+    `SELECT
+        id,
+        include_saturday,
+        TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date,
+        TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date
+     FROM client_subscriptions
+     WHERE client_id=$1 AND entity_type=$2 AND entity_id=$3
+       AND is_active=true
+       AND (total_meals - used_meals) > 0`,
+    [clientId, entityType, entityId]
+  );
+  if (subCheck.rows.length === 0) return next(new AppError('No active subscription found for this entity.', 400));
 
-    const sub = subCheck.rows[0];
-    const subStartYmd = sub.start_date;
-    const subEndYmd = sub.end_date;
-    if (startYmd < subStartYmd) {
-      await tx.query('ROLLBACK');
-      return next(new AppError(`Cannot schedule skip before subscription start date (${subStartYmd}).`, 400));
-    }
-    if (endYmd > subEndYmd) {
-      await tx.query('ROLLBACK');
-      return next(new AppError(`Cannot schedule skip beyond your subscription expiry date (${subEndYmd}).`, 400));
-    }
-
-    const overlap = await tx.query(
-      `SELECT id FROM meal_skips
-       WHERE client_id=$1 AND entity_type=$2 AND entity_id=$3 AND status='approved'
-         AND skip_start_date <= $5 AND skip_end_date >= $4
-       FOR UPDATE`,
-      [clientId, entityType, entityId, startYmd, endYmd]
-    );
-    if (overlap.rows.length > 0) {
-      await tx.query('ROLLBACK');
-      return next(new AppError('An overlapping meal skip already exists for this date range.', 409));
-    }
-
-    mealDaysSkipped = countEligibleMealDays(startYmd, totalDays, sub.include_saturday !== false);
-    const result = await tx.query(
-      `INSERT INTO meal_skips (client_id, entity_type, entity_id, skip_start_date, skip_end_date, total_skip_days, subscription_id, extension_days)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [clientId, entityType, entityId, startYmd, endYmd, totalDays, sub.id, mealDaysSkipped]
-    );
-    created = result.rows[0];
-
-    await tx.query(
-      `UPDATE client_subscriptions
-       SET end_date = end_date + ($2::int * INTERVAL '1 day'), updated_at=NOW()
-       WHERE id=$1`,
-      [sub.id, mealDaysSkipped]
-    );
-    await tx.query('COMMIT');
-  } catch (error) {
-    await tx.query('ROLLBACK');
-    throw error;
-  } finally {
-    tx.release();
+  const sub = subCheck.rows[0];
+  const includeSaturday = sub.include_saturday !== false;
+  const subStartYmd = sub.start_date;
+  const subEndYmd = sub.end_date;
+  if (startYmd < subStartYmd) {
+    return next(new AppError(`Cannot schedule skip before subscription start date (${subStartYmd}).`, 400));
+  }
+  if (endYmd > subEndYmd) {
+    return next(new AppError(`Cannot schedule skip beyond your subscription expiry date (${subEndYmd}).`, 400));
   }
 
+  // Check for overlapping skips
+  const overlap = await db.query(
+    `SELECT id FROM meal_skips
+     WHERE client_id=$1 AND entity_type=$2 AND entity_id=$3 AND status='approved'
+       AND skip_start_date <= $5 AND skip_end_date >= $4`,
+    [clientId, entityType, entityId, startYmd, endYmd]
+  );
+  if (overlap.rows.length > 0) return next(new AppError('An overlapping meal skip already exists for this date range.', 409));
+
+  const effectiveSkipDays = countSkippableMealDays(startYmd, endYmd, includeSaturday);
+  if (effectiveSkipDays <= 0) {
+    return next(new AppError('Selected range has no skippable meal days. Sundays are non-service days.', 400));
+  }
+
+  // Create the skip
+  const result = await db.query(
+    `INSERT INTO meal_skips (client_id, entity_type, entity_id, skip_start_date, skip_end_date, total_skip_days, extension_days, subscription_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [clientId, entityType, entityId, startYmd, endYmd, effectiveSkipDays, effectiveSkipDays, sub.id]
+  );
+
+  // Extend subscription end_date
+  await db.query(
+    `UPDATE client_subscriptions
+     SET end_date = end_date + ($2::int * INTERVAL '1 day'), updated_at=NOW()
+     WHERE id=$1`,
+    [sub.id, effectiveSkipDays]
+  );
+
+  const created = result.rows[0];
   res.status(201).json({
     success: true,
-    message: `Meal skip approved for ${totalDays} days (${startYmd} to ${endYmd}). Subscription extended by ${mealDaysSkipped} meal day(s).`,
+    message: `Meal skip approved for ${effectiveSkipDays} meal day(s) (${startYmd} to ${endYmd}). Sundays are excluded${includeSaturday ? '' : ' and Saturdays are excluded for this plan'}.`,
     data: {
       ...created,
       skip_start_date: startYmd,
@@ -405,7 +414,14 @@ exports.getMyMealSkips = catchAsync(async (req, res) => {
      LEFT JOIN teacher_profiles tp ON ms.entity_type='teacher' AND ms.entity_id=tp.id
      LEFT JOIN professional_profiles pp ON ms.entity_type='professional' AND ms.entity_id=pp.id
      WHERE ms.client_id=$1
-     ORDER BY ms.skip_start_date DESC`,
+     ORDER BY
+       CASE ms.status
+         WHEN 'approved' THEN 0
+         WHEN 'requested' THEN 1
+         WHEN 'cancelled' THEN 2
+         ELSE 3
+       END,
+       ms.skip_start_date DESC`,
     [clientId]
   );
 
@@ -452,12 +468,15 @@ exports.cancelMealSkip = catchAsync(async (req, res, next) => {
     }
 
     const extensionDays = Number(skipData.extension_days || skipData.total_skip_days || 0);
-    await tx.query(
-      `UPDATE client_subscriptions 
-       SET end_date = end_date - ($2::int * INTERVAL '1 day'), updated_at=NOW()
-       WHERE id=$1 AND is_active=true`,
-      [skipData.subscription_id, extensionDays]
-    );
+    const targetSubscriptionId = skipData.subscription_id;
+    if (targetSubscriptionId && extensionDays > 0) {
+      await tx.query(
+        `UPDATE client_subscriptions 
+         SET end_date = end_date - ($2::int * INTERVAL '1 day'), updated_at=NOW()
+         WHERE id=$1 AND is_active=true`,
+        [targetSubscriptionId, extensionDays]
+      );
+    }
     await tx.query("UPDATE meal_skips SET status='cancelled', updated_at=NOW() WHERE id=$1", [skipId]);
     await tx.query('COMMIT');
   } catch (error) {
@@ -471,4 +490,56 @@ exports.cancelMealSkip = catchAsync(async (req, res, next) => {
     success: true,
     message: 'Meal skip cancelled successfully and subscription expiry reverted.'
   });
+});
+
+exports.deleteMealSkip = catchAsync(async (req, res, next) => {
+  const clientId = req.user.id;
+  const { skipId } = req.params;
+  const tx = await db.pool.connect();
+
+  try {
+    await tx.query('BEGIN');
+    const skipRes = await tx.query(
+      `SELECT * FROM meal_skips WHERE id=$1 AND client_id=$2 FOR UPDATE`,
+      [skipId, clientId]
+    );
+    if (skipRes.rowCount === 0) {
+      await tx.query('ROLLBACK');
+      return next(new AppError('Meal skip not found.', 404));
+    }
+
+    const skip = skipRes.rows[0];
+    const today = mealEligibilityService.parseSessionToday();
+    const skipStartYmd = String(skip.skip_start_date).slice(0, 10);
+    const extensionDays = Number(skip.extension_days || skip.total_skip_days || 0);
+
+    // If approved future skip is directly deleted, first revert the extension.
+    if (skip.status === 'approved') {
+      if (skipStartYmd <= today) {
+        await tx.query('ROLLBACK');
+        return next(new AppError('Cannot delete a skip that has already started or is in the past.', 400));
+      }
+      if (skip.subscription_id && extensionDays > 0) {
+        await tx.query(
+          `UPDATE client_subscriptions
+           SET end_date = end_date - ($2::int * INTERVAL '1 day'), updated_at=NOW()
+           WHERE id=$1 AND is_active=true`,
+          [skip.subscription_id, extensionDays]
+        );
+      }
+    }
+
+    await tx.query('DELETE FROM meal_skips WHERE id=$1', [skipId]);
+    await tx.query('COMMIT');
+
+    return res.status(200).json({
+      success: true,
+      message: 'Meal skip deleted successfully.',
+    });
+  } catch (error) {
+    await tx.query('ROLLBACK');
+    throw error;
+  } finally {
+    tx.release();
+  }
 });

@@ -5,6 +5,7 @@
  * Rules (all must hold):
  * - Active subscription, remaining meals > 0
  * - DATE(start_date) <= D and DATE(end_date) >= D (inclusive validity window)
+ * - Sunday (ISO dow 7) has no meal for all plans
  * - If include_saturday is false, Saturday (ISO dow 6) has no meal
  * - Approved skip covering D only counts if range length >= configured min consecutive days
  */
@@ -57,6 +58,7 @@ const subscriptionEligiblePredicateSql = (csAlias = 'cs') => `
   AND (${csAlias}.total_meals - ${csAlias}.used_meals) > 0
   AND DATE(${csAlias}.start_date) <= $1::date
   AND DATE(${csAlias}.end_date) >= $1::date
+  AND EXTRACT(ISODOW FROM $1::date) IS DISTINCT FROM 7
   AND (
     ${csAlias}.include_saturday = true
     OR EXTRACT(ISODOW FROM $1::date) IS DISTINCT FROM 6
@@ -140,6 +142,7 @@ async function countSkippedDueToPolicyOnly(delivery, dbClient = null) {
        AND (cs.total_meals - cs.used_meals) > 0
        AND DATE(cs.start_date) <= $1::date
        AND DATE(cs.end_date) >= $1::date
+       AND EXTRACT(ISODOW FROM $1::date) IS DISTINCT FROM 7
        AND (
          cs.include_saturday = true
          OR EXTRACT(ISODOW FROM $1::date) IS DISTINCT FROM 6
@@ -566,13 +569,20 @@ const isSaturdayYmd = (ymd) => {
   return dt.getUTCDay() === 6;
 };
 
+const isSundayYmd = (ymd) => {
+  const [y, m, d] = String(ymd).split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  return dt.getUTCDay() === 0;
+};
+
 const extendEndYmdByMealDays = ({ endYmd, includeSaturday, extraMeals }) => {
   let remainingExtra = Number(extraMeals) || 0;
   let cursor = endYmd;
   while (remainingExtra > 0) {
     cursor = addDaysYmd(cursor, 1);
     const saturday = isSaturdayYmd(cursor);
-    const isMealDay = includeSaturday || !saturday;
+    const sunday = isSundayYmd(cursor);
+    const isMealDay = !sunday && (includeSaturday || !saturday);
     if (isMealDay) remainingExtra -= 1;
   }
   return cursor;

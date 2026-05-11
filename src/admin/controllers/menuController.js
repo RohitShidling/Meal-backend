@@ -104,7 +104,11 @@ exports.updateMenu = async (req, res, next) => {
       date = new Date().toISOString().split('T')[0];
     }
     
-    const { items, is_active } = req.body;
+    const { items, is_active, menu_date } = req.body;
+    let normalizedMenuDate = menu_date;
+    if (normalizedMenuDate === 'today') {
+      normalizedMenuDate = new Date().toISOString().split('T')[0];
+    }
     const image_url = req.file ? req.file.path : null;
     const image_public_id = req.file ? req.file.filename : null;
 
@@ -122,14 +126,14 @@ exports.updateMenu = async (req, res, next) => {
       await cloudinary.uploader.destroy(currentMenu.rows[0].image_public_id);
     }
 
-    let query = 'UPDATE daily_menus SET items = $1, is_active = $2, updated_at = CURRENT_TIMESTAMP';
-    let values = [items, is_active];
+    let query = 'UPDATE daily_menus SET items = $1, is_active = $2, menu_date = COALESCE($3, menu_date), updated_at = CURRENT_TIMESTAMP';
+    let values = [items, is_active, normalizedMenuDate || null];
 
     if (image_url) {
-      query += ', image_url = $3, image_public_id = $4 WHERE id = $5 RETURNING *';
+      query += ', image_url = $4, image_public_id = $5 WHERE id = $6 RETURNING *';
       values.push(image_url, image_public_id, menuId);
     } else {
-      query += ' WHERE id = $3 RETURNING *';
+      query += ' WHERE id = $4 RETURNING *';
       values.push(menuId);
     }
 

@@ -155,6 +155,31 @@ router.get('/weekly', mealController.getWeeklyMenu);
  */
 router.get('/status', mealController.getMealStatus);
 
+/**
+ * @swagger
+ * /api/client/meals/skip-policy:
+ *   get:
+ *     summary: Get current meal skip policy used by client validations
+ *     tags: [Client - Meals]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Policy returned
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean, example: true }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     min_skip_days: { type: integer, example: 3 }
+ *                     min_notice_days: { type: integer, example: 1 }
+ */
+router.get('/skip-policy', mealController.getMealSkipPolicy);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // REQUEST MEAL SKIP
 // ─────────────────────────────────────────────────────────────────────────────
@@ -297,5 +322,31 @@ router.get('/skips', mealController.getMyMealSkips);
  *         description: Skip not found
  */
 router.delete('/skip/:skipId', validateSkipIdParam, mealController.cancelMealSkip);
+
+/**
+ * @swagger
+ * /api/client/meals/skip/{skipId}/delete:
+ *   delete:
+ *     summary: Permanently delete a meal skip from history
+ *     description: >
+ *       If the skip is approved and in the future, backend first reverts extension and then deletes it.
+ *       Cancelled skips are directly deleted.
+ *     tags: [Client - Meals]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: skipId
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Skip deleted successfully
+ *       400:
+ *         description: Skip has already started/past and cannot be deleted
+ *       404:
+ *         description: Skip not found
+ */
+router.delete('/skip/:skipId/delete', validateSkipIdParam, mealController.deleteMealSkip);
 
 module.exports = router;

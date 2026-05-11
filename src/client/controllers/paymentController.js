@@ -102,6 +102,8 @@ const getCachedGatewayStatus = async (txnId) => {
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 const parseYmdStrict = (input) => {
   if (!input) return null;
+
+  // DB DATE fields can come as Date objects or ISO datetime strings.
   if (input instanceof Date) {
     if (Number.isNaN(input.getTime())) return null;
     const yy = input.getUTCFullYear();
@@ -109,6 +111,7 @@ const parseYmdStrict = (input) => {
     const dd = String(input.getUTCDate()).padStart(2, '0');
     return `${yy}-${mm}-${dd}`;
   }
+
   const raw = String(input).trim();
   const normalized = YMD.test(raw)
     ? raw
@@ -130,68 +133,42 @@ const addDaysYmd = (ymd, days) => {
   return `${yy}-${mm}-${dd}`;
 };
 
+const isServiceMealDayYmd = (ymd, includeSaturday) => {
+  const [y, m, d] = String(ymd).split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  const dow = dt.getUTCDay(); // 0=Sun ... 6=Sat
+  if (dow === 0) return false; // Sunday is always a non-meal day
+  if (!includeSaturday && dow === 6) return false;
+  return true;
+};
+
 const computeMealCount = (startDate, durationDays, includeSaturday) => {
   const safeDuration = Number(durationDays) > 0 ? Number(durationDays) : 30;
-  const base = new Date(startDate);
-  if (Number.isNaN(base.getTime())) return safeDuration;
+  const baseYmd = parseYmdStrict(startDate);
+  if (!baseYmd) return safeDuration;
   let count = 0;
   for (let i = 0; i < safeDuration; i += 1) {
-    const d = new Date(base);
-    d.setDate(base.getDate() + i);
-    if (includeSaturday || d.getDay() !== 6) {
+    const ymd = addDaysYmd(baseYmd, i);
+    if (isServiceMealDayYmd(ymd, includeSaturday)) {
       count += 1;
     }
   }
   return count;
 };
 
-const recordSubscriptionHistory = async (dbClient, payload) => {
-  await dbClient.query(
-    `INSERT INTO client_subscription_history (
-      client_subscription_id,
-      client_id,
-      entity_type,
-      entity_id,
-      previous_subscription_id,
-      previous_order_id,
-      previous_start_date,
-      previous_end_date,
-      previous_total_meals,
-      previous_used_meals,
-      previous_include_saturday,
-      new_subscription_id,
-      new_order_id,
-      new_start_date,
-      new_end_date,
-      new_total_meals,
-      new_used_meals,
-      new_include_saturday,
-      change_reason
-    ) VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
-    )`,
-    [
-      payload.clientSubscriptionId,
-      payload.clientId,
-      payload.entityType,
-      payload.entityId,
-      payload.previousSubscriptionId,
-      payload.previousOrderId,
-      payload.previousStartDate,
-      payload.previousEndDate,
-      payload.previousTotalMeals,
-      payload.previousUsedMeals,
-      payload.previousIncludeSaturday,
-      payload.newSubscriptionId,
-      payload.newOrderId,
-      payload.newStartDate,
-      payload.newEndDate,
-      payload.newTotalMeals,
-      payload.newUsedMeals,
-      payload.newIncludeSaturday,
-      payload.changeReason,
-    ]
-  );
+const computeEndDateByMealDays = (startYmd, mealDays, includeSaturday) => {
+  const safeMealDays = Number(mealDays);
+  if (!Number.isFinite(safeMealDays) || safeMealDays <= 0) return startYmd;
+  let remaining = safeMealDays;
+  let cursor = startYmd;
+  while (remaining > 0) {
+    if (isServiceMealDayYmd(cursor, includeSaturday)) {
+      remaining -= 1;
+      if (remaining === 0) break;
+    }
+    cursor = addDaysYmd(cursor, 1);
+  }
+  return cursor;
 };
 
 /**
@@ -203,9 +180,14 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
     [subscriptionId]
   );
   const baseDurationDays = Number(subRes.rows[0]?.duration_days || 30);
+  const explicitWithSaturday = subRes.rows[0]?.duration_days_with_saturday;
+  const explicitWithoutSaturday = subRes.rows[0]?.duration_days_without_saturday;
+  const hasExplicitVariantDuration = includeSaturday
+    ? explicitWithSaturday !== null && explicitWithSaturday !== undefined
+    : explicitWithoutSaturday !== null && explicitWithoutSaturday !== undefined;
   const durationDays = includeSaturday
-    ? Number(subRes.rows[0]?.duration_days_with_saturday || baseDurationDays)
-    : Number(subRes.rows[0]?.duration_days_without_saturday || baseDurationDays);
+    ? Number(explicitWithSaturday || baseDurationDays)
+    : Number(explicitWithoutSaturday || baseDurationDays);
 
   const existingSub = await queryRunner.query(
     'SELECT end_date, total_meals, used_meals FROM client_subscriptions WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true AND order_id != $4 FOR UPDATE',
@@ -215,7 +197,11 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
 
   const sessionToday = mealEligibilityService.parseSessionToday();
   let baseDateYmd = parseYmdStrict(requestedStartDate) || sessionToday;
-  let newTotalMeals = computeMealCount(baseDateYmd, durationDays, includeSaturday);
+  // If variant-specific duration is configured, treat it as exact meal count.
+  // Legacy plans without variant-specific durations keep old calendar-based counting behavior.
+  let newTotalMeals = hasExplicitVariantDuration
+    ? durationDays
+    : computeMealCount(baseDateYmd, durationDays, includeSaturday);
   let newUsedMeals = 0;
 
   if (currentSub && currentSub.is_active && currentSub.order_id !== orderId) {
@@ -231,13 +217,20 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
       const oldUsed = currentSub.used_meals || 0;
 
       // Preserve old totals and used, just add new meals to total
-      newTotalMeals = oldTotal + computeMealCount(baseDateYmd, durationDays, includeSaturday);
+      newTotalMeals = oldTotal + (
+        hasExplicitVariantDuration
+          ? durationDays
+          : computeMealCount(baseDateYmd, durationDays, includeSaturday)
+      );
       newUsedMeals = oldUsed;
     }
   }
 
-  // Inclusive validity window: 7-day plan from May 7 => May 7..May 13 (not May 14).
-  const endDateYmd = addDaysYmd(baseDateYmd, durationDays - 1);
+  // Expiry is based on meal-service calendar:
+  // - includeSaturday=false => Mon-Fri only
+  // - includeSaturday=true  => Mon-Sat
+  // - Sunday is always excluded
+  const endDateYmd = computeEndDateByMealDays(baseDateYmd, durationDays, includeSaturday);
 
   await queryRunner.query(
     `INSERT INTO client_subscriptions (client_id,subscription_id,entity_type,entity_id,start_date,end_date,order_id,is_active,total_meals,used_meals,include_saturday)
@@ -1018,5 +1011,3 @@ exports.forceSync = catchAsync(async (req, res, next) => {
     return res.status(200).json({ success: true, message: `Payment still ${gwState}. Not finalized yet.`, gatewayState: gwState });
   }
 });
-
-
