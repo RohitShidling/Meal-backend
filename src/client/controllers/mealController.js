@@ -24,29 +24,20 @@ const daysBetweenInclusive = (startYmd, endYmd) => {
 const addDaysYmd = (ymd, days) => {
   const [y, m, d] = ymd.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
-  dt.setUTCDate(dt.getUTCDate() + Number(days));
-  const yy = dt.getUTCFullYear();
-  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(dt.getUTCDate()).padStart(2, '0');
-  return `${yy}-${mm}-${dd}`;
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return dt.toISOString().slice(0, 10);
 };
 
-const isSkippableMealDayYmd = (ymd, includeSaturday) => {
-  const [y, m, d] = ymd.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
-  const dow = dt.getUTCDay(); // 0=Sun ... 6=Sat
-  if (dow === 0) return false; // Sunday is always non-service
-  if (!includeSaturday && dow === 6) return false;
-  return true;
-};
-
-const countSkippableMealDays = (startYmd, endYmd, includeSaturday) => {
-  const total = daysBetweenInclusive(startYmd, endYmd);
-  let count = 0;
-  for (let i = 0; i < total; i += 1) {
-    if (isSkippableMealDayYmd(addDaysYmd(startYmd, i), includeSaturday)) count += 1;
+const countEligibleMealDays = (startYmd, totalDays, includeSaturday) => {
+  let eligible = 0;
+  for (let i = 0; i < totalDays; i += 1) {
+    const currentYmd = addDaysYmd(startYmd, i);
+    const day = new Date(`${currentYmd}T00:00:00Z`).getUTCDay();
+    if (includeSaturday || day !== 6) {
+      eligible += 1;
+    }
   }
-  return count;
+  return eligible;
 };
 
 const getMealSkipPolicy = async () => {
@@ -310,9 +301,10 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
   if (entityCheck.rows.length === 0) return next(new AppError('Entity not found or does not belong to you.', 404));
 
   const tx = await db.pool.connect();
+  let created;
+  let mealDaysSkipped = 0;
   try {
     await tx.query('BEGIN');
-
     const subCheck = await tx.query(
       `SELECT
           id,
@@ -332,14 +324,15 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
     }
 
     const sub = subCheck.rows[0];
-    const includeSaturday = sub.include_saturday !== false;
-    if (startYmd < sub.start_date) {
+    const subStartYmd = sub.start_date;
+    const subEndYmd = sub.end_date;
+    if (startYmd < subStartYmd) {
       await tx.query('ROLLBACK');
-      return next(new AppError(`Cannot schedule skip before subscription start date (${sub.start_date}).`, 400));
+      return next(new AppError(`Cannot schedule skip before subscription start date (${subStartYmd}).`, 400));
     }
-    if (endYmd > sub.end_date) {
+    if (endYmd > subEndYmd) {
       await tx.query('ROLLBACK');
-      return next(new AppError(`Cannot schedule skip beyond your subscription expiry date (${sub.end_date}).`, 400));
+      return next(new AppError(`Cannot schedule skip beyond your subscription expiry date (${subEndYmd}).`, 400));
     }
 
     const overlap = await tx.query(
@@ -354,47 +347,37 @@ exports.requestMealSkip = catchAsync(async (req, res, next) => {
       return next(new AppError('An overlapping meal skip already exists for this date range.', 409));
     }
 
-    const effectiveSkipDays = countSkippableMealDays(startYmd, endYmd, includeSaturday);
-    if (effectiveSkipDays <= 0) {
-      await tx.query('ROLLBACK');
-      return next(new AppError('Selected range has no skippable meal days. Sundays are non-service days.', 400));
-    }
-
+    mealDaysSkipped = countEligibleMealDays(startYmd, totalDays, sub.include_saturday !== false);
     const result = await tx.query(
-      `INSERT INTO meal_skips (
-         client_id, entity_type, entity_id, skip_start_date, skip_end_date,
-         total_skip_days, subscription_id, extension_days
-       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-      [clientId, entityType, entityId, startYmd, endYmd, totalDays, sub.id, effectiveSkipDays]
+      `INSERT INTO meal_skips (client_id, entity_type, entity_id, skip_start_date, skip_end_date, total_skip_days, subscription_id, extension_days)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [clientId, entityType, entityId, startYmd, endYmd, totalDays, sub.id, mealDaysSkipped]
     );
+    created = result.rows[0];
 
     await tx.query(
       `UPDATE client_subscriptions
        SET end_date = end_date + ($2::int * INTERVAL '1 day'), updated_at=NOW()
        WHERE id=$1`,
-      [sub.id, effectiveSkipDays]
+      [sub.id, mealDaysSkipped]
     );
-
     await tx.query('COMMIT');
-
-    const created = result.rows[0];
-    return res.status(201).json({
-      success: true,
-      message: `Meal skip approved for ${effectiveSkipDays} meal day(s) (${startYmd} to ${endYmd}). Sundays are excluded${includeSaturday ? '' : ' and Saturdays are excluded for this plan'}.`,
-      data: {
-        ...created,
-        skip_start_date: startYmd,
-        skip_end_date: endYmd,
-      }
-    });
   } catch (error) {
     await tx.query('ROLLBACK');
     throw error;
   } finally {
     tx.release();
   }
+
+  res.status(201).json({
+    success: true,
+    message: `Meal skip approved for ${totalDays} days (${startYmd} to ${endYmd}). Subscription extended by ${mealDaysSkipped} meal day(s).`,
+    data: {
+      ...created,
+      skip_start_date: startYmd,
+      skip_end_date: endYmd,
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -448,7 +431,7 @@ exports.cancelMealSkip = catchAsync(async (req, res, next) => {
   try {
     await tx.query('BEGIN');
     const skip = await tx.query(
-      'SELECT * FROM meal_skips WHERE id=$1 AND client_id=$2 FOR UPDATE',
+      `SELECT * FROM meal_skips WHERE id=$1 AND client_id=$2 FOR UPDATE`,
       [skipId, clientId]
     );
     if (skip.rows.length === 0) {

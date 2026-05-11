@@ -88,8 +88,8 @@ const options = {
     },
     servers: [
       {
-        url: 'http://localhost:3000',
-        description: 'Development server',
+        url: process.env.SWAGGER_SERVER_URL || process.env.PUBLIC_API_BASE_URL || `http://localhost:${process.env.PORT || 3000}`,
+        description: process.env.SWAGGER_SERVER_DESCRIPTION || 'API server',
       },
     ],
     components: {

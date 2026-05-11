@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { loginController, verifyOtpController, logoutController, refreshTokenController } = require('../controllers/authController');
 const adminAuth = require('../middlewares/authMiddleware');
+const { validateAdminLogin, validateAdminVerifyOtp, validateAdminRefresh } = require('../validators/authValidator');
 
 /**
  * @swagger
@@ -52,7 +53,7 @@ const adminAuth = require('../middlewares/authMiddleware');
  *       401:
  *         description: Invalid credentials
  */
-router.post('/login', loginController);
+router.post('/login', validateAdminLogin, loginController);
 
 /**
  * @swagger
@@ -118,7 +119,7 @@ router.post('/login', loginController);
  *       400:
  *         description: Invalid OTP
  */
-router.post('/verify-otp', verifyOtpController);
+router.post('/verify-otp', validateAdminVerifyOtp, verifyOtpController);
 
 /**
  * @swagger
@@ -184,6 +185,6 @@ router.post('/logout', adminAuth, logoutController);
  *                     refreshToken:
  *                       type: string
  */
-router.post('/refresh', refreshTokenController);
+router.post('/refresh', validateAdminRefresh, refreshTokenController);
 
 module.exports = router;

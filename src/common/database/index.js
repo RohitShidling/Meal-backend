@@ -7,27 +7,61 @@ const sessionTz = /^[A-Za-z0-9_/+-]+$/.test(process.env.PG_SESSION_TIMEZONE || '
   ? process.env.PG_SESSION_TIMEZONE
   : 'Asia/Kolkata';
 
+const requireEnv = (key) => {
+  const value = process.env[key];
+  if (!value) {
+    throw new Error(`${key} environment variable is required`);
+  }
+  return value;
+};
+
 const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 5432,
-  database: process.env.DB_NAME || 'meal',
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
+  host: requireEnv('DB_HOST'),
+  port: Number(process.env.DB_PORT || 5432),
+  database: requireEnv('DB_NAME'),
+  user: requireEnv('DB_USER'),
+  password: requireEnv('DB_PASSWORD'),
+  max: Number.parseInt(process.env.DB_POOL_MAX || '20', 10),
+  min: Number.parseInt(process.env.DB_POOL_MIN || '2', 10),
+  idleTimeoutMillis: Number.parseInt(process.env.DB_IDLE_TIMEOUT_MS || '30000', 10),
+  connectionTimeoutMillis: Number.parseInt(process.env.DB_CONNECT_TIMEOUT_MS || '10000', 10),
+  query_timeout: Number.parseInt(process.env.DB_QUERY_TIMEOUT_MS || '20000', 10),
+  statement_timeout: Number.parseInt(process.env.DB_STATEMENT_TIMEOUT_MS || '20000', 10),
+  application_name: process.env.DB_APP_NAME || 'meal-backend',
+  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' } : undefined,
   // Calendar-day logic (subscription start/end vs token date) expects consistent DATE() casting.
   options: `-c TimeZone=${sessionTz}`,
 });
 
-// Test connection
-pool.connect((err, client, release) => {
-  if (err) {
-    return console.error('Error acquiring client', err.stack);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const ensureDbConnectionReady = async () => {
+  const maxRetries = Number.parseInt(process.env.DB_CONNECT_RETRIES || '5', 10);
+  const retryDelayMs = Number.parseInt(process.env.DB_CONNECT_RETRY_DELAY_MS || '2000', 10);
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      await pool.query('SELECT 1');
+      if (attempt > 1) {
+        console.log(`PostgreSQL database connected successfully on retry ${attempt}/${maxRetries}.`);
+      } else {
+        console.log('PostgreSQL database connected successfully.');
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+      console.error(`Database connection attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+      if (attempt < maxRetries) {
+        await sleep(retryDelayMs);
+      }
+    }
   }
-  console.log('PostgreSQL database connected successfully.');
-  release();
-});
+  throw lastError;
+};
 
 // Initialize tables if they don't exist
 const initDB = async () => {
+  await ensureDbConnectionReady();
   // ──────────────────────────────────────────────
   // SEQUENCES FOR CUSTOM IDs
   // ──────────────────────────────────────────────
@@ -439,11 +473,18 @@ const initDB = async () => {
 
   const createOtpSessionsTable = `
     CREATE TABLE IF NOT EXISTS otp_sessions (
-      phone_number VARCHAR(20) PRIMARY KEY,
-      session_info TEXT NOT NULL,
-      expires_at   TIMESTAMPTZ NOT NULL,
-      created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      phone_number      VARCHAR(20) PRIMARY KEY,
+      session_info      TEXT NOT NULL,
+      created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at        TIMESTAMPTZ NOT NULL,
+      last_sent_at      TIMESTAMPTZ NOT NULL,
+      failed_attempts   INTEGER NOT NULL DEFAULT 0,
+      day_key           VARCHAR(10) NOT NULL,
+      daily_send_count  INTEGER NOT NULL DEFAULT 1,
+      blocked_until     TIMESTAMPTZ,
+      request_ip_hash   VARCHAR(64),
+      user_agent_hash   VARCHAR(64),
+      updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `;
 
@@ -561,6 +602,8 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS is_logged_in BOOLEAN DEFAULT false;`);
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS last_login TIMESTAMP;`);
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS refresh_token TEXT;`);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_finalized_at TIMESTAMPTZ;`);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_finalized_source VARCHAR(30);`);
     await pool.query(`UPDATE admins SET username = 'admin' WHERE username IS NULL;`);
 
     // Create new feature tables
@@ -602,13 +645,15 @@ const initDB = async () => {
         skip_start_date DATE NOT NULL,
         skip_end_date   DATE NOT NULL,
         total_skip_days INTEGER NOT NULL DEFAULT 0,
-        subscription_id VARCHAR(20) REFERENCES client_subscriptions(id) ON DELETE CASCADE,
         extension_days  INTEGER NOT NULL DEFAULT 0,
+        subscription_id VARCHAR(20) REFERENCES client_subscriptions(id) ON DELETE SET NULL,
         status          VARCHAR(20) NOT NULL DEFAULT 'approved', -- 'approved', 'cancelled'
         created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
     `);
+    await pool.query(`ALTER TABLE meal_skips ADD COLUMN IF NOT EXISTS subscription_id VARCHAR(20) REFERENCES client_subscriptions(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE meal_skips ADD COLUMN IF NOT EXISTS extension_days INTEGER NOT NULL DEFAULT 0;`);
 
     // ──────────────────────────────────────────────
     // MEAL REDUCTIONS LOG TABLE (admin audit trail)
@@ -785,6 +830,48 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS meal_timing TIME;`);
     await pool.query(`ALTER TABLE client_subscriptions ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
+    await pool.query(`ALTER TABLE client_subscriptions DROP CONSTRAINT IF EXISTS chk_client_subscriptions_meals;`);
+    try {
+      await pool.query(`ALTER TABLE client_subscriptions ADD CONSTRAINT chk_client_subscriptions_meals CHECK (used_meals >= 0 AND total_meals >= 0 AND used_meals <= total_meals);`);
+    } catch (constraintError) {
+      console.warn('Skipping chk_client_subscriptions_meals due to existing invalid rows. Clean data and re-apply migration.');
+    }
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_transactions_order_id_status ON transactions(order_id, status);`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_cart_per_client ON carts(client_id) WHERE status='active';`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_cart_items_cart_id ON cart_items(cart_id);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_orders_client_status_created ON orders(client_id, status, created_at DESC);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_orders_cart_id ON orders(cart_id);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_client_subscriptions_client_active_end ON client_subscriptions(client_id, is_active, end_date DESC);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_client_subscriptions_entity_active ON client_subscriptions(entity_type, entity_id, is_active);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_client_subscriptions_order_id ON client_subscriptions(order_id);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_daily_meal_log_meal_date ON daily_meal_log(meal_date);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_meal_skips_client_entity_status_dates ON meal_skips(client_id, entity_type, entity_id, status, skip_start_date, skip_end_date);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_subscription_alerts_client_created ON subscription_alerts(client_id, created_at DESC);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_otp_sessions_expires ON otp_sessions(expires_at);`);
+    await pool.query(`DELETE FROM otp_sessions WHERE expires_at < NOW() - INTERVAL '1 day';`);
+    await pool.query(`ALTER TABLE meal_skips DROP CONSTRAINT IF EXISTS chk_meal_skips_dates;`);
+    await pool.query(`ALTER TABLE meal_skips DROP CONSTRAINT IF EXISTS chk_meal_skips_total_days;`);
+    try {
+      await pool.query(`ALTER TABLE meal_skips ADD CONSTRAINT chk_meal_skips_dates CHECK (skip_end_date >= skip_start_date);`);
+      await pool.query(`ALTER TABLE meal_skips ADD CONSTRAINT chk_meal_skips_total_days CHECK (total_skip_days > 0);`);
+    } catch (constraintError) {
+      console.warn('Skipping meal_skips check constraints due to existing invalid rows. Clean data and re-apply migration.');
+    }
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS btree_gist;`);
+    await pool.query(`ALTER TABLE meal_skips DROP CONSTRAINT IF EXISTS no_overlap_skips;`);
+    try {
+      await pool.query(`
+        ALTER TABLE meal_skips
+        ADD CONSTRAINT no_overlap_skips
+        EXCLUDE USING gist (
+          entity_id WITH =,
+          entity_type WITH =,
+          daterange(skip_start_date, skip_end_date, '[]') WITH &&
+        ) WHERE (status = 'approved')
+      `);
+    } catch (constraintError) {
+      console.warn('Skipping no_overlap_skips constraint due to existing overlaps. Clean data and re-apply migration.');
+    }
 
     // Teacher → school mapping (needed for school token PDFs that include teachers)
     await pool.query(`ALTER TABLE teacher_profiles ADD COLUMN IF NOT EXISTS school_id VARCHAR(20) REFERENCES schools(id) ON DELETE SET NULL;`);
@@ -945,15 +1032,16 @@ const initDB = async () => {
     // ──────────────────────────────────────────────
     // SEED: Default Admin
     // ──────────────────────────────────────────────
+    const shouldSeedDefaultAdmin = process.env.SEED_DEFAULT_ADMIN === 'true';
     const adminCheck = await pool.query('SELECT id FROM admins LIMIT 1');
-    if (adminCheck.rows.length === 0) {
+    if (shouldSeedDefaultAdmin && adminCheck.rows.length === 0) {
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash('adminpassword', salt);
       await pool.query(
         'INSERT INTO admins (phone_number, password, username) VALUES ($1, $2, $3)',
         ['+911234567890', hashedPassword, 'admin']
       );
-      console.log('Default admin seeded: +911234567890 / adminpassword');
+      console.log('Default admin seeded via SEED_DEFAULT_ADMIN=true');
     }
 
     // ──────────────────────────────────────────────

@@ -126,44 +126,40 @@ exports.adminAddExtraMealsByEntity = catchAsync(async (req, res, next) => {
     return next(new AppError('reason is required and must be at least 3 characters.', 400));
   }
 
+  // Find the subscription row for this entity (even if it is inactive due to remaining hitting 0)
+  const subRes = await db.query(
+    `SELECT id,
+            client_id,
+            total_meals,
+            used_meals,
+            start_date,
+            end_date,
+            TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date_ymd,
+            include_saturday
+     FROM client_subscriptions
+     WHERE entity_type = $1 AND entity_id = $2
+     LIMIT 1`,
+    [entityType, entityId]
+  );
+
+  if (subRes.rowCount === 0) return next(new AppError('No subscription found for this entity.', 404));
+
+  const sub = subRes.rows[0];
+  const remainingBefore = Number(sub.total_meals) - Number(sub.used_meals);
+
+  const includeSaturday = sub.include_saturday !== false;
+  const endYmd = sub.end_date_ymd;
+  if (!parseYmdStrict(endYmd)) return next(new AppError('Invalid subscription end_date format in DB.', 500));
+
+  const newEndYmd = extendEndYmdByMealDays({
+    endYmd,
+    includeSaturday,
+    extraMeals: parsedExtra,
+  });
+
   const tx = await db.pool.connect();
   try {
     await tx.query('BEGIN');
-    const subRes = await tx.query(
-      `SELECT id,
-              client_id,
-              total_meals,
-              used_meals,
-              start_date,
-              end_date,
-              TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date_ymd,
-              include_saturday
-       FROM client_subscriptions
-       WHERE entity_type = $1 AND entity_id = $2
-       LIMIT 1
-       FOR UPDATE`,
-      [entityType, entityId]
-    );
-    if (subRes.rowCount === 0) {
-      await tx.query('ROLLBACK');
-      return next(new AppError('No subscription found for this entity.', 404));
-    }
-
-    const sub = subRes.rows[0];
-    const remainingBefore = Number(sub.total_meals) - Number(sub.used_meals);
-    const includeSaturday = sub.include_saturday !== false;
-    const endYmd = sub.end_date_ymd;
-    if (!parseYmdStrict(endYmd)) {
-      await tx.query('ROLLBACK');
-      return next(new AppError('Invalid subscription end_date format in DB.', 500));
-    }
-
-    const newEndYmd = extendEndYmdByMealDays({
-      endYmd,
-      includeSaturday,
-      extraMeals: parsedExtra,
-    });
-
     await tx.query(
       `UPDATE client_subscriptions
        SET total_meals = total_meals + $1,

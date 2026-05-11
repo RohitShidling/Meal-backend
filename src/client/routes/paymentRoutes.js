@@ -2,23 +2,8 @@ const express = require('express');
 const router = express.Router();
 const paymentController = require('../controllers/paymentController');
 const clientAuth = require('../middlewares/authMiddleware');
-const rateLimit = require('express-rate-limit');
-
-const paymentWriteLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 40,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, message: 'Too many payment write requests. Please retry after 15 minutes.' },
-});
-
-const paymentSyncLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000,
-  max: 60,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, message: 'Too many payment sync requests. Please retry after 5 minutes.' },
-});
+const { validateInitiatePayment, validateCheckoutCart, validateTxnPathParam } = require('../validators/paymentValidator');
+const webhookRawParser = express.raw({ type: '*/*' });
 
 /**
  * @swagger
@@ -75,7 +60,7 @@ const paymentSyncLimiter = rateLimit({
  *       404:
  *         description: Entity or subscription not found
  */
-router.post('/initiate', paymentWriteLimiter, clientAuth, paymentController.initiatePayment);
+router.post('/initiate', clientAuth, validateInitiatePayment, paymentController.initiatePayment);
 
 // ─── CART CHECKOUT ───────────────────────────────────────────────────────────
 /**
@@ -123,7 +108,7 @@ router.post('/initiate', paymentWriteLimiter, clientAuth, paymentController.init
  *       400:
  *         description: Cart is empty
  */
-router.post('/checkout-cart', paymentWriteLimiter, clientAuth, paymentController.checkoutCart);
+router.post('/checkout-cart', clientAuth, validateCheckoutCart, paymentController.checkoutCart);
 
 // ─── WEBHOOK (no auth — called by PhonePe server) ────────────────────────────
 /**
@@ -137,7 +122,7 @@ router.post('/checkout-cart', paymentWriteLimiter, clientAuth, paymentController
  *       200:
  *         description: OK
  */
-router.post('/webhook', paymentController.handleWebhook);
+router.post('/webhook', webhookRawParser, paymentController.handleWebhook);
 
 // ─── INSTANT CALLBACK (Backend Redirect) ──────────────────────────────────
 /**
@@ -220,7 +205,7 @@ router.get('/status-page', paymentController.statusPage);
  *       404:
  *         description: Transaction not found
  */
-router.get('/status/:txnId', paymentSyncLimiter, clientAuth, paymentController.checkPaymentStatus);
+router.get('/status/:txnId', clientAuth, validateTxnPathParam, paymentController.checkPaymentStatus);
 
 // ─── HISTORY & SUBSCRIPTIONS ─────────────────────────────────────────────────
 /**
@@ -335,7 +320,7 @@ router.get('/active-subscriptions', clientAuth, paymentController.getMyActiveSub
  *       502:
  *         description: PhonePe gateway unreachable
  */
-router.post('/force-sync/:txnId', paymentSyncLimiter, clientAuth, paymentController.forceSync);
+router.post('/force-sync/:txnId', clientAuth, validateTxnPathParam, paymentController.forceSync);
 
 module.exports = router;
 
