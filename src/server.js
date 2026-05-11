@@ -1,5 +1,6 @@
-process.env.DOTENVX_QUIET = '1';
-require('dotenv').config({ quiet: true });
+require('dotenv').config();
+console.log(`Environment Loaded: ${process.env.NODE_ENV || 'undefined'}`);
+console.log(`Firebase Key Loaded: ${process.env.FIREBASE_API_KEY ? 'Yes' : 'No'}`);
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -222,11 +223,13 @@ app.use((err, req, res, next) => {
   } else {
     // Production
     if (err.isOperational) {
+      const statusCode = err.statusCode || 500;
+      const isServerError = statusCode >= 500;
       res.status(err.statusCode).json({
         success: false,
         status: err.status,
-        message: err.message,
-        ...(normalizedErrors ? { errors: normalizedErrors } : {})
+        message: isServerError ? 'Something went wrong. Please try again later.' : err.message,
+        ...(!isServerError && normalizedErrors ? { errors: normalizedErrors } : {})
       });
     } else {
       // Programming or other unknown error: don't leak error details

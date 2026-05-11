@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const professionalController = require('../controllers/professionalController');
-const authMiddleware = require('../../common/middlewares/commonAuthMiddleware');
+const authMiddleware = require('../middlewares/authMiddleware');
 const { validateProfessionalProfile } = require('../validators/profileValidator');
 
 /**

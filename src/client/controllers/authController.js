@@ -91,10 +91,18 @@ const registerVerifyOtp = catchAsync(async (req, res, next) => {
   }
 
   // 3. Create User
-  const insertResult = await db.query(
-    'INSERT INTO clients (phone_number, username, is_logged_in, last_login) VALUES ($1, $2, true, NOW()) RETURNING *',
-    [phoneNumber, username.trim()]
-  );
+  let insertResult;
+  try {
+    insertResult = await db.query(
+      'INSERT INTO clients (phone_number, username, is_logged_in, last_login) VALUES ($1, $2, true, NOW()) RETURNING *',
+      [phoneNumber, username.trim()]
+    );
+  } catch (e) {
+    if (e.code === '23505') {
+      return next(new AppError('This mobile number was recently registered. Please login.', 409));
+    }
+    throw e;
+  }
   const clientUser = insertResult.rows[0];
 
   // 4. Generate Tokens
@@ -283,12 +291,14 @@ const getMe = catchAsync(async (req, res, next) => {
   const professionalResult = await db.query('SELECT * FROM professional_profiles WHERE client_id = $1', [clientId]);
   const teacherResult = await db.query('SELECT * FROM teacher_profiles WHERE client_id = $1', [clientId]);
 
+  const isParent = parentResult.rows.length > 0 || parseInt(childrenResult.rows[0].count, 10) > 0;
+
   return res.status(200).json({
     success: true,
     data: {
       user: clientResult.rows[0],
       profiles: {
-        isParent: parentResult.rows.length > 0,
+        isParent: isParent,
         parentProfile: parentResult.rows[0] || null,
         childrenCount: parseInt(childrenResult.rows[0].count, 10),
         isProfessional: professionalResult.rows.length > 0,

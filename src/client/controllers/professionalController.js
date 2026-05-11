@@ -1,4 +1,5 @@
-const { query } = require('../../common/database');
+const db = require('../../common/database');
+const { query } = db;
 const AppError = require('../../common/utils/AppError');
 const DEFAULT_MEAL_TIME = '1:00 PM';
 
@@ -68,53 +69,62 @@ exports.saveProfessionalProfile = async (req, res, next) => {
       return next(new AppError('Invalid or inactive corporate location', 400));
     }
 
-    // INDUSTRIAL RULE: Check for mutual exclusivity with Teacher profile
-    const teacherCheck = await query('SELECT id FROM teacher_profiles WHERE client_id = $1', [clientId]);
-    if (teacherCheck.rows.length > 0) {
-      return next(new AppError('A Teacher profile already exists for this account. You cannot have both Teacher and Professional profiles.', 403));
-    }
-
-    // Check if professional profile already exists for this client
-    const profileCheckQuery = `SELECT * FROM professional_profiles WHERE client_id = $1`;
-    const profileCheck = await query(profileCheckQuery, [clientId]);
-
+    const tx = await db.pool.connect();
     let result;
+    let profileExists = false;
+    try {
+      await tx.query('BEGIN');
+      await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [String(clientId)]);
 
-    if (profileCheck.rows.length > 0) {
-      // Update existing
-      const updateQuery = `
-        UPDATE professional_profiles 
-        SET 
-          name = $1, 
-          company_name = $2, 
-          corporate_location_id = $3, 
-          city = $4, 
-          state = $5, 
-          lunch_time = $6,
-          meal_size_id = $7,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE client_id = $8
-        RETURNING *;
-      `;
-      const values = [name, company_name, corporate_location_id, city, state, normalizedMealTime, Number(mealSizeInput), clientId];
-      const updateResult = await query(updateQuery, values);
-      result = updateResult.rows[0];
-    } else {
-      // Create new
-      const insertQuery = `
-        INSERT INTO professional_profiles (
-          client_id, name, company_name, corporate_location_id, city, state, lunch_time, meal_size_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING *;
-      `;
-      const values = [clientId, name, company_name, corporate_location_id, city, state, normalizedMealTime, Number(mealSizeInput)];
-      const insertResult = await query(insertQuery, values);
-      result = insertResult.rows[0];
+      const teacherCheck = await tx.query('SELECT id FROM teacher_profiles WHERE client_id = $1', [clientId]);
+      if (teacherCheck.rows.length > 0) {
+        await tx.query('ROLLBACK');
+        return next(new AppError('A Teacher profile already exists for this account. You cannot have both Teacher and Professional profiles.', 403));
+      }
+
+      const profileCheck = await tx.query('SELECT * FROM professional_profiles WHERE client_id = $1', [clientId]);
+      profileExists = profileCheck.rows.length > 0;
+
+      if (profileExists) {
+        const updateQuery = `
+          UPDATE professional_profiles
+          SET
+            name = $1,
+            company_name = $2,
+            corporate_location_id = $3,
+            city = $4,
+            state = $5,
+            lunch_time = $6,
+            meal_size_id = $7,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE client_id = $8
+          RETURNING *;
+        `;
+        const values = [name, company_name, corporate_location_id, city, state, normalizedMealTime, Number(mealSizeInput), clientId];
+        const updateResult = await tx.query(updateQuery, values);
+        result = updateResult.rows[0];
+      } else {
+        const insertQuery = `
+          INSERT INTO professional_profiles (
+            client_id, name, company_name, corporate_location_id, city, state, lunch_time, meal_size_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          RETURNING *;
+        `;
+        const values = [clientId, name, company_name, corporate_location_id, city, state, normalizedMealTime, Number(mealSizeInput)];
+        const insertResult = await tx.query(insertQuery, values);
+        result = insertResult.rows[0];
+      }
+      await tx.query('COMMIT');
+    } catch (e) {
+      await tx.query('ROLLBACK');
+      throw e;
+    } finally {
+      tx.release();
     }
 
     res.status(200).json({
       success: true,
-      message: profileCheck.rows.length > 0 ? 'Professional profile updated successfully' : 'Professional profile created successfully',
+      message: profileExists ? 'Professional profile updated successfully' : 'Professional profile created successfully',
       data: withProfessionalAliases(result),
     });
   } catch (error) {

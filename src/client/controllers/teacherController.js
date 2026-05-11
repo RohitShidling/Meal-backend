@@ -1,4 +1,5 @@
-const { query } = require('../../common/database');
+const db = require('../../common/database');
+const { query } = db;
 const AppError = require('../../common/utils/AppError');
 const DEFAULT_MEAL_TIME = '1:00 PM';
 
@@ -60,64 +61,70 @@ exports.saveTeacherProfile = async (req, res, next) => {
     }
     const normalizedMealTime = normalizeMealTime(mealTimeInput);
 
-    // INDUSTRIAL RULE: Check for mutual exclusivity with Professional profile
-    const profCheck = await query('SELECT id FROM professional_profiles WHERE client_id = $1', [clientId]);
-    if (profCheck.rows.length > 0) {
-      return next(new AppError('A Professional profile already exists for this account. You cannot have both Teacher and Professional profiles.', 403));
-    }
-
-    // Check if teacher profile already exists for this client
-    const profileCheckQuery = `SELECT * FROM teacher_profiles WHERE client_id = $1`;
-    const profileCheck = await query(profileCheckQuery, [clientId]);
-
-    // Best-effort resolve school_id from existing schools table (preserves current UI flow).
-    // If there is no match, school_id stays NULL and admin school tokens won't include this teacher
-    // until corrected data is provided / mapped.
-    let resolvedSchoolId = null;
-    const schoolMatch = await query(
-      `SELECT id FROM schools WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
-      [school_college_name]
-    );
-    if (schoolMatch.rows.length > 0) resolvedSchoolId = schoolMatch.rows[0].id;
-
+    const tx = await db.pool.connect();
     let result;
+    let profileExists = false;
+    try {
+      await tx.query('BEGIN');
+      await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [String(clientId)]);
 
-    if (profileCheck.rows.length > 0) {
-      // Update existing
-      const updateQuery = `
-        UPDATE teacher_profiles 
-        SET 
-          name = $1, 
-          school_college_name = $2, 
-          school_id = $3,
-          city = $4, 
-          state = $5, 
-          meal_time = $6,
-          status = $7,
-          meal_size_id = $8,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE client_id = $9
-        RETURNING *;
-      `;
-      const values = [name, school_college_name, resolvedSchoolId, city, state, normalizedMealTime, status || 'active', Number(mealSizeInput), clientId];
-      const updateResult = await query(updateQuery, values);
-      result = updateResult.rows[0];
-    } else {
-      // Create new
-      const insertQuery = `
-        INSERT INTO teacher_profiles (
-          client_id, name, school_college_name, school_id, city, state, meal_time, location, status, meal_size_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        RETURNING *;
-      `;
-      const values = [clientId, name, school_college_name, resolvedSchoolId, city, state, normalizedMealTime, '', status || 'active', Number(mealSizeInput)];
-      const insertResult = await query(insertQuery, values);
-      result = insertResult.rows[0];
+      const profCheck = await tx.query('SELECT id FROM professional_profiles WHERE client_id = $1', [clientId]);
+      if (profCheck.rows.length > 0) {
+        await tx.query('ROLLBACK');
+        return next(new AppError('A Professional profile already exists for this account. You cannot have both Teacher and Professional profiles.', 403));
+      }
+
+      const profileCheck = await tx.query('SELECT * FROM teacher_profiles WHERE client_id = $1', [clientId]);
+      profileExists = profileCheck.rows.length > 0;
+
+      let resolvedSchoolId = null;
+      const schoolMatch = await tx.query(
+        `SELECT id FROM schools WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
+        [school_college_name]
+      );
+      if (schoolMatch.rows.length > 0) resolvedSchoolId = schoolMatch.rows[0].id;
+
+      if (profileExists) {
+        const updateQuery = `
+          UPDATE teacher_profiles
+          SET
+            name = $1,
+            school_college_name = $2,
+            school_id = $3,
+            city = $4,
+            state = $5,
+            meal_time = $6,
+            status = $7,
+            meal_size_id = $8,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE client_id = $9
+          RETURNING *;
+        `;
+        const values = [name, school_college_name, resolvedSchoolId, city, state, normalizedMealTime, status || 'active', Number(mealSizeInput), clientId];
+        const updateResult = await tx.query(updateQuery, values);
+        result = updateResult.rows[0];
+      } else {
+        const insertQuery = `
+          INSERT INTO teacher_profiles (
+            client_id, name, school_college_name, school_id, city, state, meal_time, location, status, meal_size_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          RETURNING *;
+        `;
+        const values = [clientId, name, school_college_name, resolvedSchoolId, city, state, normalizedMealTime, '', status || 'active', Number(mealSizeInput)];
+        const insertResult = await tx.query(insertQuery, values);
+        result = insertResult.rows[0];
+      }
+      await tx.query('COMMIT');
+    } catch (e) {
+      await tx.query('ROLLBACK');
+      throw e;
+    } finally {
+      tx.release();
     }
 
     res.status(200).json({
       success: true,
-      message: profileCheck.rows.length > 0 ? 'Teacher profile updated successfully' : 'Teacher profile created successfully',
+      message: profileExists ? 'Teacher profile updated successfully' : 'Teacher profile created successfully',
       data: withTeacherAliases(result),
     });
   } catch (error) {

@@ -788,6 +788,8 @@ const buildStatusResponse = (txn, gwState) => ({
 exports.statusPage = catchAsync(async (req, res) => {
   const { tid } = req.query;
   if (!tid) return res.status(400).send('<h1>Missing Transaction ID</h1>');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
 
   const txnRes = await db.query('SELECT * FROM transactions WHERE merchant_transaction_id=$1', [tid]);
   let state = 'PENDING';
@@ -948,9 +950,8 @@ exports.getMyActiveSubscriptions = catchAsync(async (req, res) => {
      LEFT JOIN meal_sizes me ON me.id = COALESCE(ch.meal_size_id, tp.meal_size_id, pp.meal_size_id, s.meal_size_id)
     WHERE cs.client_id=$1 AND cs.is_active=true
       AND (cs.total_meals - cs.used_meals) > 0
-      AND DATE(cs.start_date) <= $2::date
       AND DATE(cs.end_date) >= $2::date
-     ORDER BY cs.end_date ASC`,
+     ORDER BY cs.start_date ASC, cs.end_date ASC`,
     [clientId, today]
   );
 

@@ -1,6 +1,5 @@
 require('dotenv').config();
 const axios = require('axios');
-const crypto = require('crypto');
 const db = require('../database');
 
 const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
@@ -11,74 +10,9 @@ const OTP_DAILY_LIMIT = Number.parseInt(process.env.OTP_DAILY_LIMIT || '20', 10)
 const OTP_BLOCK_MS = Number.parseInt(process.env.OTP_BLOCK_MINUTES || '15', 10) * 60 * 1000;
 const FIREBASE_RECAPTCHA_TOKEN = process.env.FIREBASE_RECAPTCHA_TOKEN;
 
-const normalizePhone = (phoneNumber) => String(phoneNumber || '').trim();
-const getDayKey = () => new Date().toISOString().slice(0, 10);
-const hashMetadata = (value) => {
-  if (!value) return null;
-  return crypto.createHash('sha256').update(String(value)).digest('hex');
-};
-
-const sanitizeSessionForClient = (record) => ({
-  phoneNumber: record.phone_number,
-  expiresAt: record.expires_at,
-  attemptsRemaining: Math.max(0, OTP_MAX_ATTEMPTS - (record.failed_attempts || 0))
-});
-
-const getOtpSession = async (phoneNumber) => {
-  const result = await db.query(
-    `SELECT phone_number, session_info, created_at, expires_at, last_sent_at,
-            failed_attempts, day_key, daily_send_count, blocked_until,
-            request_ip_hash, user_agent_hash
-     FROM otp_sessions
-     WHERE phone_number = $1`,
-    [phoneNumber]
-  );
-  return result.rows[0] || null;
-};
-
-const upsertOtpSession = async (record) => {
-  await db.query(
-    `INSERT INTO otp_sessions
-      (phone_number, session_info, created_at, expires_at, last_sent_at, failed_attempts, day_key, daily_send_count, blocked_until, request_ip_hash, user_agent_hash, updated_at)
-     VALUES
-      ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
-     ON CONFLICT (phone_number) DO UPDATE SET
-      session_info = EXCLUDED.session_info,
-      created_at = EXCLUDED.created_at,
-      expires_at = EXCLUDED.expires_at,
-      last_sent_at = EXCLUDED.last_sent_at,
-      failed_attempts = EXCLUDED.failed_attempts,
-      day_key = EXCLUDED.day_key,
-      daily_send_count = EXCLUDED.daily_send_count,
-      blocked_until = EXCLUDED.blocked_until,
-      request_ip_hash = EXCLUDED.request_ip_hash,
-      user_agent_hash = EXCLUDED.user_agent_hash,
-      updated_at = NOW()`,
-    [
-      record.phone_number,
-      record.session_info,
-      record.created_at,
-      record.expires_at,
-      record.last_sent_at,
-      record.failed_attempts,
-      record.day_key,
-      record.daily_send_count,
-      record.blocked_until,
-      record.request_ip_hash,
-      record.user_agent_hash
-    ]
-  );
-};
-
-const deleteOtpSession = async (phoneNumber) => {
-  await db.query('DELETE FROM otp_sessions WHERE phone_number = $1', [phoneNumber]);
-};
-
 /**
  * STEP 1 — Send OTP via Firebase REST API
  * Firebase handles OTP generation + SMS delivery.
- * For Firebase test phone numbers (added in Console), Firebase
- * skips reCAPTCHA validation and skips SMS — uses preset code.
  */
 async function sendOTP(phoneNumber, metadata = {}) {
   const normalizedPhone = normalizePhone(phoneNumber);
@@ -123,22 +57,18 @@ async function sendOTP(phoneNumber, metadata = {}) {
   // Firebase returns: { sessionInfo: "..." }
   const { sessionInfo } = response.data;
 
-  const sessionRecord = {
-    phone_number: normalizedPhone,
-    session_info: sessionInfo,
-    created_at: new Date(now),
-    last_sent_at: new Date(now),
-    expires_at: new Date(now + OTP_EXPIRY_MS),
-    failed_attempts: 0,
-    day_key: dayKey,
-    daily_send_count: previousDailyCount + 1,
-    blocked_until: existing?.blocked_until && new Date(existing.blocked_until).getTime() > now ? existing.blocked_until : null,
-    request_ip_hash: hashMetadata(metadata.ip),
-    user_agent_hash: hashMetadata(metadata.userAgent)
-  };
-  await upsertOtpSession(sessionRecord);
+  await db.query(
+    `INSERT INTO otp_sessions (phone_number, session_info, expires_at)
+     VALUES ($1, $2, NOW() + INTERVAL '10 minutes')
+     ON CONFLICT (phone_number)
+     DO UPDATE SET
+       session_info = EXCLUDED.session_info,
+       expires_at = EXCLUDED.expires_at,
+       updated_at = NOW()`,
+    [phoneNumber, sessionInfo]
+  );
 
-  return sanitizeSessionForClient(sessionRecord);
+  return { phoneNumber };
 }
 
 /**

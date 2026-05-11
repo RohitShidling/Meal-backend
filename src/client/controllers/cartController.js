@@ -260,7 +260,7 @@ exports.removeFromCart = catchAsync(async (req, res, next) => {
   const { itemId } = req.params;
 
   const item = await db.query(
-    'SELECT ci.* FROM cart_items ci JOIN carts c ON ci.cart_id=c.id WHERE ci.id=$1 AND c.client_id=$2',
+    'SELECT ci.* FROM cart_items ci JOIN carts c ON ci.cart_id=c.id WHERE ci.id=$1 AND c.client_id=$2 AND c.status=\'active\'',
     [itemId, clientId]
   );
   if (item.rows.length === 0) return next(new AppError('Cart item not found', 404));

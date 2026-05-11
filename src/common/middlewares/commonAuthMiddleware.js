@@ -17,38 +17,25 @@ const commonAuthMiddleware = async (req, res, next) => {
       return next(new AppError('Access denied. No token provided.', 401));
     }
     
+    const decodedAdmin = jwt.decode(token);
+    if (!decodedAdmin || !decodedAdmin.role) {
+      return next(new AppError('Invalid, expired, or deleted user session.', 401));
+    }
+
     let decoded;
-    let authenticated = false;
-
-    // Try Admin Secret
-    try {
+    if (decodedAdmin.role === 'admin') {
       decoded = jwt.verify(token, process.env.ADMIN_JWT_SECRET);
-      if (decoded.role === 'admin') {
-        const adminCheck = await db.query('SELECT id FROM admins WHERE id = $1', [decoded.id]);
-        if (adminCheck.rows.length > 0) {
-          authenticated = true;
-        }
+      const adminCheck = await db.query('SELECT id FROM admins WHERE id = $1 AND is_logged_in = true', [decoded.id]);
+      if (adminCheck.rows.length === 0) {
+        return next(new AppError('Invalid, expired, or deleted user session.', 401));
       }
-    } catch (err) {
-      // Ignore and try client secret
-    }
-
-    // Try Client Secret if not already authenticated
-    if (!authenticated) {
-      try {
-        decoded = jwt.verify(token, process.env.CLIENT_JWT_SECRET);
-        if (decoded.role === 'client') {
-          const clientCheck = await db.query('SELECT id FROM clients WHERE id = $1', [decoded.id]);
-          if (clientCheck.rows.length > 0) {
-            authenticated = true;
-          }
-        }
-      } catch (err) {
-        // Both failed
+    } else if (decodedAdmin.role === 'client') {
+      decoded = jwt.verify(token, process.env.CLIENT_JWT_SECRET);
+      const clientCheck = await db.query('SELECT id FROM clients WHERE id = $1', [decoded.id]);
+      if (clientCheck.rows.length === 0) {
+        return next(new AppError('Invalid, expired, or deleted user session.', 401));
       }
-    }
-
-    if (!authenticated) {
+    } else {
       return next(new AppError('Invalid, expired, or deleted user session.', 401));
     }
 

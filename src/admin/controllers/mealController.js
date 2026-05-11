@@ -321,6 +321,31 @@ exports.addRemainingMealsForUser = catchAsync(async (req, res, next) => {
  * @route POST /api/admin/meals/reconcile
  */
 exports.reconcileMeals = catchAsync(async (req, res) => {
+  const dryRun = String(req.query.dryRun || req.body?.dryRun || 'true').toLowerCase() !== 'false';
+  const confirm = String(req.query.confirm || req.body?.confirm || '').toLowerCase() === 'true';
+  const preview = await db.query(`
+    SELECT cs.id AS subscription_id,
+           cs.used_meals AS current_used,
+           COALESCE(log_counts.actual_used, 0) AS actual_used
+    FROM client_subscriptions cs
+    LEFT JOIN (
+      SELECT subscription_id, COUNT(*) AS actual_used
+      FROM daily_meal_log
+      GROUP BY subscription_id
+    ) AS log_counts ON cs.id = log_counts.subscription_id
+    WHERE cs.used_meals != COALESCE(log_counts.actual_used, 0)
+    ORDER BY cs.id
+  `);
+  if (dryRun || !confirm) {
+    return res.status(200).json({
+      success: true,
+      dry_run: true,
+      message: confirm ? 'Dry-run requested. No data changed.' : 'Reconcile requires confirm=true to apply changes.',
+      affected_count: preview.rowCount,
+      changes: preview.rows
+    });
+  }
+
   const result = await db.query(`
     UPDATE client_subscriptions cs
     SET used_meals = COALESCE(log_counts.actual_used, 0),
@@ -337,6 +362,7 @@ exports.reconcileMeals = catchAsync(async (req, res) => {
 
   res.status(200).json({
     success: true,
+    dry_run: false,
     message: `Reconciliation complete. ${result.rowCount} subscription(s) corrected.`,
     corrected: result.rows
   });

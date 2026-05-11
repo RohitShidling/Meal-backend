@@ -758,8 +758,8 @@ exports.getActiveSubscriptionsWithMeals = catchAsync(async (req, res) => {
     success: true,
     pagination: {
       total: parseInt(countRes.rows[0].count),
-      page: parseInt(page),
-      limit: parseInt(limit)
+      page,
+      limit
     },
     data: result.rows
   });

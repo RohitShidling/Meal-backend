@@ -1,6 +1,16 @@
 const db = require('../../common/database');
 const cloudinary = require('cloudinary').v2;
 
+const isAllowedMenuImageUrl = (urlValue) => {
+  try {
+    const u = new URL(String(urlValue || '').trim());
+    if (!/^https?:$/.test(u.protocol)) return false;
+    return /(^|\.)cloudinary\.com$/i.test(u.hostname);
+  } catch (_) {
+    return false;
+  }
+};
+
 // @desc    Upload new daily menu
 // @route   POST /api/admin/menu/upload
 exports.uploadMenu = async (req, res, next) => {
@@ -11,6 +21,9 @@ exports.uploadMenu = async (req, res, next) => {
 
     if (!image_url) {
       return res.status(400).json({ success: false, message: 'Menu image is required' });
+    }
+    if (!isAllowedMenuImageUrl(image_url)) {
+      return res.status(400).json({ success: false, message: 'Invalid menu image URL source' });
     }
 
     const query = `
@@ -59,29 +72,42 @@ exports.uploadBulkMenu = async (req, res, next) => {
     }
 
     const createdMenus = [];
+    const tx = await db.pool.connect();
+    try {
+      await tx.query('BEGIN');
+      for (let i = 0; i < menus.length; i++) {
+        const menu = menus[i];
+        const items = menu.items;
+        const menu_date = menu.menu_date || new Date();
+        
+        const image_url = files[i] ? files[i].path : (menu.image_url || null);
+        const image_public_id = files[i] ? files[i].filename : (menu.image_public_id || null);
 
-    // Begin a transaction or just loop
-    for (let i = 0; i < menus.length; i++) {
-      const menu = menus[i];
-      const items = menu.items;
-      const menu_date = menu.menu_date || new Date();
-      
-      const image_url = files[i] ? files[i].path : (menu.image_url || null);
-      const image_public_id = files[i] ? files[i].filename : (menu.image_public_id || null);
+        if (!image_url) {
+          await tx.query('ROLLBACK');
+          return res.status(400).json({ success: false, message: `Menu image is required for menu at index ${i}` });
+        }
+        if (!isAllowedMenuImageUrl(image_url)) {
+          await tx.query('ROLLBACK');
+          return res.status(400).json({ success: false, message: `Invalid image URL source for menu at index ${i}` });
+        }
 
-      if (!image_url) {
-        return res.status(400).json({ success: false, message: `Menu image is required for menu at index ${i}` });
+        const query = `
+          INSERT INTO daily_menus (image_url, image_public_id, items, menu_date, created_by)
+          VALUES ($1, $2, $3, $4, $5)
+          RETURNING *
+        `;
+        
+        const values = [image_url, image_public_id, items, menu_date, req.admin ? req.admin.id : req.user.id];
+        const result = await tx.query(query, values);
+        createdMenus.push(result.rows[0]);
       }
-
-      const query = `
-        INSERT INTO daily_menus (image_url, image_public_id, items, menu_date, created_by)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING *
-      `;
-      
-      const values = [image_url, image_public_id, items, menu_date, req.admin ? req.admin.id : req.user.id];
-      const result = await db.query(query, values);
-      createdMenus.push(result.rows[0]);
+      await tx.query('COMMIT');
+    } catch (e) {
+      await tx.query('ROLLBACK');
+      throw e;
+    } finally {
+      tx.release();
     }
 
     res.status(201).json({

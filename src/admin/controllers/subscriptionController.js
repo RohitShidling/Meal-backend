@@ -116,6 +116,16 @@ exports.deleteSubscription = async (req, res, next) => {
       return next(new AppError('Subscription not found', 404));
     }
 
+    const inUse = await query(
+      `SELECT COUNT(*)::int AS active_count
+       FROM client_subscriptions
+       WHERE subscription_id = $1 AND is_active = true`,
+      [id]
+    );
+    if ((inUse.rows[0]?.active_count || 0) > 0) {
+      return next(new AppError('Cannot delete subscription plan with active client subscriptions. Deactivate plan instead.', 409));
+    }
+
     const deleteQuery = `DELETE FROM subscriptions WHERE id = $1 RETURNING id`;
     const result = await query(deleteQuery, [id]);
 

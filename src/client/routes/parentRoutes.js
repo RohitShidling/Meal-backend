@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const parentController = require('../controllers/parentController');
-const authMiddleware = require('../../common/middlewares/commonAuthMiddleware');
+const authMiddleware = require('../middlewares/authMiddleware');
 const { validateParentProfile } = require('../validators/profileValidator');
 
 /**

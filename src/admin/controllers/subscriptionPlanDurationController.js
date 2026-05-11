@@ -1,4 +1,4 @@
-const { query } = require('../../common/database');
+const { query, pool } = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
 
 const billingCycleToDays = {
@@ -35,8 +35,8 @@ const normalizeFeatures = (features) => {
     .filter(Boolean);
 };
 
-const writeFeatures = async (subscriptionId, features) => {
-  await query('DELETE FROM subscription_features WHERE subscription_id = $1', [subscriptionId]);
+const writeFeatures = async (subscriptionId, features, executor = query) => {
+  await executor('DELETE FROM subscription_features WHERE subscription_id = $1', [subscriptionId]);
   if (!features.length) return;
 
   const values = [];
@@ -47,7 +47,7 @@ const writeFeatures = async (subscriptionId, features) => {
     values.push(subscriptionId, feature, idx + 1);
   });
 
-  await query(
+  await executor(
     `
     INSERT INTO subscription_features (subscription_id, feature_text, sort_order)
     VALUES ${placeholders.join(', ')};
@@ -135,49 +135,61 @@ exports.createSubscriptionPlan = async (req, res, next) => {
     const finalDurationDays = finalDurationWithSaturday;
     const normalizedFeatures = normalizeFeatures(features);
 
-    const result = await query(
-      `
-      INSERT INTO subscriptions (
-        plan_name, price, billing_cycle, duration_days, trial_days, display_order, is_active, created_by, updated_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      RETURNING *;
-      `,
-      [
-        plan_name,
-        resolvedPriceWithSaturday,
-        billing_cycle,
-        finalDurationDays,
-        trial_days !== undefined ? trial_days : 0,
-        display_order !== undefined ? display_order : 1,
-        is_active !== undefined ? is_active : true,
-        adminId,
-        adminId,
-      ]
-    );
-    await query(
-      'UPDATE subscriptions SET meal_size_id = $1 WHERE id = $2',
-      [Number(meal_size_id), result.rows[0].id]
-    );
-    await query(
-      `
-      UPDATE subscriptions
-      SET
-        price_with_saturday = $1,
-        price_without_saturday = $2,
-        saturday_option_enabled = COALESCE($3, saturday_option_enabled),
-        duration_days_with_saturday = $4,
-        duration_days_without_saturday = $5
-      WHERE id = $6
-      `,
-      [
-        resolvedPriceWithSaturday,
-        resolvedPriceWithoutSaturday,
-        saturday_option_enabled,
-        finalDurationWithSaturday,
-        finalDurationWithoutSaturday,
-        result.rows[0].id,
-      ]
-    );
+    const tx = await pool.connect();
+    let result;
+    try {
+      await tx.query('BEGIN');
+      result = await tx.query(
+        `
+        INSERT INTO subscriptions (
+          plan_name, price, billing_cycle, duration_days, trial_days, display_order, is_active, created_by, updated_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING *;
+        `,
+        [
+          plan_name,
+          resolvedPriceWithSaturday,
+          billing_cycle,
+          finalDurationDays,
+          trial_days !== undefined ? trial_days : 0,
+          display_order !== undefined ? display_order : 1,
+          is_active !== undefined ? is_active : true,
+          adminId,
+          adminId,
+        ]
+      );
+      await tx.query(
+        'UPDATE subscriptions SET meal_size_id = $1 WHERE id = $2',
+        [Number(meal_size_id), result.rows[0].id]
+      );
+      await tx.query(
+        `
+        UPDATE subscriptions
+        SET
+          price_with_saturday = $1,
+          price_without_saturday = $2,
+          saturday_option_enabled = COALESCE($3, saturday_option_enabled),
+          duration_days_with_saturday = $4,
+          duration_days_without_saturday = $5
+        WHERE id = $6
+        `,
+        [
+          resolvedPriceWithSaturday,
+          resolvedPriceWithoutSaturday,
+          saturday_option_enabled,
+          finalDurationWithSaturday,
+          finalDurationWithoutSaturday,
+          result.rows[0].id,
+        ]
+      );
+      await writeFeatures(result.rows[0].id, normalizedFeatures, tx.query.bind(tx));
+      await tx.query('COMMIT');
+    } catch (e) {
+      await tx.query('ROLLBACK');
+      throw e;
+    } finally {
+      tx.release();
+    }
     result.rows[0].price = resolvedPriceWithSaturday;
     result.rows[0].price_with_saturday = resolvedPriceWithSaturday;
     result.rows[0].price_without_saturday = resolvedPriceWithoutSaturday;
@@ -188,7 +200,6 @@ exports.createSubscriptionPlan = async (req, res, next) => {
       result.rows[0].saturday_option_enabled = saturday_option_enabled;
     }
 
-    await writeFeatures(result.rows[0].id, normalizedFeatures);
     const hydrated = await attachFeatures([result.rows[0]]);
 
     res.status(201).json({
