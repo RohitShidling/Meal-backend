@@ -133,7 +133,9 @@ const loginController = catchAsync(async (req, res, next) => {
  * Body: { phoneNumber, code }
  */
 const verifyOtpController = catchAsync(async (req, res, next) => {
-  const { phoneNumber, code, challengeToken } = req.body;
+  const phoneNumber = String(req.body?.phoneNumber ?? '').trim();
+  const code = String(req.body?.code ?? '').trim();
+  const challengeToken = String(req.body?.challengeToken ?? '').trim();
 
   if (!phoneNumber || !code || !challengeToken) {
     return next(new AppError('phoneNumber, code and challengeToken are required.', 400));

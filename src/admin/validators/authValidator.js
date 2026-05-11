@@ -25,14 +25,17 @@ const validateAdminLogin = (req, res, next) => {
 
 const validateAdminVerifyOtp = (req, res, next) => {
   const { phoneNumber, code, challengeToken } = req.body || {};
+  const phoneStr = String(phoneNumber ?? '').trim();
+  const codeStr = String(code ?? '').trim();
+  const challengeStr = String(challengeToken ?? '').trim();
   const errors = [];
-  if (!phoneNumber || typeof phoneNumber !== 'string' || !PHONE_REGEX.test(phoneNumber.trim())) {
+  if (!phoneStr || !PHONE_REGEX.test(phoneStr)) {
     errors.push('phoneNumber must be a valid mobile number.');
   }
-  if (!code || typeof code !== 'string' || !OTP_REGEX.test(code.trim())) {
+  if (!codeStr || !OTP_REGEX.test(codeStr)) {
     errors.push('code must be a valid numeric OTP.');
   }
-  if (!challengeToken || typeof challengeToken !== 'string' || challengeToken.trim().length < 20) {
+  if (!challengeStr || challengeStr.length < 20) {
     errors.push('challengeToken is required.');
   }
   if (errors.length > 0) {
