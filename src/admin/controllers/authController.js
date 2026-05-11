@@ -82,13 +82,25 @@ const generateTokens = (id, phoneNumber) => {
 const loginController = catchAsync(async (req, res, next) => {
   const { phoneNumber, password, username } = req.body;
 
-  if (!phoneNumber || !password || !username) {
+  // Normalize phone number: strip non-digits and ensure +91 prefix
+  let normalizedPhone = (phoneNumber || '').toString().trim();
+  if (normalizedPhone.startsWith('+')) {
+    normalizedPhone = '+' + normalizedPhone.replace(/\D/g, '');
+  } else {
+    normalizedPhone = normalizedPhone.replace(/\D/g, '');
+    if (normalizedPhone.length === 10) {
+      normalizedPhone = '+91' + normalizedPhone;
+    } else {
+      normalizedPhone = '+' + normalizedPhone;
+    }
+  }
+
+  if (!normalizedPhone || !password || !username) {
     return next(new AppError('phoneNumber, password and username are required.', 400));
   }
 
-  // Check if admin exists in DB
   // Check if admin exists in DB with matching phone AND username (Case-Sensitive)
-  const result = await db.query('SELECT * FROM admins WHERE phone_number = $1 AND username = $2', [phoneNumber, username]);
+  const result = await db.query('SELECT * FROM admins WHERE phone_number = $1 AND username = $2', [normalizedPhone, username]);
 
   if (result.rows.length === 0) {
     return next(new AppError('Invalid credentials.', 401));
