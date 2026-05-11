@@ -7,6 +7,7 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const { initDB } = require('./common/database');
 const { swaggerUi, specs } = require('./docs/swagger');
+const docsAuthMiddleware = require('./common/middlewares/docsAuthMiddleware');
 
 // Import routes
 const clientAuthRoutes = require('./client/routes/authRoutes');

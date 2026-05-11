@@ -117,7 +117,6 @@ const parseYmdStrict = (input) => {
     ? raw
     : (raw.length >= 10 && YMD.test(raw.slice(0, 10)) ? raw.slice(0, 10) : null);
   if (!normalized) return null;
-
   const [y, m, d] = normalized.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
   if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
@@ -194,6 +193,7 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
     'SELECT end_date, total_meals, used_meals FROM client_subscriptions WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true AND order_id != $4 FOR UPDATE',
     [clientId, entityId, entityType, orderId]
   );
+  const currentSub = currentSubRes.rows[0] || null;
 
   const sessionToday = mealEligibilityService.parseSessionToday();
   let baseDateYmd = parseYmdStrict(requestedStartDate) || sessionToday;
@@ -204,8 +204,8 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
     : computeMealCount(baseDateYmd, durationDays, includeSaturday);
   let newUsedMeals = 0;
 
-  if (existingSub.rows.length > 0) {
-    const currentEndYmd = String(existingSub.rows[0].end_date).slice(0, 10);
+  if (currentSub && currentSub.is_active && currentSub.order_id !== orderId) {
+    const currentEndYmd = String(currentSub.end_date).slice(0, 10);
     if (currentEndYmd >= sessionToday) {
       const nextAfterCurrentEnd = addDaysYmd(currentEndYmd, 1);
       // No overlap and no day duplication: new pack starts the day after existing end.
@@ -213,8 +213,8 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
         baseDateYmd = nextAfterCurrentEnd;
       }
 
-      const oldTotal = existingSub.rows[0].total_meals || 0;
-      const oldUsed = existingSub.rows[0].used_meals || 0;
+      const oldTotal = currentSub.total_meals || 0;
+      const oldUsed = currentSub.used_meals || 0;
 
       // Preserve old totals and used, just add new meals to total
       newTotalMeals = oldTotal + (
@@ -238,9 +238,34 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
      ON CONFLICT (client_id,entity_id,entity_type) DO UPDATE SET
        start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date, subscription_id=EXCLUDED.subscription_id,
        order_id=EXCLUDED.order_id, is_active=true, updated_at=NOW(),
-       total_meals=EXCLUDED.total_meals, used_meals=EXCLUDED.used_meals, include_saturday=EXCLUDED.include_saturday`,
+       total_meals=EXCLUDED.total_meals, used_meals=EXCLUDED.used_meals, include_saturday=EXCLUDED.include_saturday
+     RETURNING *`,
     [clientId, subscriptionId, entityType, entityId, endDateYmd, orderId, newTotalMeals, baseDateYmd, newUsedMeals, includeSaturday]
   );
+  const nextSub = upsertRes.rows[0];
+  if (currentSub && nextSub) {
+    await recordSubscriptionHistory(dbClient, {
+      clientSubscriptionId: nextSub.id,
+      clientId,
+      entityType,
+      entityId,
+      previousSubscriptionId: currentSub.subscription_id,
+      previousOrderId: currentSub.order_id,
+      previousStartDate: currentSub.start_date,
+      previousEndDate: currentSub.end_date,
+      previousTotalMeals: currentSub.total_meals,
+      previousUsedMeals: currentSub.used_meals,
+      previousIncludeSaturday: currentSub.include_saturday,
+      newSubscriptionId: nextSub.subscription_id,
+      newOrderId: nextSub.order_id,
+      newStartDate: nextSub.start_date,
+      newEndDate: nextSub.end_date,
+      newTotalMeals: nextSub.total_meals,
+      newUsedMeals: nextSub.used_meals,
+      newIncludeSaturday: nextSub.include_saturday,
+      changeReason: 'renewal_or_reactivation',
+    });
+  }
 };
 
 /**

@@ -89,19 +89,23 @@ exports.getAllPayments = catchAsync(async (req, res) => {
           WHEN o.entity_type = 'teacher' THEN tp.school_id
           ELSE NULL
         END AS school_id,
-        NULL::varchar AS corporate_location_name,
+        cl.name AS corporate_location_name,
         o.amount::numeric AS amount,
         false AS is_cart_order,
+        s.plan_name AS subscription_name,
+        o.start_date::date AS subscription_start_date,
         tx.merchant_transaction_id,
         tx.status AS payment_status
       FROM orders o
       LEFT JOIN clients c ON o.client_id = c.id
+      LEFT JOIN subscriptions s ON o.subscription_id = s.id
       LEFT JOIN transactions tx ON tx.order_id = o.id
       LEFT JOIN children ch ON o.entity_type = 'child' AND o.entity_id = ch.id
       LEFT JOIN schools sch ON ch.school_id = sch.id
       LEFT JOIN teacher_profiles tp ON o.entity_type = 'teacher' AND o.entity_id = tp.id
       LEFT JOIN schools sch_t ON tp.school_id = sch_t.id
       LEFT JOIN professional_profiles pp ON o.entity_type = 'professional' AND o.entity_id = pp.id
+      LEFT JOIN corporate_locations cl ON pp.corporate_location_id = cl.id
       WHERE o.entity_type IS DISTINCT FROM 'cart'
 
       UNION ALL
@@ -138,11 +142,14 @@ exports.getAllPayments = catchAsync(async (req, res) => {
         cl2.name AS corporate_location_name,
         ci.unit_price::numeric AS amount,
         true AS is_cart_order,
+        s2.plan_name AS subscription_name,
+        ci.start_date::date AS subscription_start_date,
         tx.merchant_transaction_id,
         tx.status AS payment_status
       FROM orders o
       INNER JOIN cart_items ci ON ci.cart_id = o.cart_id
       LEFT JOIN clients c ON o.client_id = c.id
+      LEFT JOIN subscriptions s2 ON ci.subscription_id = s2.id
       LEFT JOIN transactions tx ON tx.order_id = o.id
       LEFT JOIN children ch2 ON ci.entity_type = 'child' AND ci.entity_id = ch2.id
       LEFT JOIN schools sch2 ON ch2.school_id = sch2.id
@@ -197,7 +204,7 @@ exports.getAllPayments = catchAsync(async (req, res) => {
   const normalized = result.rows.map((row) => {
     const sector = mapEntityTypeToSector(row.entity_type);
     const sectorLabel = mapEntityTypeToSectorLabel(row.entity_type);
-    const customerName = row.customer_name || 'Unknown';
+    const customerName = row.entity_name || row.customer_name || 'Unknown';
     const schoolName = row.school_name || null;
     return {
       ...row,
@@ -299,7 +306,8 @@ exports.getPaymentStats = catchAsync(async (req, res) => {
   // Recent completed payments as normalized rows (good for UI lists)
   const recentPayments = await db.query(
     `
-    WITH normalized_recent AS (
+    ${normalizedPaymentsCte},
+    normalized_recent AS (
       SELECT
         np.order_id AS id,
         np.amount,
@@ -315,10 +323,7 @@ exports.getPaymentStats = catchAsync(async (req, res) => {
           WHEN np.entity_type='professional' THEN pp.name
           ELSE NULL
         END AS customer_name
-      FROM (
-        ${normalizedPaymentsCte}
-        SELECT * FROM normalized_payments
-      ) np
+      FROM normalized_payments np
       LEFT JOIN orders o ON o.id = np.order_id
       LEFT JOIN clients c ON o.client_id = c.id
       LEFT JOIN children ch ON np.entity_type='child' AND np.entity_id=ch.id

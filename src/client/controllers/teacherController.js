@@ -134,6 +134,12 @@ exports.getTeacherProfile = async (req, res, next) => {
   try {
     // If admin, they might pass a clientId in query. If client, use their own.
     const clientId = (req.user.role === 'admin' && req.query.clientId) ? req.query.clientId : req.user.id;
+    if (req.user.role === 'admin' && req.query.clientId) {
+      const clientCheck = await query('SELECT id FROM clients WHERE id = $1', [clientId]);
+      if (clientCheck.rows.length === 0) {
+        return next(new AppError('Invalid clientId supplied by admin.', 400));
+      }
+    }
 
     const sqlQuery = `SELECT * FROM teacher_profiles WHERE client_id = $1`;
     const result = await query(sqlQuery, [clientId]);
@@ -163,6 +169,12 @@ exports.getTeacherProfile = async (req, res, next) => {
 exports.deleteTeacherProfile = async (req, res, next) => {
   try {
     const clientId = (req.user.role === 'admin' && req.query.clientId) ? req.query.clientId : req.user.id;
+    if (req.user.role === 'admin' && req.query.clientId) {
+      const clientCheck = await query('SELECT id FROM clients WHERE id = $1', [clientId]);
+      if (clientCheck.rows.length === 0) {
+        return next(new AppError('Invalid clientId supplied by admin.', 400));
+      }
+    }
 
     const profileRes = await query(`SELECT id FROM teacher_profiles WHERE client_id = $1`, [clientId]);
     if (profileRes.rows.length === 0) {
