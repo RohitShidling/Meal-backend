@@ -7,7 +7,11 @@ class PhonePeUtil {
     this.clientVersion = parseInt(process.env.PHONEPE_CLIENT_VERSION) || 1;
     this.env = process.env.PHONEPE_ENV === 'live' ? Env.PRODUCTION : Env.SANDBOX;
 
-    // Standard industrial initialization for V2 SDK
+    this.client = null;
+    this.initClient();
+  }
+
+  initClient() {
     try {
       this.client = StandardCheckoutClient.getInstance(
         this.clientId,
@@ -15,9 +19,17 @@ class PhonePeUtil {
         this.clientVersion,
         this.env
       );
+      return true;
     } catch (error) {
+      this.client = null;
       console.error('PhonePe SDK Initialization Error:', error.message);
+      return false;
     }
+  }
+
+  ensureClient() {
+    if (this.client) return true;
+    return this.initClient();
   }
 
   /**
@@ -25,6 +37,9 @@ class PhonePeUtil {
    */
   async initiatePayment(data) {
     try {
+      if (!this.ensureClient()) {
+        throw new Error('PhonePe client not initialized');
+      }
       // Build the standard request object as per industry standards
       const request = StandardCheckoutPayRequest.builder()
         .merchantOrderId(data.transactionId)
@@ -60,6 +75,9 @@ class PhonePeUtil {
    */
   async checkStatus(merchantTransactionId) {
     try {
+      if (!this.ensureClient()) {
+        throw new Error('PhonePe client not initialized');
+      }
       const response = await this.client.getOrderStatus(merchantTransactionId);
       return {
         success: true,
@@ -79,6 +97,9 @@ class PhonePeUtil {
    */
   validateCallback(username, password, xVerifyHeader, bodyString) {
     try {
+      if (!this.ensureClient()) {
+        throw new Error('PhonePe client not initialized');
+      }
       return this.client.validateCallback(username, password, xVerifyHeader, bodyString);
     } catch (error) {
       console.error('PhonePe Callback Validation Error:', error.message);

@@ -31,6 +31,10 @@ const updateState = catchAsync(async (req, res, next) => {
 
 const deleteState = catchAsync(async (req, res, next) => {
   const stateId = Number(req.params.stateId);
+  const cityUsage = await db.query('SELECT COUNT(*)::int AS count FROM cities WHERE state_id = $1', [stateId]);
+  if ((cityUsage.rows[0]?.count || 0) > 0) {
+    return next(new AppError('Cannot delete state because cities are linked to it.', 409));
+  }
   const result = await db.query('DELETE FROM states WHERE id = $1 RETURNING id, name', [stateId]);
   if (result.rows.length === 0) return next(new AppError('State not found.', 404));
   return res.status(200).json({ success: true, message: 'State deleted successfully.', data: result.rows[0] });
@@ -78,6 +82,11 @@ const updateCity = catchAsync(async (req, res, next) => {
 
 const deleteCity = catchAsync(async (req, res, next) => {
   const cityId = Number(req.params.cityId);
+  const schoolUsage = await db.query('SELECT COUNT(*)::int AS count FROM schools WHERE city_id = $1', [cityId]);
+  const companyUsage = await db.query('SELECT COUNT(*)::int AS count FROM companies WHERE city_id = $1', [cityId]);
+  if ((schoolUsage.rows[0]?.count || 0) > 0 || (companyUsage.rows[0]?.count || 0) > 0) {
+    return next(new AppError('Cannot delete city because schools or companies are linked to it.', 409));
+  }
   const result = await db.query('DELETE FROM cities WHERE id = $1 RETURNING id, name', [cityId]);
   if (result.rows.length === 0) return next(new AppError('City not found.', 404));
   return res.status(200).json({ success: true, message: 'City deleted successfully.', data: result.rows[0] });
@@ -120,6 +129,10 @@ const updateCompany = catchAsync(async (req, res, next) => {
 
 const deleteCompany = catchAsync(async (req, res, next) => {
   const companyId = Number(req.params.companyId);
+  const locationUsage = await db.query('SELECT COUNT(*)::int AS count FROM corporate_locations WHERE company_id = $1', [companyId]);
+  if ((locationUsage.rows[0]?.count || 0) > 0) {
+    return next(new AppError('Cannot delete company because corporate locations are linked to it.', 409));
+  }
   const result = await db.query('DELETE FROM companies WHERE id = $1 RETURNING id, name', [companyId]);
   if (result.rows.length === 0) return next(new AppError('Company not found.', 404));
   return res.status(200).json({ success: true, message: 'Company deleted successfully.', data: result.rows[0] });
@@ -155,6 +168,18 @@ const updateMealSize = catchAsync(async (req, res, next) => {
 
 const deleteMealSize = catchAsync(async (req, res, next) => {
   const mealSizeId = Number(req.params.mealSizeId);
+  const childUsage = await db.query('SELECT COUNT(*)::int AS count FROM children WHERE meal_size_id = $1', [mealSizeId]);
+  const teacherUsage = await db.query('SELECT COUNT(*)::int AS count FROM teacher_profiles WHERE meal_size_id = $1', [mealSizeId]);
+  const professionalUsage = await db.query('SELECT COUNT(*)::int AS count FROM professional_profiles WHERE meal_size_id = $1', [mealSizeId]);
+  const planUsage = await db.query('SELECT COUNT(*)::int AS count FROM subscriptions WHERE meal_size_id = $1', [mealSizeId]);
+  if (
+    (childUsage.rows[0]?.count || 0) > 0 ||
+    (teacherUsage.rows[0]?.count || 0) > 0 ||
+    (professionalUsage.rows[0]?.count || 0) > 0 ||
+    (planUsage.rows[0]?.count || 0) > 0
+  ) {
+    return next(new AppError('Cannot delete meal size because it is linked to profiles or subscription plans.', 409));
+  }
   const result = await db.query('DELETE FROM meal_sizes WHERE id = $1 RETURNING id, name', [mealSizeId]);
   if (result.rows.length === 0) return next(new AppError('Meal size not found.', 404));
   return res.status(200).json({ success: true, message: 'Meal size deleted successfully.', data: result.rows[0] });
@@ -190,6 +215,10 @@ const updateStandard = catchAsync(async (req, res, next) => {
 
 const deleteStandard = catchAsync(async (req, res, next) => {
   const standardId = Number(req.params.standardId);
+  const childUsage = await db.query('SELECT COUNT(*)::int AS count FROM children WHERE standard_id = $1', [standardId]);
+  if ((childUsage.rows[0]?.count || 0) > 0) {
+    return next(new AppError('Cannot delete standard because children are linked to it.', 409));
+  }
   const result = await db.query('DELETE FROM standards WHERE id = $1 RETURNING id, name', [standardId]);
   if (result.rows.length === 0) return next(new AppError('Standard not found.', 404));
   return res.status(200).json({ success: true, message: 'Standard deleted successfully.', data: result.rows[0] });

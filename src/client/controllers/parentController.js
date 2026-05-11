@@ -84,10 +84,14 @@ exports.getParentProfile = async (req, res, next) => {
  */
 exports.deleteParentProfile = async (req, res, next) => {
   try {
-    const clientId = (req.user.role === 'admin' && req.query.clientId) ? req.query.clientId : req.user.id;
+    const clientId = req.user.id;
 
     const subCheck = await query(
-      `SELECT id FROM client_subscriptions WHERE client_id = $1 AND is_active = true`,
+      `SELECT id
+       FROM client_subscriptions
+       WHERE client_id = $1
+         AND entity_type = 'child'
+         AND is_active = true`,
       [clientId]
     );
 
@@ -95,6 +99,21 @@ exports.deleteParentProfile = async (req, res, next) => {
       return res.status(400).json({
         success: false,
         message: 'Cannot delete parent profile. Please wait until all active subscriptions for your children end.'
+      });
+    }
+    const pendingOrderCheck = await query(
+      `SELECT id
+       FROM orders
+       WHERE client_id = $1
+         AND entity_type = 'child'
+         AND status = 'pending'
+       LIMIT 1`,
+      [clientId]
+    );
+    if (pendingOrderCheck.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Cannot delete parent profile while child payment is pending.'
       });
     }
 

@@ -126,40 +126,45 @@ exports.adminAddExtraMealsByEntity = catchAsync(async (req, res, next) => {
     return next(new AppError('reason is required and must be at least 3 characters.', 400));
   }
 
-  // Find the subscription row for this entity (even if it is inactive due to remaining hitting 0)
-  const subRes = await db.query(
-    `SELECT id,
-            client_id,
-            total_meals,
-            used_meals,
-            start_date,
-            end_date,
-            TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date_ymd,
-            include_saturday
-     FROM client_subscriptions
-     WHERE entity_type = $1 AND entity_id = $2
-     LIMIT 1`,
-    [entityType, entityId]
-  );
-
-  if (subRes.rowCount === 0) return next(new AppError('No subscription found for this entity.', 404));
-
-  const sub = subRes.rows[0];
-  const remainingBefore = Number(sub.total_meals) - Number(sub.used_meals);
-
-  const includeSaturday = sub.include_saturday !== false;
-  const endYmd = sub.end_date_ymd;
-  if (!parseYmdStrict(endYmd)) return next(new AppError('Invalid subscription end_date format in DB.', 500));
-
-  const newEndYmd = extendEndYmdByMealDays({
-    endYmd,
-    includeSaturday,
-    extraMeals: parsedExtra,
-  });
-
-  await db.query('BEGIN');
+  const tx = await db.pool.connect();
   try {
-    await db.query(
+    await tx.query('BEGIN');
+    const subRes = await tx.query(
+      `SELECT id,
+              client_id,
+              total_meals,
+              used_meals,
+              start_date,
+              end_date,
+              TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date_ymd,
+              include_saturday
+       FROM client_subscriptions
+       WHERE entity_type = $1 AND entity_id = $2
+       LIMIT 1
+       FOR UPDATE`,
+      [entityType, entityId]
+    );
+    if (subRes.rowCount === 0) {
+      await tx.query('ROLLBACK');
+      return next(new AppError('No subscription found for this entity.', 404));
+    }
+
+    const sub = subRes.rows[0];
+    const remainingBefore = Number(sub.total_meals) - Number(sub.used_meals);
+    const includeSaturday = sub.include_saturday !== false;
+    const endYmd = sub.end_date_ymd;
+    if (!parseYmdStrict(endYmd)) {
+      await tx.query('ROLLBACK');
+      return next(new AppError('Invalid subscription end_date format in DB.', 500));
+    }
+
+    const newEndYmd = extendEndYmdByMealDays({
+      endYmd,
+      includeSaturday,
+      extraMeals: parsedExtra,
+    });
+
+    await tx.query(
       `UPDATE client_subscriptions
        SET total_meals = total_meals + $1,
            is_active = true,
@@ -169,14 +174,14 @@ exports.adminAddExtraMealsByEntity = catchAsync(async (req, res, next) => {
       [parsedExtra, newEndYmd, sub.id]
     );
 
-    await db.query(
+    await tx.query(
       `INSERT INTO subscription_meal_adjustments
         (subscription_id, adjusted_by, adjustment_type, meal_delta, reason)
        VALUES ($1, $2, 'extra_meals', $3, $4)`,
       [sub.id, adminId, parsedExtra, String(reason).trim()]
     );
 
-    const updated = await db.query(
+    const updated = await tx.query(
       `SELECT id, total_meals, used_meals, end_date, include_saturday
        FROM client_subscriptions
        WHERE id=$1`,
@@ -186,7 +191,7 @@ exports.adminAddExtraMealsByEntity = catchAsync(async (req, res, next) => {
     const u = updated.rows[0];
     const remainingAfter = Number(u.total_meals) - Number(u.used_meals);
 
-    await db.query('COMMIT');
+    await tx.query('COMMIT');
 
     return res.status(200).json({
       success: true,
@@ -204,8 +209,10 @@ exports.adminAddExtraMealsByEntity = catchAsync(async (req, res, next) => {
       },
     });
   } catch (e) {
-    await db.query('ROLLBACK');
+    await tx.query('ROLLBACK');
     throw e;
+  } finally {
+    tx.release();
   }
 });
 
@@ -318,6 +325,31 @@ exports.addRemainingMealsForUser = catchAsync(async (req, res, next) => {
  * @route POST /api/admin/meals/reconcile
  */
 exports.reconcileMeals = catchAsync(async (req, res) => {
+  const dryRun = String(req.query.dryRun || req.body?.dryRun || 'true').toLowerCase() !== 'false';
+  const confirm = String(req.query.confirm || req.body?.confirm || '').toLowerCase() === 'true';
+  const preview = await db.query(`
+    SELECT cs.id AS subscription_id,
+           cs.used_meals AS current_used,
+           COALESCE(log_counts.actual_used, 0) AS actual_used
+    FROM client_subscriptions cs
+    LEFT JOIN (
+      SELECT subscription_id, COUNT(*) AS actual_used
+      FROM daily_meal_log
+      GROUP BY subscription_id
+    ) AS log_counts ON cs.id = log_counts.subscription_id
+    WHERE cs.used_meals != COALESCE(log_counts.actual_used, 0)
+    ORDER BY cs.id
+  `);
+  if (dryRun || !confirm) {
+    return res.status(200).json({
+      success: true,
+      dry_run: true,
+      message: confirm ? 'Dry-run requested. No data changed.' : 'Reconcile requires confirm=true to apply changes.',
+      affected_count: preview.rowCount,
+      changes: preview.rows
+    });
+  }
+
   const result = await db.query(`
     UPDATE client_subscriptions cs
     SET used_meals = COALESCE(log_counts.actual_used, 0),
@@ -334,6 +366,7 @@ exports.reconcileMeals = catchAsync(async (req, res) => {
 
   res.status(200).json({
     success: true,
+    dry_run: false,
     message: `Reconciliation complete. ${result.rowCount} subscription(s) corrected.`,
     corrected: result.rows
   });

@@ -197,6 +197,19 @@ const deleteChild = catchAsync(async (req, res, next) => {
   if (subCheck.rows.length > 0) {
     return next(new AppError('Cannot delete child profile. Please wait until the active subscription ends.', 400));
   }
+  const pendingOrderCheck = await db.query(
+    `SELECT id
+     FROM orders
+     WHERE client_id = $1
+       AND entity_type = 'child'
+       AND entity_id = $2
+       AND status = 'pending'
+     LIMIT 1`,
+    [clientId, childId]
+  );
+  if (pendingOrderCheck.rows.length > 0) {
+    return next(new AppError('Cannot delete child profile while a payment is pending for this child.', 409));
+  }
 
   const result = await db.query(
     'DELETE FROM children WHERE id = $1 AND parent_id = $2 RETURNING *',

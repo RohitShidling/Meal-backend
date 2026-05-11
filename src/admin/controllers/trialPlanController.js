@@ -160,6 +160,15 @@ const setTrialPlanActive = catchAsync(async (req, res, next) => {
 
 const deleteTrialPlan = catchAsync(async (req, res, next) => {
   const { id } = req.params;
+  const inUse = await db.query(
+    `SELECT COUNT(*)::int AS active_count
+     FROM client_subscriptions
+     WHERE subscription_id = $1 AND is_active = true`,
+    [id]
+  );
+  if ((inUse.rows[0]?.active_count || 0) > 0) {
+    return next(new AppError('Cannot delete trial plan with active client subscriptions. Deactivate plan instead.', 409));
+  }
   const result = await db.query(
     'DELETE FROM subscriptions WHERE id = $1 AND trial_days > 0 RETURNING id, plan_name',
     [id]

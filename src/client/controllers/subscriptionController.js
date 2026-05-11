@@ -150,47 +150,53 @@ exports.updateStartDate = catchAsync(async (req, res, next) => {
     return next(new AppError('New start date cannot be in the past.', 400));
   }
 
-  // 1. Check if they have an active subscription for this entity
-  const subQuery = `
-    SELECT * FROM client_subscriptions 
-    WHERE client_id = $1 AND entity_type = $2 AND entity_id = $3 AND is_active = true
-  `;
-  const subResult = await pool.query(subQuery, [clientId, entityType, entityId]);
+  const tx = await pool.connect();
+  let updateResult;
+  try {
+    await tx.query('BEGIN');
+    const subQuery = `
+      SELECT * FROM client_subscriptions
+      WHERE client_id = $1 AND entity_type = $2 AND entity_id = $3 AND is_active = true
+      FOR UPDATE
+    `;
+    const subResult = await tx.query(subQuery, [clientId, entityType, entityId]);
 
-  if (subResult.rows.length === 0) {
-    return next(new AppError('No active subscription found for this entity. You must be subscribed and paid first.', 403));
+    if (subResult.rows.length === 0) {
+      await tx.query('ROLLBACK');
+      return next(new AppError('No active subscription found for this entity. You must be subscribed and paid first.', 403));
+    }
+
+    const subscription = subResult.rows[0];
+    if (subscription.used_meals > 0) {
+      await tx.query('ROLLBACK');
+      return next(new AppError('You cannot change the start date because you have already started consuming meals. Use the Meal Skip API instead to take a leave.', 400));
+    }
+
+    const oldStartYmd = String(subscription.start_date).slice(0, 10);
+    const oldEndYmd = String(subscription.end_date).slice(0, 10);
+    const toEpochNoon = (ymd) => {
+      const [y, m, d] = ymd.split('-').map(Number);
+      return Date.UTC(y, m - 1, d, 12, 0, 0);
+    };
+    const diffDays = Math.floor((toEpochNoon(newStartYmd) - toEpochNoon(oldStartYmd)) / 86400000);
+    const endNoon = new Date(toEpochNoon(oldEndYmd));
+    endNoon.setUTCDate(endNoon.getUTCDate() + diffDays);
+    const newEndYmd = `${endNoon.getUTCFullYear()}-${String(endNoon.getUTCMonth() + 1).padStart(2, '0')}-${String(endNoon.getUTCDate()).padStart(2, '0')}`;
+
+    const updateQuery = `
+      UPDATE client_subscriptions
+      SET start_date = $1, end_date = $2, updated_at = NOW()
+      WHERE id = $3
+      RETURNING start_date, end_date
+    `;
+    updateResult = await tx.query(updateQuery, [newStartYmd, newEndYmd, subscription.id]);
+    await tx.query('COMMIT');
+  } catch (e) {
+    await tx.query('ROLLBACK');
+    throw e;
+  } finally {
+    tx.release();
   }
-
-  const subscription = subResult.rows[0];
-
-  // 2. Prevent changing if they have already consumed meals from this subscription!
-  if (subscription.used_meals > 0) {
-    return next(new AppError('You cannot change the start date because you have already started consuming meals. Use the Meal Skip API instead to take a leave.', 400));
-  }
-
-  // 3. Prevent changing if the original start date has ALREADY passed (even if they didn't consume meals)
-  // Or maybe allow it if used_meals is 0? The fairest logic is to allow shifting if used_meals == 0.
-  
-  // Calculate the difference in days between the old start date and the new start date
-  const oldStartYmd = String(subscription.start_date).slice(0, 10);
-  const oldEndYmd = String(subscription.end_date).slice(0, 10);
-  const toEpochNoon = (ymd) => {
-    const [y, m, d] = ymd.split('-').map(Number);
-    return Date.UTC(y, m - 1, d, 12, 0, 0);
-  };
-  const diffDays = Math.floor((toEpochNoon(newStartYmd) - toEpochNoon(oldStartYmd)) / 86400000);
-  const endNoon = new Date(toEpochNoon(oldEndYmd));
-  endNoon.setUTCDate(endNoon.getUTCDate() + diffDays);
-  const newEndYmd = `${endNoon.getUTCFullYear()}-${String(endNoon.getUTCMonth() + 1).padStart(2, '0')}-${String(endNoon.getUTCDate()).padStart(2, '0')}`;
-
-  // 5. Update the database
-  const updateQuery = `
-    UPDATE client_subscriptions 
-    SET start_date = $1, end_date = $2, updated_at = NOW()
-    WHERE id = $3
-    RETURNING start_date, end_date
-  `;
-  const updateResult = await pool.query(updateQuery, [newStartYmd, newEndYmd, subscription.id]);
 
   res.status(200).json({
     success: true,

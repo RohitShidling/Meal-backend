@@ -1,4 +1,11 @@
 const AppError = require('../../common/utils/AppError');
+const isValidMealTime = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  if (/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(raw)) return true;
+  if (/^(0?[1-9]|1[0-2]):[0-5][0-9]\s?(AM|PM)$/i.test(raw)) return true;
+  return false;
+};
 
 /**
  * Validator for adding children
@@ -44,8 +51,8 @@ const validateAddChildren = (req, res, next) => {
     if (!mealSizeId) {
       errors.push(`Child ${index + 1}: Meal size selection is required.`);
     }
-    if (!mealTime || !/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(mealTime)) {
-      errors.push(`Child ${index + 1}: Valid meal time (HH:mm) is required.`);
+    if (!mealTime || !isValidMealTime(mealTime)) {
+      errors.push(`Child ${index + 1}: Valid meal time (HH:mm or h:mm AM/PM) is required.`);
     }
   });
 
@@ -79,8 +86,8 @@ const validateUpdateChild = (req, res, next) => {
     }
   }
 
-  if (mealTime !== undefined && !/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(mealTime)) {
-    errors.push('Valid meal time (HH:mm) is required.');
+  if (mealTime !== undefined && !isValidMealTime(mealTime)) {
+    errors.push('Valid meal time (HH:mm or h:mm AM/PM) is required.');
   }
 
   if (errors.length > 0) {

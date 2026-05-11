@@ -22,6 +22,14 @@ const getMyProfile = catchAsync(async (req, res, next) => {
     return next(new AppError('User not found.', 404));
   }
 
+  if (req.user.role === 'admin') {
+    await db.query(
+      `INSERT INTO admin_profile_access_logs (admin_id, target_client_id, accessed_at, source)
+       VALUES ($1, $2, NOW(), $3)`,
+      [req.user.id, clientId, 'common_profile_controller']
+    );
+  }
+
   const parentResult = await db.query(
     `
       SELECT id, client_id, name, created_at, updated_at

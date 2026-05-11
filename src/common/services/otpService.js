@@ -1,39 +1,45 @@
 require('dotenv').config();
 const axios = require('axios');
+const db = require('../database');
 
 const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
 
 /**
- * In-memory session store: { phoneNumber → sessionInfo }
- * sessionInfo is returned by Firebase after sendVerificationCode.
- * The client does NOT need to store it — backend handles it.
- */
-const sessionStore = new Map();
-
-/**
  * STEP 1 — Send OTP via Firebase REST API
  * Firebase handles OTP generation + SMS delivery.
- * For Firebase test phone numbers (added in Console), Firebase
- * skips reCAPTCHA validation and skips SMS — uses preset code.
  */
 async function sendOTP(phoneNumber) {
   const url = `https://identitytoolkit.googleapis.com/v1/accounts:sendVerificationCode?key=${FIREBASE_API_KEY}`;
+  let recaptchaToken = process.env.FIREBASE_RECAPTCHA_TOKEN;
+
+  // Development Bypass: If token is missing and we are in development mode, use a placeholder.
+  // Note: This may only work with Firebase Test Phone Numbers unless a real token is provided.
+  if (!recaptchaToken && process.env.NODE_ENV === 'development') {
+    recaptchaToken = 'MOCK_RECAPTCHA_TOKEN';
+  }
+
+  if (!recaptchaToken) {
+    throw new Error('FIREBASE_RECAPTCHA_TOKEN is not configured');
+  }
 
   const response = await axios.post(url, {
     phoneNumber,
-    // Firebase test phone numbers bypass reCAPTCHA validation server-side.
-    // For real phone numbers in production, replace with a real reCAPTCHA token.
-    recaptchaToken: "server-side-bypass",
+    recaptchaToken,
   });
 
   // Firebase returns: { sessionInfo: "..." }
   const { sessionInfo } = response.data;
 
-  // Store sessionInfo keyed by phoneNumber so client only needs phoneNumber
-  sessionStore.set(phoneNumber, sessionInfo);
-
-  // Auto-remove after 10 min to avoid stale sessions
-  setTimeout(() => sessionStore.delete(phoneNumber), 10 * 60 * 1000);
+  await db.query(
+    `INSERT INTO otp_sessions (phone_number, session_info, expires_at)
+     VALUES ($1, $2, NOW() + INTERVAL '10 minutes')
+     ON CONFLICT (phone_number)
+     DO UPDATE SET
+       session_info = EXCLUDED.session_info,
+       expires_at = EXCLUDED.expires_at,
+       updated_at = NOW()`,
+    [phoneNumber, sessionInfo]
+  );
 
   return { phoneNumber };
 }
@@ -43,8 +49,14 @@ async function sendOTP(phoneNumber) {
  * Uses the stored sessionInfo + user-entered code.
  */
 async function verifyOTP(phoneNumber, code) {
-  const sessionInfo = sessionStore.get(phoneNumber);
-
+  const sessionRes = await db.query(
+    `SELECT session_info
+     FROM otp_sessions
+     WHERE phone_number = $1
+       AND expires_at > NOW()`,
+    [phoneNumber]
+  );
+  const sessionInfo = sessionRes.rows[0]?.session_info;
   if (!sessionInfo) {
     const err = new Error("NO_SESSION");
     err.code = "NO_SESSION";
@@ -60,8 +72,7 @@ async function verifyOTP(phoneNumber, code) {
 
   const data = response.data;
 
-  // Clean up session after successful verification
-  sessionStore.delete(phoneNumber);
+  await db.query('DELETE FROM otp_sessions WHERE phone_number = $1', [phoneNumber]);
 
   return data;
 }

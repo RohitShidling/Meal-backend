@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const teacherController = require('../controllers/teacherController');
 const clientAuthMiddleware = require('../middlewares/authMiddleware');
-const commonAuthMiddleware = require('../../common/middlewares/commonAuthMiddleware');
 const { validateTeacherProfile } = require('../validators/profileValidator');
 
 /**
@@ -198,7 +197,7 @@ router.put('/profile', clientAuthMiddleware, validateTeacherProfile, teacherCont
  *                 data:
  *                   $ref: '#/components/schemas/TeacherProfile'
  */
-router.get('/profile', commonAuthMiddleware, teacherController.getTeacherProfile);
+router.get('/profile', clientAuthMiddleware, teacherController.getTeacherProfile);
 
 /**
  * @swagger
@@ -235,6 +234,6 @@ router.get('/profile', commonAuthMiddleware, teacherController.getTeacherProfile
  *       404:
  *         description: Profile not found
  */
-router.delete('/profile', commonAuthMiddleware, teacherController.deleteTeacherProfile);
+router.delete('/profile', clientAuthMiddleware, teacherController.deleteTeacherProfile);
 
 module.exports = router;

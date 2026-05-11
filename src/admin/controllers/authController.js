@@ -11,7 +11,7 @@ const generateTokens = (id, phoneNumber) => {
     throw new Error('ADMIN_JWT_SECRET and ADMIN_REFRESH_SECRET must be configured');
   }
   const accessToken = jwt.sign({ id, phoneNumber, role: 'admin' }, process.env.ADMIN_JWT_SECRET, {
-    expiresIn: process.env.ADMIN_JWT_EXPIRES_IN || '30d',   // ← 30 days for admin
+    expiresIn: process.env.ADMIN_JWT_EXPIRES_IN || '1h',
   });
   const refreshToken = jwt.sign({ id, phoneNumber, role: 'admin' }, process.env.ADMIN_REFRESH_SECRET, {
     expiresIn: process.env.ADMIN_REFRESH_TOKEN_EXPIRES_IN || '90d',  // ← 90 days refresh

@@ -8,8 +8,6 @@ const adminAuthMiddleware = async (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       token = authHeader.split(' ')[1];
-    } else if (req.query && req.query.token) {
-      token = req.query.token;
     }
 
     if (!token) {
@@ -22,7 +20,7 @@ const adminAuthMiddleware = async (req, res, next) => {
     }
 
     // Verify admin still exists in DB
-    const adminCheck = await db.query('SELECT id FROM admins WHERE id = $1', [decoded.id]);
+    const adminCheck = await db.query('SELECT id FROM admins WHERE id = $1 AND is_logged_in = true', [decoded.id]);
     if (adminCheck.rows.length === 0) {
       return next(new AppError('Admin session invalid or user deleted. Please login again.', 401));
     }

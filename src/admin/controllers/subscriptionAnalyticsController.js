@@ -67,7 +67,9 @@ exports.getSubscriptionOverview = catchAsync(async (req, res) => {
  * @route GET /api/admin/subscriptions/analytics/by-school
  */
 exports.getBySchool = catchAsync(async (req, res) => {
-  const { schoolId, isActive, startDate, endDate, page = 1, limit = 20 } = req.query;
+  const { schoolId, isActive, startDate, endDate } = req.query;
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
   const offset = (page - 1) * limit;
   const params = [];
   let paramCount = 1;
@@ -134,7 +136,9 @@ exports.getBySchool = catchAsync(async (req, res) => {
  */
 exports.getChildrenBySchool = catchAsync(async (req, res, next) => {
   const { schoolId } = req.params;
-  const { isActive, page = 1, limit = 20 } = req.query;
+  const { isActive } = req.query;
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
   const offset = (page - 1) * limit;
 
   const school = await db.query('SELECT id, name FROM schools WHERE id=$1', [schoolId]);
@@ -204,7 +208,9 @@ exports.getChildrenBySchool = catchAsync(async (req, res, next) => {
  * @route GET /api/admin/subscriptions/analytics/teachers
  */
 exports.getTeacherSubscriptions = catchAsync(async (req, res) => {
-  const { schoolName, isActive, startDate, endDate, page = 1, limit = 20 } = req.query;
+  const { schoolName, isActive, startDate, endDate } = req.query;
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
   const offset = (page - 1) * limit;
   const params = [];
   let paramCount = 1;
@@ -274,7 +280,9 @@ exports.getTeacherSubscriptions = catchAsync(async (req, res) => {
  * @route GET /api/admin/subscriptions/analytics/professionals
  */
 exports.getProfessionalSubscriptions = catchAsync(async (req, res) => {
-  const { locationId, city, isActive, startDate, endDate, page = 1, limit = 20 } = req.query;
+  const { locationId, city, isActive, startDate, endDate } = req.query;
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
   const offset = (page - 1) * limit;
   const params = [];
   let paramCount = 1;
@@ -697,8 +705,10 @@ exports.getUnsubscribedMembers = catchAsync(async (req, res) => {
  * @route GET /api/admin/subscriptions/analytics/active-meal-status
  */
 exports.getActiveSubscriptionsWithMeals = catchAsync(async (req, res) => {
-  const { entityType, page = 1, limit = 50 } = req.query;
-  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const { entityType } = req.query;
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  const offset = (page - 1) * limit;
   
   const params = [];
   let where = "WHERE cs.is_active = true AND cs.end_date > NOW()";
@@ -742,7 +752,7 @@ exports.getActiveSubscriptionsWithMeals = catchAsync(async (req, res) => {
     ${where}
     ORDER BY remaining_meals ASC, cs.end_date ASC
     LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-  `, [...params, parseInt(limit), offset]);
+  `, [...params, limit, offset]);
 
   const countRes = await db.query(
     `SELECT COUNT(*) FROM client_subscriptions cs ${where}`,
@@ -753,8 +763,8 @@ exports.getActiveSubscriptionsWithMeals = catchAsync(async (req, res) => {
     success: true,
     pagination: {
       total: parseInt(countRes.rows[0].count),
-      page: parseInt(page),
-      limit: parseInt(limit)
+      page,
+      limit
     },
     data: result.rows
   });

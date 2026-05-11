@@ -437,6 +437,16 @@ const initDB = async () => {
     );
   `;
 
+  const createOtpSessionsTable = `
+    CREATE TABLE IF NOT EXISTS otp_sessions (
+      phone_number VARCHAR(20) PRIMARY KEY,
+      session_info TEXT NOT NULL,
+      expires_at   TIMESTAMPTZ NOT NULL,
+      created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
   const createSubscriptionMealAdjustmentsTable = `
     CREATE TABLE IF NOT EXISTS subscription_meal_adjustments (
       id              SERIAL PRIMARY KEY,
@@ -482,6 +492,16 @@ const initDB = async () => {
       sent_channel           VARCHAR(30) DEFAULT 'in_app',
       sent_at                TIMESTAMP,
       created_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  const createAdminProfileAccessLogsTable = `
+    CREATE TABLE IF NOT EXISTS admin_profile_access_logs (
+      id                BIGSERIAL PRIMARY KEY,
+      admin_id          INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      target_client_id  VARCHAR(20) REFERENCES clients(id) ON DELETE SET NULL,
+      source            VARCHAR(100) NOT NULL DEFAULT 'common_profile_controller',
+      accessed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `;
 
@@ -568,6 +588,7 @@ const initDB = async () => {
     await pool.query(createCartsTable);
     await pool.query(createCartItemsTable);
     await pool.query(createAppSettingsTable);
+    await pool.query(createOtpSessionsTable);
 
     // ──────────────────────────────────────────────
     // MEAL SKIPS TABLE (client-initiated meal pauses)
@@ -581,6 +602,8 @@ const initDB = async () => {
         skip_start_date DATE NOT NULL,
         skip_end_date   DATE NOT NULL,
         total_skip_days INTEGER NOT NULL DEFAULT 0,
+        subscription_id VARCHAR(20) REFERENCES client_subscriptions(id) ON DELETE CASCADE,
+        extension_days  INTEGER NOT NULL DEFAULT 0,
         status          VARCHAR(20) NOT NULL DEFAULT 'approved', -- 'approved', 'cancelled'
         created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -611,6 +634,8 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE client_subscriptions ADD COLUMN IF NOT EXISTS total_meals INTEGER DEFAULT 30;`);
     await pool.query(`ALTER TABLE client_subscriptions ADD COLUMN IF NOT EXISTS used_meals INTEGER DEFAULT 0;`);
     await pool.query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ;`);
+    await pool.query(`ALTER TABLE meal_skips ADD COLUMN IF NOT EXISTS subscription_id VARCHAR(20) REFERENCES client_subscriptions(id) ON DELETE CASCADE;`);
+    await pool.query(`ALTER TABLE meal_skips ADD COLUMN IF NOT EXISTS extension_days INTEGER NOT NULL DEFAULT 0;`);
     await pool.query(`
       ALTER TABLE client_subscriptions
       DROP CONSTRAINT IF EXISTS chk_client_subscriptions_meals_range;
@@ -704,8 +729,11 @@ const initDB = async () => {
     await pool.query(createSubscriptionMealAdjustmentsTable);
     await pool.query(createTokenDownloadLogsTable);
     await pool.query(createSubscriptionAlertsTable);
+    await pool.query(createAdminProfileAccessLogsTable);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_client_subscription_history_subscription ON client_subscription_history (client_subscription_id, created_at DESC)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_client_subscription_history_client_entity ON client_subscription_history (client_id, entity_type, entity_id, created_at DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_profile_access_logs_admin_time ON admin_profile_access_logs (admin_id, accessed_at DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_profile_access_logs_client_time ON admin_profile_access_logs (target_client_id, accessed_at DESC)`);
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS uniq_subscription_alert_once
       ON subscription_alerts (subscription_id, alert_type, trigger_remaining_meals)
