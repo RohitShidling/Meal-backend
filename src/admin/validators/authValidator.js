@@ -6,8 +6,12 @@ const OTP_REGEX = /^\d{4,8}$/;
 const validateAdminLogin = (req, res, next) => {
   const { phoneNumber, password, username } = req.body || {};
   const errors = [];
-  if (!phoneNumber || typeof phoneNumber !== 'string' || !PHONE_REGEX.test(phoneNumber.trim())) {
-    errors.push('phoneNumber must be a valid E.164-compatible mobile number.');
+  
+  // Normalize phone for regex check
+  const cleanPhone = (phoneNumber || '').toString().replace(/\s+/g, '').replace(/-/g, '');
+
+  if (!cleanPhone || !PHONE_REGEX.test(cleanPhone)) {
+    errors.push('phoneNumber must be a valid mobile number.');
   }
   if (username !== undefined && username !== null) {
     if (typeof username !== 'string' || username.trim().length < 2 || username.trim().length > 120) {
@@ -18,6 +22,7 @@ const validateAdminLogin = (req, res, next) => {
     errors.push('password is required and must be 6-128 characters.');
   }
   if (errors.length > 0) {
+    console.error('Admin Login Validation Failed:', errors);
     return next(new AppError('Validation failed.', 400, errors));
   }
   return next();
