@@ -1,4 +1,5 @@
 const db = require('../database');
+const mealEligibilityService = require('../services/mealEligibilityService');
 
 // @desc    Get menu by date (defaults to today if date is 'today')
 // @route   GET /api/common/menu/:date
@@ -8,11 +9,16 @@ exports.getMenuByDate = async (req, res, next) => {
     
     // If the client asks for 'today', use the current date
     if (date === 'today') {
-      date = new Date().toISOString().split('T')[0];
+      date = mealEligibilityService.parseSessionToday();
     }
 
     const query = `
-      SELECT id, image_url, items, menu_date, created_at
+      SELECT
+        id,
+        image_url,
+        items,
+        TO_CHAR(menu_date::date, 'YYYY-MM-DD') AS menu_date,
+        created_at
       FROM daily_menus
       WHERE menu_date = $1 AND is_active = true
       ORDER BY created_at DESC
@@ -45,7 +51,12 @@ exports.getMenuHistory = async (req, res, next) => {
     const offset = (page - 1) * limit;
 
     const query = `
-      SELECT id, image_url, items, menu_date, created_at
+      SELECT
+        id,
+        image_url,
+        items,
+        TO_CHAR(menu_date::date, 'YYYY-MM-DD') AS menu_date,
+        created_at
       FROM daily_menus
       WHERE is_active = true
       ORDER BY menu_date DESC
@@ -70,7 +81,12 @@ exports.getWeeklyMenu = async (req, res, next) => {
   try {
     // Get meals from today to the next 6 days (total 7 days)
     const query = `
-      SELECT id, image_url, items, menu_date, created_at
+      SELECT
+        id,
+        image_url,
+        items,
+        TO_CHAR(menu_date::date, 'YYYY-MM-DD') AS menu_date,
+        created_at
       FROM daily_menus
       WHERE is_active = true AND menu_date >= CURRENT_DATE AND menu_date < CURRENT_DATE + INTERVAL '7 days'
       ORDER BY menu_date ASC;

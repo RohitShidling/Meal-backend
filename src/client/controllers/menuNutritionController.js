@@ -1,7 +1,8 @@
 const db = require('../../common/database');
 const catchAsync = require('../../common/utils/catchAsync');
 
-const getToday = () => new Date().toISOString().split('T')[0];
+const mealEligibilityService = require('../../common/services/mealEligibilityService');
+const getToday = () => mealEligibilityService.parseSessionToday();
 
 const fetchNutritionMapByDates = async (dates = []) => {
   if (!Array.isArray(dates) || dates.length === 0) return {};
@@ -24,7 +25,7 @@ const fetchNutritionMapByDates = async (dates = []) => {
   );
 
   return result.rows.reduce((acc, row) => {
-    acc[row.menu_date] = row.nutrition_points || [];
+    acc[String(row.menu_date).slice(0, 10)] = row.nutrition_points || [];
     return acc;
   }, {});
 };
@@ -88,8 +89,8 @@ exports.getWeeklyNutrition = catchAsync(async (req, res) => {
   const nutritionMap = await fetchNutritionMapByDates(dates);
 
   const data = dates.map((menuDate) => ({
-    menu_date: menuDate,
-    nutrition_points: nutritionMap[menuDate] || [],
+    menu_date: String(menuDate).slice(0, 10),
+    nutrition_points: nutritionMap[String(menuDate).slice(0, 10)] || [],
   }));
 
   res.status(200).json({
