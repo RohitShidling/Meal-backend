@@ -130,7 +130,12 @@ exports.getTodayMenu = catchAsync(async (req, res, next) => {
   // Subscribed — fetch today's menu
   const today = mealEligibilityService.parseSessionToday();
   const menu = await db.query(
-    `SELECT id, image_url, items, menu_date, created_at
+    `SELECT
+        id,
+        image_url,
+        items,
+        TO_CHAR(menu_date::date, 'YYYY-MM-DD') AS menu_date,
+        created_at
      FROM daily_menus WHERE menu_date=$1 AND is_active=true
      ORDER BY created_at DESC LIMIT 1`,
     [today]
@@ -192,7 +197,12 @@ exports.getWeeklyMenu = catchAsync(async (req, res, next) => {
   }
 
   const menu = await db.query(
-    `SELECT id, image_url, items, menu_date, created_at
+    `SELECT
+        id,
+        image_url,
+        items,
+        TO_CHAR(menu_date::date, 'YYYY-MM-DD') AS menu_date,
+        created_at
      FROM daily_menus
      WHERE is_active=true AND menu_date >= CURRENT_DATE AND menu_date < CURRENT_DATE + INTERVAL '7 days'
      ORDER BY menu_date ASC`
