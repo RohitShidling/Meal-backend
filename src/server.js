@@ -1,5 +1,6 @@
 require('dotenv').config();
 console.log(`Environment Loaded: ${process.env.NODE_ENV || 'undefined'}`);
+
 console.log(`Firebase Key Loaded: ${process.env.FIREBASE_API_KEY ? 'Yes' : 'No'}`);
 const express = require('express');
 const cors = require('cors');
@@ -9,7 +10,7 @@ const rateLimit = require('express-rate-limit');
 const { initDB } = require('./common/database');
 const { swaggerUi, specs } = require('./docs/swagger');
 const docsAuthMiddleware = require('./common/middlewares/docsAuthMiddleware');
-
+//hi
 // Import routes
 const clientAuthRoutes = require('./client/routes/authRoutes');
 const clientChildRoutes = require('./client/routes/childRoutes');
