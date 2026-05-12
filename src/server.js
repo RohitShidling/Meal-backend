@@ -194,6 +194,11 @@ app.use('/api/common/subscription-plan-days', commonSubscriptionPlanDurationRout
 app.use('/api/admin/menu-nutrition', adminMenuNutritionRoutes);
 app.use('/api/admin/trial-plan-features', adminTrialPlanFeatureRoutes);
 
+// Health Check Endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
 // 404 Handler
 app.use((req, res) => {
   res.status(404).json({
@@ -258,10 +263,6 @@ const server = app.listen(PORT,"0.0.0.0", async () => {
   }
 });
 
-
-app.get('/health', (req,res)=>{
-  res.json({status:'ok'});
-});
 
 // Graceful Shutdown (Industrial Standard)
 const gracefulShutdown = () => {

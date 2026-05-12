@@ -333,30 +333,5 @@ router.delete('/client-subscription/:subscriptionId', subscriptionController.del
  */
 router.delete('/:id', subscriptionController.deleteSubscription);
 
-/**
- * @swagger
- * /api/admin/subscriptions/client-subscription/{subscriptionId}:
- *   delete:
- *     summary: Cancel/Deactivate a specific client's active subscription
- *     tags: [Admin - Subscription Management]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: subscriptionId
- *         required: true
- *         schema:
- *           type: string
- *         description: ID of the client_subscription (e.g., CT-SUB-1)
- *     responses:
- *       200:
- *         description: Subscription successfully deactivated
- *       400:
- *         description: Subscription already inactive
- *       404:
- *         description: Subscription not found
- */
-router.delete('/client-subscription/:subscriptionId', subscriptionController.deleteClientSubscription);
-
 module.exports = router;
 

@@ -82,25 +82,17 @@ const generateTokens = (id, phoneNumber) => {
 const loginController = catchAsync(async (req, res, next) => {
   const { phoneNumber, password, username } = req.body;
 
-  // Normalize phone number: strip non-digits and ensure +91 prefix
-  let normalizedPhone = (phoneNumber || '').toString().trim();
-  if (normalizedPhone.startsWith('+')) {
-    normalizedPhone = '+' + normalizedPhone.replace(/\D/g, '');
-  } else {
-    normalizedPhone = normalizedPhone.replace(/\D/g, '');
-    if (normalizedPhone.length === 10) {
-      normalizedPhone = '+91' + normalizedPhone;
-    } else {
-      normalizedPhone = '+' + normalizedPhone;
-    }
+  if (!phoneNumber || !password) {
+    return next(new AppError('phoneNumber and password are required.', 400));
   }
 
-  if (!normalizedPhone || !password || !username) {
-    return next(new AppError('phoneNumber, password and username are required.', 400));
-  }
-
-  // Check if admin exists in DB with matching phone AND username (Case-Sensitive)
-  const result = await db.query('SELECT * FROM admins WHERE phone_number = $1 AND username = $2', [normalizedPhone, username]);
+  const trimmedUsername = typeof username === 'string' ? username.trim() : '';
+  const result = trimmedUsername
+    ? await db.query(
+      'SELECT * FROM admins WHERE phone_number = $1 AND username = $2',
+      [phoneNumber, trimmedUsername]
+    )
+    : await db.query('SELECT * FROM admins WHERE phone_number = $1', [phoneNumber]);
 
   if (result.rows.length === 0) {
     return next(new AppError('Invalid credentials.', 401));
@@ -141,7 +133,9 @@ const loginController = catchAsync(async (req, res, next) => {
  * Body: { phoneNumber, code }
  */
 const verifyOtpController = catchAsync(async (req, res, next) => {
-  const { phoneNumber, code, challengeToken } = req.body;
+  const phoneNumber = String(req.body?.phoneNumber ?? '').trim();
+  const code = String(req.body?.code ?? '').trim();
+  const challengeToken = String(req.body?.challengeToken ?? '').trim();
 
   if (!phoneNumber || !code || !challengeToken) {
     return next(new AppError('phoneNumber, code and challengeToken are required.', 400));
