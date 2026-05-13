@@ -602,8 +602,6 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS is_logged_in BOOLEAN DEFAULT false;`);
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS last_login TIMESTAMP;`);
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS refresh_token TEXT;`);
-    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_finalized_at TIMESTAMPTZ;`);
-    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_finalized_source VARCHAR(30);`);
     await pool.query(`UPDATE admins SET username = 'admin' WHERE username IS NULL;`);
 
     // Create new feature tables
@@ -621,6 +619,8 @@ const initDB = async () => {
     await pool.query(createParentProfilesTable);
     await pool.query(createTeacherProfilesTable);
     await pool.query(createOrdersTable);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_finalized_at TIMESTAMPTZ;`);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_finalized_source VARCHAR(30);`);
     await pool.query(createTransactionsTable);
     await pool.query(createClientSubscriptionsTable);
     await pool.query(createClientSubscriptionHistoryTable);
