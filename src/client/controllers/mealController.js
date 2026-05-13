@@ -78,25 +78,78 @@ exports.getMealSkipPolicy = catchAsync(async (_req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER: Check if client has ANY active subscription (computed remaining)
 // ─────────────────────────────────────────────────────────────────────────────
+const subscriptionJoinSql = `
+     FROM client_subscriptions cs
+     LEFT JOIN children ch ON cs.entity_type='child' AND cs.entity_id=ch.id
+     LEFT JOIN teacher_profiles tp ON cs.entity_type='teacher' AND cs.entity_id=tp.id
+     LEFT JOIN professional_profiles pp ON cs.entity_type='professional' AND cs.entity_id=pp.id`;
+
+const mapSubscriptionSummaryRow = (s) => ({
+  entity_type: s.entity_type,
+  entity_name: s.entity_name,
+  total_meals: s.total_meals,
+  used_meals: s.used_meals,
+  remaining_meals: s.remaining_meals,
+  end_date: s.end_date,
+  include_saturday: s.include_saturday,
+});
+
 const getSubscriptionStatus = async (clientId) => {
   const today = mealEligibilityService.parseSessionToday();
   const activePred = mealEligibilityService.subscriptionActiveOnDatePredicateSql('cs', '$2');
   const result = await db.query(
     `SELECT cs.entity_type, cs.entity_id, cs.total_meals, cs.used_meals,
             (cs.total_meals - cs.used_meals) AS remaining_meals,
-            cs.end_date, cs.is_active,
+            cs.end_date, cs.is_active, cs.include_saturday,
             CASE
               WHEN cs.entity_type='child' THEN ch.name
               WHEN cs.entity_type='teacher' THEN tp.name
               WHEN cs.entity_type='professional' THEN pp.name
             END AS entity_name
-     FROM client_subscriptions cs
-     LEFT JOIN children ch ON cs.entity_type='child' AND cs.entity_id=ch.id
-     LEFT JOIN teacher_profiles tp ON cs.entity_type='teacher' AND cs.entity_id=tp.id
-     LEFT JOIN professional_profiles pp ON cs.entity_type='professional' AND cs.entity_id=pp.id
+     ${subscriptionJoinSql}
      WHERE cs.client_id=$1
        AND ${activePred}`,
     [clientId, today]
+  );
+  return result.rows;
+};
+
+/** Active window: remaining meals, not ended — used before strict “meal today” eligibility. */
+const getSubscriptionWindowRows = async (clientId, todayYmd) => {
+  const result = await db.query(
+    `SELECT cs.entity_type, cs.entity_id, cs.start_date, cs.end_date, cs.total_meals, cs.used_meals,
+            (cs.total_meals - cs.used_meals) AS remaining_meals,
+            cs.is_active, cs.include_saturday,
+            CASE
+              WHEN cs.entity_type='child' THEN ch.name
+              WHEN cs.entity_type='teacher' THEN tp.name
+              WHEN cs.entity_type='professional' THEN pp.name
+            END AS entity_name
+     ${subscriptionJoinSql}
+     WHERE cs.client_id=$1
+       AND cs.is_active = true
+       AND (cs.total_meals - cs.used_meals) > 0
+       AND DATE(cs.end_date) >= $2::date`,
+    [clientId, todayYmd]
+  );
+  return result.rows;
+};
+
+const getStrictEligibleTodayRows = async (clientId, todayYmd) => {
+  const pred = mealEligibilityService.subscriptionEligiblePredicateSql('cs', '$2');
+  const result = await db.query(
+    `SELECT cs.entity_type, cs.entity_id, cs.total_meals, cs.used_meals,
+            (cs.total_meals - cs.used_meals) AS remaining_meals,
+            cs.end_date, cs.is_active, cs.include_saturday,
+            CASE
+              WHEN cs.entity_type='child' THEN ch.name
+              WHEN cs.entity_type='teacher' THEN tp.name
+              WHEN cs.entity_type='professional' THEN pp.name
+            END AS entity_name
+     ${subscriptionJoinSql}
+     WHERE cs.client_id=$1
+       AND ${pred}`,
+    [clientId, todayYmd]
   );
   return result.rows;
 };
@@ -110,12 +163,13 @@ const getSubscriptionStatus = async (clientId) => {
  */
 exports.getTodayMenu = catchAsync(async (req, res, next) => {
   const clientId = req.user.id;
+  const today = mealEligibilityService.parseSessionToday();
 
-  // Check subscription status
-  const subscriptions = await getSubscriptionStatus(clientId);
+  const dowRes = await db.query(`SELECT EXTRACT(ISODOW FROM $1::date)::int AS dow`, [today]);
+  const dow = Number(dowRes.rows[0]?.dow || 0); // 1=Mon … 7=Sun
 
-  if (subscriptions.length === 0) {
-    // Not subscribed — return helpful info
+  const windowSubs = await getSubscriptionWindowRows(clientId, today);
+  if (windowSubs.length === 0) {
     const plans = await db.query(
       'SELECT id, plan_name, price, billing_cycle FROM subscriptions WHERE is_active=true ORDER BY display_order'
     );
@@ -127,8 +181,46 @@ exports.getTodayMenu = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Subscribed — fetch today's menu
-  const today = mealEligibilityService.parseSessionToday();
+  const startKey = (r) => String(r.start_date || '').slice(0, 10);
+  const allFutureStart = windowSubs.every((r) => startKey(r) > today);
+  if (allFutureStart) {
+    const minStart = windowSubs.map(startKey).filter(Boolean).sort()[0] || today;
+    return res.status(200).json({
+      success: true,
+      is_subscribed: true,
+      display_mode: 'message',
+      home_meal_message: `Your meal starts receiving from ${minStart}.`,
+      menu: null,
+      subscription_summary: windowSubs.map(mapSubscriptionSummaryRow),
+    });
+  }
+
+  if (dow === 7) {
+    return res.status(200).json({
+      success: true,
+      is_subscribed: true,
+      display_mode: 'message',
+      home_meal_message: 'Today is a holiday.',
+      menu: null,
+      subscription_summary: windowSubs.map(mapSubscriptionSummaryRow),
+    });
+  }
+
+  const eligibleToday = await getStrictEligibleTodayRows(clientId, today);
+  if (eligibleToday.length === 0) {
+    const satMsg = dow === 6
+      ? 'Your subscription does not include Saturday meals.'
+      : 'No meal service is scheduled for your account today.';
+    return res.status(200).json({
+      success: true,
+      is_subscribed: true,
+      display_mode: 'message',
+      home_meal_message: satMsg,
+      menu: null,
+      subscription_summary: windowSubs.map(mapSubscriptionSummaryRow),
+    });
+  }
+
   const menu = await db.query(
     `SELECT
         id,
@@ -145,15 +237,9 @@ exports.getTodayMenu = catchAsync(async (req, res, next) => {
     return res.status(200).json({
       success: true,
       is_subscribed: true,
+      display_mode: 'menu',
       message: 'No menu uploaded for today yet.',
-      subscription_summary: subscriptions.map(s => ({
-        entity_type: s.entity_type,
-        entity_name: s.entity_name,
-        total_meals: s.total_meals,
-        used_meals: s.used_meals,
-        remaining_meals: s.remaining_meals,
-        end_date: s.end_date
-      })),
+      subscription_summary: eligibleToday.map(mapSubscriptionSummaryRow),
       menu: null
     });
   }
@@ -161,14 +247,8 @@ exports.getTodayMenu = catchAsync(async (req, res, next) => {
   res.status(200).json({
     success: true,
     is_subscribed: true,
-    subscription_summary: subscriptions.map(s => ({
-      entity_type: s.entity_type,
-      entity_name: s.entity_name,
-      total_meals: s.total_meals,
-      used_meals: s.used_meals,
-      remaining_meals: s.remaining_meals,
-      end_date: s.end_date
-    })),
+    display_mode: 'menu',
+    subscription_summary: eligibleToday.map(mapSubscriptionSummaryRow),
     menu: menu.rows[0]
   });
 });

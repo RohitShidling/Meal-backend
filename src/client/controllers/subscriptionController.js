@@ -67,11 +67,14 @@ exports.getMySubscriptionStatus = async (req, res, next) => {
              cs.is_active as subscription_status, cs.include_saturday,
              cs.total_meals, cs.used_meals,
              s.id as plan_id, s.plan_name, s.price, s.price_with_saturday, s.price_without_saturday, s.billing_cycle,
-             CASE
-               WHEN cs.entity_type='child' THEN ch.name
-               WHEN cs.entity_type='teacher' THEN tp.name
-               WHEN cs.entity_type='professional' THEN pp.name
-             END AS entity_name
+             COALESCE(
+               CASE
+                 WHEN cs.entity_type='child' THEN ch.name
+                 WHEN cs.entity_type='teacher' THEN tp.name
+                 WHEN cs.entity_type='professional' THEN pp.name
+               END,
+               'Profile'
+             ) AS entity_name
       FROM client_subscriptions cs
       JOIN subscriptions s ON cs.subscription_id = s.id
       LEFT JOIN children ch ON cs.entity_type='child' AND cs.entity_id=ch.id
