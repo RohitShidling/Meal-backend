@@ -106,9 +106,9 @@ const parseYmdStrict = (input) => {
   // DB DATE fields can come as Date objects or ISO datetime strings.
   if (input instanceof Date) {
     if (Number.isNaN(input.getTime())) return null;
-    const yy = input.getUTCFullYear();
-    const mm = String(input.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(input.getUTCDate()).padStart(2, '0');
+    const yy = input.getFullYear();
+    const mm = String(input.getMonth() + 1).padStart(2, '0');
+    const dd = String(input.getDate()).padStart(2, '0');
     return `${yy}-${mm}-${dd}`;
   }
 
@@ -172,6 +172,42 @@ const computeEndDateByMealDays = (startYmd, mealDays, includeSaturday) => {
 };
 
 /**
+ * Audit row when an existing client_subscription is superseded (renewal / add-on).
+ */
+const recordSubscriptionHistory = async (queryRunner, payload) => {
+  await queryRunner.query(
+    `INSERT INTO client_subscription_history (
+      client_subscription_id, client_id, entity_type, entity_id,
+      previous_subscription_id, previous_order_id, previous_start_date, previous_end_date,
+      previous_total_meals, previous_used_meals, previous_include_saturday,
+      new_subscription_id, new_order_id, new_start_date, new_end_date,
+      new_total_meals, new_used_meals, new_include_saturday, change_reason
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+    [
+      payload.clientSubscriptionId,
+      payload.clientId,
+      payload.entityType,
+      payload.entityId,
+      payload.previousSubscriptionId || null,
+      payload.previousOrderId || null,
+      payload.previousStartDate || null,
+      payload.previousEndDate || null,
+      payload.previousTotalMeals ?? null,
+      payload.previousUsedMeals ?? null,
+      payload.previousIncludeSaturday ?? null,
+      payload.newSubscriptionId || null,
+      payload.newOrderId || null,
+      payload.newStartDate || null,
+      payload.newEndDate || null,
+      payload.newTotalMeals ?? null,
+      payload.newUsedMeals ?? null,
+      payload.newIncludeSaturday ?? null,
+      payload.changeReason || 'renewal_or_reactivation',
+    ]
+  );
+};
+
+/**
  * Core function: finalize ONE subscription after successful payment
  */
 const activateSingleSubscription = async (queryRunner, clientId, subscriptionId, entityType, entityId, orderId, requestedStartDate, includeSaturday) => {
@@ -190,10 +226,14 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
     : Number(explicitWithoutSaturday || baseDurationDays);
 
   const existingSub = await queryRunner.query(
-    'SELECT end_date, total_meals, used_meals FROM client_subscriptions WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true AND order_id != $4 FOR UPDATE',
+    `SELECT id, subscription_id, order_id, is_active, start_date, end_date,
+            total_meals, used_meals, include_saturday
+     FROM client_subscriptions
+     WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true AND order_id IS DISTINCT FROM $4
+     FOR UPDATE`,
     [clientId, entityId, entityType, orderId]
   );
-  const currentSub = currentSubRes.rows[0] || null;
+  const currentSub = existingSub.rows[0] || null;
 
   const sessionToday = mealEligibilityService.parseSessionToday();
   let baseDateYmd = parseYmdStrict(requestedStartDate) || sessionToday;
@@ -204,7 +244,7 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
     : computeMealCount(baseDateYmd, durationDays, includeSaturday);
   let newUsedMeals = 0;
 
-  if (currentSub && currentSub.is_active && currentSub.order_id !== orderId) {
+  if (currentSub) {
     const currentEndYmd = String(currentSub.end_date).slice(0, 10);
     if (currentEndYmd >= sessionToday) {
       const nextAfterCurrentEnd = addDaysYmd(currentEndYmd, 1);
@@ -232,7 +272,7 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
   // - Sunday is always excluded
   const endDateYmd = computeEndDateByMealDays(baseDateYmd, durationDays, includeSaturday);
 
-  await queryRunner.query(
+  const upsertRes = await queryRunner.query(
     `INSERT INTO client_subscriptions (client_id,subscription_id,entity_type,entity_id,start_date,end_date,order_id,is_active,total_meals,used_meals,include_saturday)
      VALUES ($1,$2,$3,$4,$8,$5,$6,true,$7,$9,$10)
      ON CONFLICT (client_id,entity_id,entity_type) DO UPDATE SET
@@ -244,7 +284,7 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
   );
   const nextSub = upsertRes.rows[0];
   if (currentSub && nextSub) {
-    await recordSubscriptionHistory(dbClient, {
+    await recordSubscriptionHistory(queryRunner, {
       clientSubscriptionId: nextSub.id,
       clientId,
       entityType,
@@ -486,7 +526,7 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
        JOIN subscriptions s ON ci.subscription_id=s.id
        LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
        WHERE ci.cart_id=$1
-       FOR UPDATE`,
+       FOR UPDATE OF ci`,
       [cart.id]
     );
     if (itemsRes.rows.length === 0) {
@@ -932,11 +972,14 @@ exports.getMyActiveSubscriptions = catchAsync(async (req, res) => {
               WHEN cs.entity_type='teacher' THEN tp.meal_time
               WHEN cs.entity_type='professional' THEN pp.lunch_time
             END AS meal_timing,
-            CASE
-              WHEN cs.entity_type='child' THEN ch.name
-              WHEN cs.entity_type='teacher' THEN tp.name
-              WHEN cs.entity_type='professional' THEN pp.name
-            END as entity_name,
+            COALESCE(
+              CASE
+                WHEN cs.entity_type='child' THEN ch.name
+                WHEN cs.entity_type='teacher' THEN tp.name
+                WHEN cs.entity_type='professional' THEN pp.name
+              END,
+              'Profile'
+            ) AS entity_name,
             (DATE(cs.end_date) - $2::date) as days_remaining,
             cs.include_saturday,
             TO_CHAR(cs.start_date, 'YYYY-MM-DD') AS start_date,

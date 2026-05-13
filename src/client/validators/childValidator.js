@@ -2,7 +2,7 @@ const AppError = require('../../common/utils/AppError');
 const isValidMealTime = (value) => {
   const raw = String(value || '').trim();
   if (!raw) return false;
-  if (/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(raw)) return true;
+  if (/^([0-1]?[0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$/.test(raw)) return true;
   if (/^(0?[1-9]|1[0-2]):[0-5][0-9]\s?(AM|PM)$/i.test(raw)) return true;
   return false;
 };
@@ -86,7 +86,7 @@ const validateUpdateChild = (req, res, next) => {
     }
   }
 
-  if (mealTime !== undefined && !isValidMealTime(mealTime)) {
+  if (mealTime !== undefined && mealTime !== null && String(mealTime).trim() !== '' && !isValidMealTime(mealTime)) {
     errors.push('Valid meal time (HH:mm or h:mm AM/PM) is required.');
   }
 

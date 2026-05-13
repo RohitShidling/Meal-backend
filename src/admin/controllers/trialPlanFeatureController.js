@@ -1,5 +1,6 @@
 const db = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
+const { parseRupeeInt, mapRowIntPrices, mapRowsIntPrices } = require('../../common/utils/priceParse');
 
 const normalizeFeatures = (features) => {
   if (!Array.isArray(features)) return [];
@@ -87,17 +88,18 @@ exports.createTrialPlan = async (req, res, next) => {
     if (mealSizeCheck.rows.length === 0) {
       return next(new AppError('Selected meal size is invalid or inactive', 400));
     }
-    const resolvedPriceWithSaturday = Number(
-      price_with_saturday !== undefined ? price_with_saturday : price
-    );
-    const resolvedPriceWithoutSaturday = Number(
-      price_without_saturday !== undefined ? price_without_saturday : price
-    );
-    if (!Number.isFinite(resolvedPriceWithSaturday) || resolvedPriceWithSaturday < 0) {
-      return next(new AppError('price_with_saturday (or price) must be a valid non-negative number', 400));
+    const pickPrice = (specific, fallback) => {
+      if (specific !== undefined && specific !== null && String(specific).trim() !== '') return specific;
+      if (fallback !== undefined && fallback !== null && String(fallback).trim() !== '') return fallback;
+      return undefined;
+    };
+    const resolvedPriceWithSaturday = parseRupeeInt(pickPrice(price_with_saturday, price));
+    const resolvedPriceWithoutSaturday = parseRupeeInt(pickPrice(price_without_saturday, price));
+    if (!Number.isFinite(resolvedPriceWithSaturday)) {
+      return next(new AppError('price_with_saturday (or price) must be a valid non-negative whole number (₹)', 400));
     }
-    if (!Number.isFinite(resolvedPriceWithoutSaturday) || resolvedPriceWithoutSaturday < 0) {
-      return next(new AppError('price_without_saturday (or price) must be a valid non-negative number', 400));
+    if (!Number.isFinite(resolvedPriceWithoutSaturday)) {
+      return next(new AppError('price_without_saturday (or price) must be a valid non-negative whole number (₹)', 400));
     }
 
     const duplicate = await db.query(
@@ -166,7 +168,7 @@ exports.createTrialPlan = async (req, res, next) => {
     }
 
     await writeFeatures(result.rows[0].id, normalizeFeatures(features));
-    const hydrated = await attachFeatures([result.rows[0]]);
+    const hydrated = mapRowsIntPrices(await attachFeatures([result.rows[0]]));
 
     res.status(201).json({
       success: true,
@@ -188,7 +190,7 @@ exports.getTrialPlans = async (req, res, next) => {
       ORDER BY display_order ASC, created_at DESC;
       `
     );
-    const hydrated = await attachFeatures(result.rows);
+    const hydrated = mapRowsIntPrices(await attachFeatures(result.rows));
     res.status(200).json({ success: true, count: hydrated.length, data: hydrated });
   } catch (error) {
     next(new AppError(error.message || 'Error fetching trial plans', 500));
@@ -200,7 +202,7 @@ exports.getTrialPlanById = async (req, res, next) => {
     const { id } = req.params;
     const result = await db.query('SELECT * FROM subscriptions WHERE id = $1 AND trial_days > 0', [id]);
     if (result.rows.length === 0) return next(new AppError('Trial plan not found.', 404));
-    const hydrated = await attachFeatures(result.rows);
+    const hydrated = mapRowsIntPrices(await attachFeatures(result.rows));
     res.status(200).json({ success: true, data: hydrated[0] });
   } catch (error) {
     next(new AppError(error.message || 'Error fetching trial plan', 500));
@@ -249,17 +251,22 @@ exports.updateTrialPlan = async (req, res, next) => {
         return next(new AppError('Selected meal size is invalid or inactive', 400));
       }
     }
-    const nextPriceWithSaturday = price_with_saturday !== undefined
-      ? Number(price_with_saturday)
-      : (price !== undefined ? Number(price) : Number(current.price_with_saturday ?? current.price));
-    const nextPriceWithoutSaturday = price_without_saturday !== undefined
-      ? Number(price_without_saturday)
-      : (price !== undefined ? Number(price) : Number(current.price_without_saturday ?? current.price));
+    const pickPrice = (specific, fallback, currentWith, currentWithout) => {
+      if (specific !== undefined && specific !== null && String(specific).trim() !== '') return specific;
+      if (fallback !== undefined && fallback !== null && String(fallback).trim() !== '') return fallback;
+      return currentWith ?? currentWithout;
+    };
+    const nextPriceWithSaturday = parseRupeeInt(
+      pickPrice(price_with_saturday, price, current.price_with_saturday, current.price)
+    );
+    const nextPriceWithoutSaturday = parseRupeeInt(
+      pickPrice(price_without_saturday, price, current.price_without_saturday, current.price)
+    );
     if (!Number.isFinite(nextPriceWithSaturday) || nextPriceWithSaturday < 0) {
-      return next(new AppError('price_with_saturday (or price) must be a valid non-negative number', 400));
+      return next(new AppError('price_with_saturday (or price) must be a valid non-negative whole number (₹)', 400));
     }
     if (!Number.isFinite(nextPriceWithoutSaturday) || nextPriceWithoutSaturday < 0) {
-      return next(new AppError('price_without_saturday (or price) must be a valid non-negative number', 400));
+      return next(new AppError('price_without_saturday (or price) must be a valid non-negative whole number (₹)', 400));
     }
 
     const result = await db.query(
@@ -336,7 +343,7 @@ exports.updateTrialPlan = async (req, res, next) => {
       await writeFeatures(id, normalizeFeatures(features));
     }
 
-    const hydrated = await attachFeatures(result.rows);
+    const hydrated = mapRowsIntPrices(await attachFeatures(result.rows));
     res.status(200).json({
       success: true,
       message: 'Trial plan updated successfully.',
@@ -362,7 +369,7 @@ exports.setTrialPlanActive = async (req, res, next) => {
       [is_active, adminId, id]
     );
     if (result.rows.length === 0) return next(new AppError('Trial plan not found.', 404));
-    const hydrated = await attachFeatures(result.rows);
+    const hydrated = mapRowsIntPrices(await attachFeatures(result.rows));
     res.status(200).json({ success: true, message: 'Trial plan status updated successfully.', data: hydrated[0] });
   } catch (error) {
     next(new AppError(error.message || 'Error updating trial plan status', 500));
