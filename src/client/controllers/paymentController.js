@@ -442,9 +442,22 @@ const processFailedTransaction = async (merchantTransactionId, gatewayPayload, s
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
-    const orderRes = await client.query('SELECT status FROM orders WHERE id=$1 FOR UPDATE', [txn.order_id]);
+    const orderRes = await client.query('SELECT status, order_type, cart_id FROM orders WHERE id=$1 FOR UPDATE', [txn.order_id]);
     if (orderRes.rows.length > 0 && orderRes.rows[0].status === 'pending') {
+      const order = orderRes.rows[0];
       await client.query('UPDATE orders SET status=$1, updated_at=NOW(), payment_finalized_source=$2 WHERE id=$3', ['failed', source, txn.order_id]);
+      
+      if (order.order_type === 'cart' && order.cart_id) {
+        // Clone the cart into a new 'active' cart so the user can continue shopping, 
+        // while preserving the original cart_id snapshot for the failed order.
+        const newCartRes = await client.query("INSERT INTO carts (client_id, status, total_amount) SELECT client_id, 'active', total_amount FROM carts WHERE id=$1 RETURNING id", [order.cart_id]);
+        if (newCartRes.rows.length > 0) {
+          const newCartId = newCartRes.rows[0].id;
+          await client.query("INSERT INTO cart_items (cart_id, subscription_id, entity_type, entity_id, entity_name, unit_price, meal_size_id, meal_timing, include_saturday, start_date) SELECT $1, subscription_id, entity_type, entity_id, entity_name, unit_price, meal_size_id, meal_timing, include_saturday, start_date FROM cart_items WHERE cart_id=$2", [newCartId, order.cart_id]);
+          // Mark the old cart as failed/abandoned so it's not picked up
+          await client.query("UPDATE carts SET status='failed', updated_at=NOW() WHERE id=$1", [order.cart_id]);
+        }
+      }
     }
     await client.query('COMMIT');
   } catch (error) {
@@ -491,6 +504,11 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
   if (subResult.rows.length === 0) return next(new AppError('Subscription plan not found', 404));
   const subscription = subResult.rows[0];
   const entityMealMeta = await resolveEntityMealMeta(entityType, entityId);
+  
+  if (subscription.meal_size_id && entityMealMeta.meal_size_id && subscription.meal_size_id !== entityMealMeta.meal_size_id) {
+    return next(new AppError("The selected plan does not match this profile's meal size", 400));
+  }
+  
   const effectiveMealSizeId = entityMealMeta.meal_size_id || subscription.meal_size_id || null;
   const effectiveMealTiming = entityMealMeta.meal_timing || DEFAULT_MEAL_TIME;
   const includeSaturdayFlag = parseBoolean(includeSaturday, true);
@@ -607,7 +625,26 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
     }
 
     totalAmount = items.rows.reduce((sum, item) => sum + Number(item.unit_price || 0), 0);
-    await checkoutClient.query('UPDATE carts SET total_amount=$1, updated_at=NOW() WHERE id=$2', [totalAmount, cart.id]);
+
+    // Abandon any stuck 'pending' carts for this client (from previous failed/cancelled checkouts
+    // that never got resolved). This prevents the unique constraint violation on (client_id, status).
+    const stuckPendingCarts = await checkoutClient.query(
+      "SELECT id FROM carts WHERE client_id=$1 AND status='pending' AND id != $2",
+      [clientId, cart.id]
+    );
+    for (const stuckCart of stuckPendingCarts.rows) {
+      // Mark stuck cart as 'failed'
+      await checkoutClient.query("UPDATE carts SET status='failed', updated_at=NOW() WHERE id=$1", [stuckCart.id]);
+      // Mark its associated pending order as 'failed' too
+      await checkoutClient.query("UPDATE orders SET status='failed', updated_at=NOW() WHERE cart_id=$1 AND status='pending'", [stuckCart.id]);
+      // Mark its transactions as 'failure'
+      await checkoutClient.query(
+        "UPDATE transactions SET status='failure', updated_at=NOW() WHERE order_id IN (SELECT id FROM orders WHERE cart_id=$1)",
+        [stuckCart.id]
+      );
+    }
+
+    await checkoutClient.query("UPDATE carts SET total_amount=$1, status='pending', updated_at=NOW() WHERE id=$2", [totalAmount, cart.id]);
 
     const orderResult = await checkoutClient.query(
       `INSERT INTO orders (client_id,subscription_id,entity_type,entity_id,amount,status,order_type,cart_id)

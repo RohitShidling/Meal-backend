@@ -131,6 +131,11 @@ exports.addToCart = catchAsync(async (req, res, next) => {
   const includeSaturdayFlag = parseBoolean(includeSaturday, true);
   const plan = sub.rows[0];
   const entityMealMeta = await resolveEntityMealMeta(entityType, entityId);
+  
+  if (plan.meal_size_id && entityMealMeta.meal_size_id && plan.meal_size_id !== entityMealMeta.meal_size_id) {
+    return next(new AppError("The selected plan does not match this profile's meal size", 400));
+  }
+  
   const effectiveMealSizeId = entityMealMeta.meal_size_id || plan.meal_size_id || null;
   const effectiveMealTiming = entityMealMeta.meal_timing || DEFAULT_MEAL_TIME;
   const selectedPrice = includeSaturdayFlag
