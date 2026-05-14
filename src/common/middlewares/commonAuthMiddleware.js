@@ -17,7 +17,9 @@ const verifyIfPossible = (token, secret) => {
 };
 
 /**
- * Middleware to allow both Admin and Client access
+ * Verifies Bearer JWT against admin OR client secret and attaches req.user.
+ * Controllers must branch on req.user.role where behavior differs (see subscriptionPlanDurationController).
+ * For mobile-only surfaces, chain requireClientRoleMiddleware after this.
  */
 const commonAuthMiddleware = async (req, res, next) => {
   try {

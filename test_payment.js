@@ -1,3 +1,4 @@
+// DEV-ONLY — manual payment flow test script; not used by production server.
 const db = require('./src/common/database');
 const paymentController = require('./src/client/controllers/paymentController');
 

@@ -149,12 +149,7 @@ exports.addToCart = catchAsync(async (req, res, next) => {
       [cart.id, subscriptionId, entityType, entityId, entityName, selectedPrice, effectiveMealSizeId, effectiveMealTiming, includeSaturdayFlag, effectiveStartDate]
     );
   } catch (e) {
-    if (e.code === '23505') {
-      return next(new AppError(
-        `${entityName || entityId} already has this plan in your cart. Choose a different plan or remove the existing line first.`,
-        400
-      ));
-    }
+    if (e.code === '23505') return next(new AppError(`${entityName || entityId} is already in your cart`, 400));
     throw e;
   }
 

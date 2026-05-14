@@ -45,7 +45,9 @@ exports.saveParentProfile = async (req, res, next) => {
       data: result,
     });
   } catch (error) {
-    next(new AppError(error.message || 'Error saving parent profile', 500));
+    if (error instanceof AppError) return next(error);
+    console.error('saveParentProfile', error);
+    return next(new AppError('Error saving parent profile.', 500));
   }
 };
 
@@ -73,14 +75,16 @@ exports.getParentProfile = async (req, res, next) => {
       data: result.rows[0],
     });
   } catch (error) {
-    next(new AppError(error.message || 'Error fetching parent profile', 500));
+    if (error instanceof AppError) return next(error);
+    console.error('getParentProfile', error);
+    return next(new AppError('Error fetching parent profile.', 500));
   }
 };
 
 /**
  * @desc    Delete parent profile
  * @route   DELETE /api/client/parent/profile
- * @access  Private (Client & Admin)
+ * @access  Private (Client only)
  */
 exports.deleteParentProfile = async (req, res, next) => {
   try {
@@ -133,6 +137,8 @@ exports.deleteParentProfile = async (req, res, next) => {
       data: result.rows[0]
     });
   } catch (error) {
-    next(new AppError(error.message || 'Error deleting parent profile', 500));
+    if (error instanceof AppError) return next(error);
+    console.error('deleteParentProfile', error);
+    return next(new AppError('Error deleting parent profile.', 500));
   }
 };

@@ -1,6 +1,5 @@
 const { query, pool } = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
-const { parseRupeeInt, mapRowsIntPrices } = require('../../common/utils/priceParse');
 
 const billingCycleToDays = {
   daily: 1,
@@ -118,18 +117,17 @@ exports.createSubscriptionPlan = async (req, res, next) => {
     if (mealSizeCheck.rows.length === 0) {
       return next(new AppError('Selected meal size is invalid or inactive', 400));
     }
-    const pickPrice = (specific, fallback) => {
-      if (specific !== undefined && specific !== null && String(specific).trim() !== '') return specific;
-      if (fallback !== undefined && fallback !== null && String(fallback).trim() !== '') return fallback;
-      return undefined;
-    };
-    const resolvedPriceWithSaturday = parseRupeeInt(pickPrice(price_with_saturday, price));
-    const resolvedPriceWithoutSaturday = parseRupeeInt(pickPrice(price_without_saturday, price));
-    if (!Number.isFinite(resolvedPriceWithSaturday)) {
-      return next(new AppError('price_with_saturday (or price) must be a valid non-negative whole number (₹)', 400));
+    const resolvedPriceWithSaturday = Number(
+      price_with_saturday !== undefined ? price_with_saturday : price
+    );
+    const resolvedPriceWithoutSaturday = Number(
+      price_without_saturday !== undefined ? price_without_saturday : price
+    );
+    if (!Number.isFinite(resolvedPriceWithSaturday) || resolvedPriceWithSaturday < 0) {
+      return next(new AppError('price_with_saturday (or price) must be a valid non-negative number', 400));
     }
-    if (!Number.isFinite(resolvedPriceWithoutSaturday)) {
-      return next(new AppError('price_without_saturday (or price) must be a valid non-negative whole number (₹)', 400));
+    if (!Number.isFinite(resolvedPriceWithoutSaturday) || resolvedPriceWithoutSaturday < 0) {
+      return next(new AppError('price_without_saturday (or price) must be a valid non-negative number', 400));
     }
 
     const finalDurationWithSaturday = resolveDurationDays(duration_days_with_saturday, billing_cycle);
@@ -202,7 +200,7 @@ exports.createSubscriptionPlan = async (req, res, next) => {
       result.rows[0].saturday_option_enabled = saturday_option_enabled;
     }
 
-    const hydrated = mapRowsIntPrices(await attachFeatures([result.rows[0]]));
+    const hydrated = await attachFeatures([result.rows[0]]);
 
     res.status(201).json({
       success: true,
@@ -268,22 +266,17 @@ exports.updateSubscriptionPlan = async (req, res, next) => {
     }
     const effectiveDurationDays = effectiveDurationWithSaturday;
     const normalizedFeatures = features === undefined ? null : normalizeFeatures(features);
-    const pickPrice = (specific, fallback, curWith, curPrice) => {
-      if (specific !== undefined && specific !== null && String(specific).trim() !== '') return specific;
-      if (fallback !== undefined && fallback !== null && String(fallback).trim() !== '') return fallback;
-      return curWith ?? curPrice;
-    };
-    const nextPriceWithSaturday = parseRupeeInt(
-      pickPrice(price_with_saturday, price, current.price_with_saturday, current.price)
-    );
-    const nextPriceWithoutSaturday = parseRupeeInt(
-      pickPrice(price_without_saturday, price, current.price_without_saturday, current.price)
-    );
+    const nextPriceWithSaturday = price_with_saturday !== undefined
+      ? Number(price_with_saturday)
+      : (price !== undefined ? Number(price) : Number(current.price_with_saturday ?? current.price));
+    const nextPriceWithoutSaturday = price_without_saturday !== undefined
+      ? Number(price_without_saturday)
+      : (price !== undefined ? Number(price) : Number(current.price_without_saturday ?? current.price));
     if (!Number.isFinite(nextPriceWithSaturday) || nextPriceWithSaturday < 0) {
-      return next(new AppError('price_with_saturday (or price) must be a valid non-negative whole number (₹)', 400));
+      return next(new AppError('price_with_saturday (or price) must be a valid non-negative number', 400));
     }
     if (!Number.isFinite(nextPriceWithoutSaturday) || nextPriceWithoutSaturday < 0) {
-      return next(new AppError('price_without_saturday (or price) must be a valid non-negative whole number (₹)', 400));
+      return next(new AppError('price_without_saturday (or price) must be a valid non-negative number', 400));
     }
 
     const result = await query(
@@ -351,7 +344,7 @@ exports.updateSubscriptionPlan = async (req, res, next) => {
     if (normalizedFeatures !== null) {
       await writeFeatures(id, normalizedFeatures);
     }
-    const hydrated = mapRowsIntPrices(await attachFeatures([result.rows[0]]));
+    const hydrated = await attachFeatures([result.rows[0]]);
 
     res.status(200).json({
       success: true,
@@ -374,7 +367,7 @@ exports.getAllSubscriptionPlans = async (req, res, next) => {
       `
     );
 
-    const hydrated = mapRowsIntPrices(await attachFeatures(result.rows));
+    const hydrated = await attachFeatures(result.rows);
     res.status(200).json({
       success: true,
       count: hydrated.length,
@@ -394,7 +387,7 @@ exports.getSubscriptionPlanById = async (req, res, next) => {
       return next(new AppError('Subscription not found', 404));
     }
 
-    const hydrated = mapRowsIntPrices(await attachFeatures(result.rows));
+    const hydrated = await attachFeatures(result.rows);
     res.status(200).json({
       success: true,
       data: hydrated[0],

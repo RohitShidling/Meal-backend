@@ -128,7 +128,9 @@ exports.saveProfessionalProfile = async (req, res, next) => {
       data: withProfessionalAliases(result),
     });
   } catch (error) {
-    next(new AppError(error.message || 'Error saving professional profile', 500));
+    if (error instanceof AppError) return next(error);
+    console.error('saveProfessionalProfile', error);
+    return next(new AppError('Error saving professional profile.', 500));
   }
 };
 
@@ -163,24 +165,20 @@ exports.getProfessionalProfile = async (req, res, next) => {
       data: withProfessionalAliases(result.rows[0]),
     });
   } catch (error) {
-    next(new AppError(error.message || 'Error fetching professional profile', 500));
+    if (error instanceof AppError) return next(error);
+    console.error('getProfessionalProfile', error);
+    return next(new AppError('Error fetching professional profile.', 500));
   }
 };
 
 /**
  * @desc    Delete professional profile
  * @route   DELETE /api/client/professional/profile
- * @access  Private (Client & Admin)
+ * @access  Private (Client only)
  */
 exports.deleteProfessionalProfile = async (req, res, next) => {
   try {
-    const clientId = (req.user.role === 'admin' && req.query.clientId) ? req.query.clientId : req.user.id;
-    if (req.user.role === 'admin' && req.query.clientId) {
-      const clientCheck = await query('SELECT id FROM clients WHERE id = $1', [clientId]);
-      if (clientCheck.rows.length === 0) {
-        return next(new AppError('Invalid clientId supplied by admin.', 400));
-      }
-    }
+    const clientId = req.user.id;
 
     const profileRes = await query(`SELECT id FROM professional_profiles WHERE client_id = $1`, [clientId]);
     if (profileRes.rows.length === 0) {
@@ -219,6 +217,8 @@ exports.deleteProfessionalProfile = async (req, res, next) => {
       data: result.rows[0]
     });
   } catch (error) {
-    next(new AppError(error.message || 'Error deleting professional profile', 500));
+    if (error instanceof AppError) return next(error);
+    console.error('deleteProfessionalProfile', error);
+    return next(new AppError('Error deleting professional profile.', 500));
   }
 };

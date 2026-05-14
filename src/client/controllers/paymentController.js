@@ -7,7 +7,37 @@ const DEFAULT_MEAL_TIME = '1:00 PM';
 const DEFAULT_FRONTEND_REDIRECT = process.env.DEFAULT_FRONTEND_REDIRECT_URL;
 const MAX_HISTORY_LIMIT = 100;
 const GATEWAY_STATUS_CACHE_TTL_MS = Number.parseInt(process.env.PAYMENT_STATUS_CACHE_TTL_MS || '10000', 10);
+const GATEWAY_STATUS_CACHE_MAX_ENTRIES = Number.parseInt(process.env.PAYMENT_STATUS_CACHE_MAX_ENTRIES || '500', 10);
 const gatewayStatusCache = new Map();
+
+const invalidateGatewayStatusCache = (txnId) => {
+  if (txnId) gatewayStatusCache.delete(String(txnId));
+};
+
+const pruneGatewayCacheBeforeSet = () => {
+  const cap = Number.isFinite(GATEWAY_STATUS_CACHE_MAX_ENTRIES) && GATEWAY_STATUS_CACHE_MAX_ENTRIES > 0
+    ? GATEWAY_STATUS_CACHE_MAX_ENTRIES
+    : 500;
+  while (gatewayStatusCache.size >= cap) {
+    const oldest = gatewayStatusCache.keys().next().value;
+    if (oldest === undefined) break;
+    gatewayStatusCache.delete(oldest);
+  }
+};
+
+const escapeHtml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+/** E4: public status page must not echo full merchant txn id (opaque capability). */
+const maskMerchantTxnIdForPublicPage = (tid) => {
+  const s = String(tid || '');
+  if (s.length <= 6) return '••••••';
+  return `…${escapeHtml(s.slice(-6))}`;
+};
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
@@ -68,10 +98,20 @@ const getAllowedFrontendOrigins = () => {
     .filter(Boolean);
 };
 
+let warnedEmptyPaymentRedirectAllowlist = false;
+
 const sanitizeFrontendRedirectUrl = (candidateUrl) => {
   if (!candidateUrl) return DEFAULT_FRONTEND_REDIRECT || process.env.PHONEPE_REDIRECT_URL;
   const allowlist = getAllowedFrontendOrigins();
-  if (allowlist.length === 0) return DEFAULT_FRONTEND_REDIRECT || process.env.PHONEPE_REDIRECT_URL;
+  if (allowlist.length === 0) {
+    if (process.env.NODE_ENV === 'production' && !warnedEmptyPaymentRedirectAllowlist) {
+      warnedEmptyPaymentRedirectAllowlist = true;
+      console.warn(
+        '[payment] ALLOWED_PAYMENT_REDIRECT_ORIGINS / CORS_ORIGINS is empty — payment redirect is only bounded by DEFAULT_FRONTEND_REDIRECT / PHONEPE_REDIRECT_URL.'
+      );
+    }
+    return DEFAULT_FRONTEND_REDIRECT || process.env.PHONEPE_REDIRECT_URL;
+  }
   try {
     const parsed = new URL(candidateUrl);
     if (allowlist.includes(parsed.origin)) return candidateUrl;
@@ -89,13 +129,15 @@ const resolveApiBaseUrl = (req) => {
 };
 
 const getCachedGatewayStatus = async (txnId) => {
+  const key = String(txnId);
   const now = Date.now();
-  const cached = gatewayStatusCache.get(txnId);
+  const cached = gatewayStatusCache.get(key);
   if (cached && cached.expiresAt > now) {
     return cached.payload;
   }
-  const payload = await phonepe.checkStatus(txnId);
-  gatewayStatusCache.set(txnId, { payload, expiresAt: now + GATEWAY_STATUS_CACHE_TTL_MS });
+  const payload = await phonepe.checkStatus(key);
+  pruneGatewayCacheBeforeSet();
+  gatewayStatusCache.set(key, { payload, expiresAt: now + GATEWAY_STATUS_CACHE_TTL_MS });
   return payload;
 };
 
@@ -106,9 +148,9 @@ const parseYmdStrict = (input) => {
   // DB DATE fields can come as Date objects or ISO datetime strings.
   if (input instanceof Date) {
     if (Number.isNaN(input.getTime())) return null;
-    const yy = input.getFullYear();
-    const mm = String(input.getMonth() + 1).padStart(2, '0');
-    const dd = String(input.getDate()).padStart(2, '0');
+    const yy = input.getUTCFullYear();
+    const mm = String(input.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(input.getUTCDate()).padStart(2, '0');
     return `${yy}-${mm}-${dd}`;
   }
 
@@ -171,10 +213,7 @@ const computeEndDateByMealDays = (startYmd, mealDays, includeSaturday) => {
   return cursor;
 };
 
-/**
- * Audit row when an existing client_subscription is superseded (renewal / add-on).
- */
-const recordSubscriptionHistory = async (queryRunner, payload) => {
+const recordSubscriptionHistory = async (queryRunner, row) => {
   await queryRunner.query(
     `INSERT INTO client_subscription_history (
       client_subscription_id, client_id, entity_type, entity_id,
@@ -182,27 +221,29 @@ const recordSubscriptionHistory = async (queryRunner, payload) => {
       previous_total_meals, previous_used_meals, previous_include_saturday,
       new_subscription_id, new_order_id, new_start_date, new_end_date,
       new_total_meals, new_used_meals, new_include_saturday, change_reason
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+    ) VALUES (
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
+    )`,
     [
-      payload.clientSubscriptionId,
-      payload.clientId,
-      payload.entityType,
-      payload.entityId,
-      payload.previousSubscriptionId || null,
-      payload.previousOrderId || null,
-      payload.previousStartDate || null,
-      payload.previousEndDate || null,
-      payload.previousTotalMeals ?? null,
-      payload.previousUsedMeals ?? null,
-      payload.previousIncludeSaturday ?? null,
-      payload.newSubscriptionId || null,
-      payload.newOrderId || null,
-      payload.newStartDate || null,
-      payload.newEndDate || null,
-      payload.newTotalMeals ?? null,
-      payload.newUsedMeals ?? null,
-      payload.newIncludeSaturday ?? null,
-      payload.changeReason || 'renewal_or_reactivation',
+      row.clientSubscriptionId,
+      row.clientId,
+      row.entityType,
+      row.entityId,
+      row.previousSubscriptionId ?? null,
+      row.previousOrderId ?? null,
+      row.previousStartDate ?? null,
+      row.previousEndDate ?? null,
+      row.previousTotalMeals ?? null,
+      row.previousUsedMeals ?? null,
+      row.previousIncludeSaturday ?? null,
+      row.newSubscriptionId,
+      row.newOrderId,
+      row.newStartDate ?? null,
+      row.newEndDate ?? null,
+      row.newTotalMeals,
+      row.newUsedMeals,
+      row.newIncludeSaturday,
+      row.changeReason,
     ]
   );
 };
@@ -225,15 +266,14 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
     ? Number(explicitWithSaturday || baseDurationDays)
     : Number(explicitWithoutSaturday || baseDurationDays);
 
-  const existingSub = await queryRunner.query(
-    `SELECT id, subscription_id, order_id, is_active, start_date, end_date,
-            total_meals, used_meals, include_saturday
+  const existingSubRes = await queryRunner.query(
+    `SELECT subscription_id, order_id, is_active, start_date, end_date, total_meals, used_meals, include_saturday
      FROM client_subscriptions
-     WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true AND order_id IS DISTINCT FROM $4
+     WHERE client_id=$1 AND entity_id=$2 AND entity_type=$3 AND is_active=true AND order_id != $4
      FOR UPDATE`,
     [clientId, entityId, entityType, orderId]
   );
-  const currentSub = existingSub.rows[0] || null;
+  const currentSub = existingSubRes.rows[0] || null;
 
   const sessionToday = mealEligibilityService.parseSessionToday();
   let baseDateYmd = parseYmdStrict(requestedStartDate) || sessionToday;
@@ -244,7 +284,7 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
     : computeMealCount(baseDateYmd, durationDays, includeSaturday);
   let newUsedMeals = 0;
 
-  if (currentSub) {
+  if (currentSub && currentSub.is_active && currentSub.order_id !== orderId) {
     const currentEndYmd = String(currentSub.end_date).slice(0, 10);
     if (currentEndYmd >= sessionToday) {
       const nextAfterCurrentEnd = addDaysYmd(currentEndYmd, 1);
@@ -379,9 +419,20 @@ const markTransactionStatus = async (merchantTransactionId, status, gatewayTrans
 };
 
 const processSuccessfulTransaction = async (merchantTransactionId, gatewayTransactionId, gatewayPayload, source) => {
+  const peek = await db.query(
+    'SELECT id, status, order_id, merchant_transaction_id FROM transactions WHERE merchant_transaction_id=$1',
+    [merchantTransactionId]
+  );
+  if (peek.rows.length === 0) return null;
+  if (peek.rows[0].status === 'success') {
+    invalidateGatewayStatusCache(merchantTransactionId);
+    return peek.rows[0];
+  }
+
   const txn = await markTransactionStatus(merchantTransactionId, 'success', gatewayTransactionId, gatewayPayload);
   if (!txn) return null;
   await finalizeSuccessfulPayment(txn.order_id, source);
+  invalidateGatewayStatusCache(merchantTransactionId);
   return txn;
 };
 
@@ -402,6 +453,7 @@ const processFailedTransaction = async (merchantTransactionId, gatewayPayload, s
   } finally {
     client.release();
   }
+  invalidateGatewayStatusCache(merchantTransactionId);
   return txn;
 };
 
@@ -830,11 +882,12 @@ exports.statusPage = catchAsync(async (req, res) => {
   if (!tid) return res.status(400).send('<h1>Missing Transaction ID</h1>');
   res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cache-Control', 'no-store');
 
   const txnRes = await db.query('SELECT * FROM transactions WHERE merchant_transaction_id=$1', [tid]);
   let state = 'PENDING';
   let amountPaid = null;
-  let entityName = null;
 
   const gwRes = await getCachedGatewayStatus(tid);
 
@@ -850,7 +903,7 @@ exports.statusPage = catchAsync(async (req, res) => {
     const isSuccess = ['COMPLETED', 'SUCCESS'].includes(state.toUpperCase());
     const isFailure = ['FAILED', 'FAILURE'].includes(state.toUpperCase());
 
-  if (isSuccess && localTxn.status === 'pending') {
+    if (isSuccess && localTxn.status === 'pending') {
       try {
         await processSuccessfulTransaction(tid, gwRes.data?.transactionId || null, gwRes.data || null, 'status_page');
       } catch (err) {
@@ -859,22 +912,6 @@ exports.statusPage = catchAsync(async (req, res) => {
     } else if (isFailure && localTxn.status === 'pending') {
       await processFailedTransaction(tid, gwRes.data || null, 'status_page');
     }
-
-    // Fetch entity name for display
-    const orderRes = await db.query(
-      `SELECT o.entity_type, o.entity_id, o.order_type,
-        CASE WHEN o.entity_type='child' THEN ch.name
-             WHEN o.entity_type='teacher' THEN tp.name
-             WHEN o.entity_type='professional' THEN pp.name
-             WHEN o.entity_type='cart' THEN 'Cart Order'
-        END as entity_name
-       FROM orders o
-       LEFT JOIN children ch ON o.entity_type='child' AND o.entity_id=ch.id
-       LEFT JOIN teacher_profiles tp ON o.entity_type='teacher' AND o.entity_id=tp.id
-       LEFT JOIN professional_profiles pp ON o.entity_type='professional' AND o.entity_id=pp.id
-       WHERE o.id=$1`, [localTxn.order_id]
-    );
-    if (orderRes.rows.length > 0) entityName = orderRes.rows[0].entity_name;
   }
 
   const isSuccess = ['COMPLETED', 'SUCCESS'].includes(state.toUpperCase());
@@ -882,6 +919,7 @@ exports.statusPage = catchAsync(async (req, res) => {
   const icon = isSuccess ? '✅' : '❌';
   const title = isSuccess ? 'Payment Successful!' : 'Payment Failed';
   const subtitle = isSuccess ? 'Your subscription has been activated.' : 'Something went wrong. Please try again.';
+  const refLabel = maskMerchantTxnIdForPublicPage(tid);
 
   res.send(`<!DOCTYPE html><html><head><title>${title}</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -903,8 +941,8 @@ exports.statusPage = catchAsync(async (req, res) => {
       <h1>${title}</h1>
       <p class="sub">${subtitle}</p>
       ${amountPaid ? `<div class="amount">₹${parseFloat(amountPaid).toFixed(2)}</div>` : ''}
-      <div class="row"><span>For</span><span>${entityName || '—'}</span></div>
-      <div class="row"><span>Transaction ID</span><span style="font-size:.75rem">${tid}</span></div>
+      <div class="row"><span>Reference</span><span style="font-size:.75rem">${refLabel}</span></div>
+      <p class="sub" style="font-size:.8rem;margin-top:.5rem">Open the app for full receipt details.</p>
       <a class="btn" href="#" onclick="window.close()">Close</a>
     </div></body></html>`);
 });
@@ -972,14 +1010,11 @@ exports.getMyActiveSubscriptions = catchAsync(async (req, res) => {
               WHEN cs.entity_type='teacher' THEN tp.meal_time
               WHEN cs.entity_type='professional' THEN pp.lunch_time
             END AS meal_timing,
-            COALESCE(
-              CASE
-                WHEN cs.entity_type='child' THEN ch.name
-                WHEN cs.entity_type='teacher' THEN tp.name
-                WHEN cs.entity_type='professional' THEN pp.name
-              END,
-              'Profile'
-            ) AS entity_name,
+            CASE
+              WHEN cs.entity_type='child' THEN ch.name
+              WHEN cs.entity_type='teacher' THEN tp.name
+              WHEN cs.entity_type='professional' THEN pp.name
+            END as entity_name,
             (DATE(cs.end_date) - $2::date) as days_remaining,
             cs.include_saturday,
             TO_CHAR(cs.start_date, 'YYYY-MM-DD') AS start_date,
