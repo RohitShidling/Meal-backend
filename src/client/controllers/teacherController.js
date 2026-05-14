@@ -128,25 +128,20 @@ exports.saveTeacherProfile = async (req, res, next) => {
       data: withTeacherAliases(result),
     });
   } catch (error) {
-    next(new AppError(error.message || 'Error saving teacher profile', 500));
+    if (error instanceof AppError) return next(error);
+    console.error('saveTeacherProfile', error);
+    return next(new AppError('Error saving teacher profile.', 500));
   }
 };
 
 /**
  * @desc    Get teacher profile
  * @route   GET /api/client/teacher/profile
- * @access  Private (Client & Admin)
+ * @access  Private (Client only)
  */
 exports.getTeacherProfile = async (req, res, next) => {
   try {
-    // If admin, they might pass a clientId in query. If client, use their own.
-    const clientId = (req.user.role === 'admin' && req.query.clientId) ? req.query.clientId : req.user.id;
-    if (req.user.role === 'admin' && req.query.clientId) {
-      const clientCheck = await query('SELECT id FROM clients WHERE id = $1', [clientId]);
-      if (clientCheck.rows.length === 0) {
-        return next(new AppError('Invalid clientId supplied by admin.', 400));
-      }
-    }
+    const clientId = req.user.id;
 
     const sqlQuery = `SELECT * FROM teacher_profiles WHERE client_id = $1`;
     const result = await query(sqlQuery, [clientId]);
@@ -164,24 +159,20 @@ exports.getTeacherProfile = async (req, res, next) => {
       data: withTeacherAliases(result.rows[0]),
     });
   } catch (error) {
-    next(new AppError(error.message || 'Error fetching teacher profile', 500));
+    if (error instanceof AppError) return next(error);
+    console.error('getTeacherProfile', error);
+    return next(new AppError('Error fetching teacher profile.', 500));
   }
 };
 
 /**
  * @desc    Delete teacher profile
  * @route   DELETE /api/client/teacher/profile
- * @access  Private (Client & Admin)
+ * @access  Private (Client only)
  */
 exports.deleteTeacherProfile = async (req, res, next) => {
   try {
-    const clientId = (req.user.role === 'admin' && req.query.clientId) ? req.query.clientId : req.user.id;
-    if (req.user.role === 'admin' && req.query.clientId) {
-      const clientCheck = await query('SELECT id FROM clients WHERE id = $1', [clientId]);
-      if (clientCheck.rows.length === 0) {
-        return next(new AppError('Invalid clientId supplied by admin.', 400));
-      }
-    }
+    const clientId = req.user.id;
 
     const profileRes = await query(`SELECT id FROM teacher_profiles WHERE client_id = $1`, [clientId]);
     if (profileRes.rows.length === 0) {
@@ -220,6 +211,8 @@ exports.deleteTeacherProfile = async (req, res, next) => {
       data: result.rows[0]
     });
   } catch (error) {
-    next(new AppError(error.message || 'Error deleting teacher profile', 500));
+    if (error instanceof AppError) return next(error);
+    console.error('deleteTeacherProfile', error);
+    return next(new AppError('Error deleting teacher profile.', 500));
   }
 };

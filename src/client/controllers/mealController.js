@@ -78,78 +78,25 @@ exports.getMealSkipPolicy = catchAsync(async (_req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER: Check if client has ANY active subscription (computed remaining)
 // ─────────────────────────────────────────────────────────────────────────────
-const subscriptionJoinSql = `
-     FROM client_subscriptions cs
-     LEFT JOIN children ch ON cs.entity_type='child' AND cs.entity_id=ch.id
-     LEFT JOIN teacher_profiles tp ON cs.entity_type='teacher' AND cs.entity_id=tp.id
-     LEFT JOIN professional_profiles pp ON cs.entity_type='professional' AND cs.entity_id=pp.id`;
-
-const mapSubscriptionSummaryRow = (s) => ({
-  entity_type: s.entity_type,
-  entity_name: s.entity_name,
-  total_meals: s.total_meals,
-  used_meals: s.used_meals,
-  remaining_meals: s.remaining_meals,
-  end_date: s.end_date,
-  include_saturday: s.include_saturday,
-});
-
 const getSubscriptionStatus = async (clientId) => {
   const today = mealEligibilityService.parseSessionToday();
   const activePred = mealEligibilityService.subscriptionActiveOnDatePredicateSql('cs', '$2');
   const result = await db.query(
     `SELECT cs.entity_type, cs.entity_id, cs.total_meals, cs.used_meals,
             (cs.total_meals - cs.used_meals) AS remaining_meals,
-            cs.end_date, cs.is_active, cs.include_saturday,
+            cs.end_date, cs.is_active,
             CASE
               WHEN cs.entity_type='child' THEN ch.name
               WHEN cs.entity_type='teacher' THEN tp.name
               WHEN cs.entity_type='professional' THEN pp.name
             END AS entity_name
-     ${subscriptionJoinSql}
+     FROM client_subscriptions cs
+     LEFT JOIN children ch ON cs.entity_type='child' AND cs.entity_id=ch.id
+     LEFT JOIN teacher_profiles tp ON cs.entity_type='teacher' AND cs.entity_id=tp.id
+     LEFT JOIN professional_profiles pp ON cs.entity_type='professional' AND cs.entity_id=pp.id
      WHERE cs.client_id=$1
        AND ${activePred}`,
     [clientId, today]
-  );
-  return result.rows;
-};
-
-/** Active window: remaining meals, not ended — used before strict “meal today” eligibility. */
-const getSubscriptionWindowRows = async (clientId, todayYmd) => {
-  const result = await db.query(
-    `SELECT cs.entity_type, cs.entity_id, cs.start_date, cs.end_date, cs.total_meals, cs.used_meals,
-            (cs.total_meals - cs.used_meals) AS remaining_meals,
-            cs.is_active, cs.include_saturday,
-            CASE
-              WHEN cs.entity_type='child' THEN ch.name
-              WHEN cs.entity_type='teacher' THEN tp.name
-              WHEN cs.entity_type='professional' THEN pp.name
-            END AS entity_name
-     ${subscriptionJoinSql}
-     WHERE cs.client_id=$1
-       AND cs.is_active = true
-       AND (cs.total_meals - cs.used_meals) > 0
-       AND DATE(cs.end_date) >= $2::date`,
-    [clientId, todayYmd]
-  );
-  return result.rows;
-};
-
-const getStrictEligibleTodayRows = async (clientId, todayYmd) => {
-  const pred = mealEligibilityService.subscriptionEligiblePredicateSql('cs', '$2');
-  const result = await db.query(
-    `SELECT cs.entity_type, cs.entity_id, cs.total_meals, cs.used_meals,
-            (cs.total_meals - cs.used_meals) AS remaining_meals,
-            cs.end_date, cs.is_active, cs.include_saturday,
-            CASE
-              WHEN cs.entity_type='child' THEN ch.name
-              WHEN cs.entity_type='teacher' THEN tp.name
-              WHEN cs.entity_type='professional' THEN pp.name
-            END AS entity_name
-     ${subscriptionJoinSql}
-     WHERE cs.client_id=$1
-       AND ${pred}`,
-    [clientId, todayYmd]
   );
   return result.rows;
 };
@@ -163,13 +110,12 @@ const getStrictEligibleTodayRows = async (clientId, todayYmd) => {
  */
 exports.getTodayMenu = catchAsync(async (req, res, next) => {
   const clientId = req.user.id;
-  const today = mealEligibilityService.parseSessionToday();
 
-  const dowRes = await db.query(`SELECT EXTRACT(ISODOW FROM $1::date)::int AS dow`, [today]);
-  const dow = Number(dowRes.rows[0]?.dow || 0); // 1=Mon … 7=Sun
+  // Check subscription status
+  const subscriptions = await getSubscriptionStatus(clientId);
 
-  const windowSubs = await getSubscriptionWindowRows(clientId, today);
-  if (windowSubs.length === 0) {
+  if (subscriptions.length === 0) {
+    // Not subscribed — return helpful info
     const plans = await db.query(
       'SELECT id, plan_name, price, billing_cycle FROM subscriptions WHERE is_active=true ORDER BY display_order'
     );
@@ -181,46 +127,8 @@ exports.getTodayMenu = catchAsync(async (req, res, next) => {
     });
   }
 
-  const startKey = (r) => String(r.start_date || '').slice(0, 10);
-  const allFutureStart = windowSubs.every((r) => startKey(r) > today);
-  if (allFutureStart) {
-    const minStart = windowSubs.map(startKey).filter(Boolean).sort()[0] || today;
-    return res.status(200).json({
-      success: true,
-      is_subscribed: true,
-      display_mode: 'message',
-      home_meal_message: `Your meal starts receiving from ${minStart}.`,
-      menu: null,
-      subscription_summary: windowSubs.map(mapSubscriptionSummaryRow),
-    });
-  }
-
-  if (dow === 7) {
-    return res.status(200).json({
-      success: true,
-      is_subscribed: true,
-      display_mode: 'message',
-      home_meal_message: 'Today is a holiday.',
-      menu: null,
-      subscription_summary: windowSubs.map(mapSubscriptionSummaryRow),
-    });
-  }
-
-  const eligibleToday = await getStrictEligibleTodayRows(clientId, today);
-  if (eligibleToday.length === 0) {
-    const satMsg = dow === 6
-      ? 'Your subscription does not include Saturday meals.'
-      : 'No meal service is scheduled for your account today.';
-    return res.status(200).json({
-      success: true,
-      is_subscribed: true,
-      display_mode: 'message',
-      home_meal_message: satMsg,
-      menu: null,
-      subscription_summary: windowSubs.map(mapSubscriptionSummaryRow),
-    });
-  }
-
+  // Subscribed — fetch today's menu
+  const today = mealEligibilityService.parseSessionToday();
   const menu = await db.query(
     `SELECT
         id,
@@ -237,9 +145,15 @@ exports.getTodayMenu = catchAsync(async (req, res, next) => {
     return res.status(200).json({
       success: true,
       is_subscribed: true,
-      display_mode: 'menu',
       message: 'No menu uploaded for today yet.',
-      subscription_summary: eligibleToday.map(mapSubscriptionSummaryRow),
+      subscription_summary: subscriptions.map(s => ({
+        entity_type: s.entity_type,
+        entity_name: s.entity_name,
+        total_meals: s.total_meals,
+        used_meals: s.used_meals,
+        remaining_meals: s.remaining_meals,
+        end_date: s.end_date
+      })),
       menu: null
     });
   }
@@ -247,8 +161,14 @@ exports.getTodayMenu = catchAsync(async (req, res, next) => {
   res.status(200).json({
     success: true,
     is_subscribed: true,
-    display_mode: 'menu',
-    subscription_summary: eligibleToday.map(mapSubscriptionSummaryRow),
+    subscription_summary: subscriptions.map(s => ({
+      entity_type: s.entity_type,
+      entity_name: s.entity_name,
+      total_meals: s.total_meals,
+      used_meals: s.used_meals,
+      remaining_meals: s.remaining_meals,
+      end_date: s.end_date
+    })),
     menu: menu.rows[0]
   });
 });
@@ -603,20 +523,10 @@ exports.deleteMealSkip = catchAsync(async (req, res, next) => {
     const skipStartYmd = String(skip.skip_start_date).slice(0, 10);
     const extensionDays = Number(skip.extension_days || skip.total_skip_days || 0);
 
-    // If approved future skip is directly deleted, first revert the extension.
-    if (skip.status === 'approved') {
-      if (skipStartYmd <= today) {
-        await tx.query('ROLLBACK');
-        return next(new AppError('Cannot delete a skip that has already started or is in the past.', 400));
-      }
-      if (skip.subscription_id && extensionDays > 0) {
-        await tx.query(
-          `UPDATE client_subscriptions
-           SET end_date = end_date - ($2::int * INTERVAL '1 day'), updated_at=NOW()
-           WHERE id=$1 AND is_active=true`,
-          [skip.subscription_id, extensionDays]
-        );
-      }
+    // Enforce that only cancelled skips can be deleted
+    if (skip.status !== 'cancelled') {
+      await tx.query('ROLLBACK');
+      return next(new AppError('Only cancelled skips can be deleted from your history.', 400));
     }
 
     await tx.query('DELETE FROM meal_skips WHERE id=$1', [skipId]);

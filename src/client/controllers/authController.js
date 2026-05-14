@@ -14,10 +14,11 @@ const requireEnv = (key) => {
 
 const CLIENT_JWT_SECRET = requireEnv('CLIENT_JWT_SECRET');
 const CLIENT_REFRESH_SECRET = requireEnv('CLIENT_REFRESH_SECRET');
-const buildOtpMetadata = (req) => ({
-  ip: req.ip,
-  userAgent: req.get('user-agent')
-});
+
+const logOtpProviderError = (label, error) => {
+  const detail = error.response?.data ?? error.message;
+  console.error(`[OTP ${label}]`, detail);
+};
 
 // Helper to generate Client Tokens
 const generateTokens = (id, phoneNumber) => {
@@ -49,10 +50,17 @@ const registerSendOtp = catchAsync(async (req, res, next) => {
 
   // 2. Send OTP via Firebase
   try {
-    await sendOTP(phoneNumber, buildOtpMetadata(req));
+    await sendOTP(phoneNumber);
   } catch (error) {
-    const firebaseMsg = error.response?.data?.error?.message || error.message;
-    return next(new AppError(`Failed to send OTP: ${firebaseMsg}`, 400));
+    if (error.code === 'OTP_CONFIG') {
+      logOtpProviderError('config', error);
+      return next(new AppError('SMS verification is not configured. Please contact support.', 503));
+    }
+    if (error.code === 'OTP_PROVIDER') {
+      return next(new AppError('Failed to send OTP. Please try again later.', 400));
+    }
+    logOtpProviderError('send-register', error);
+    return next(new AppError('Failed to send OTP. Please try again later.', 400));
   }
 
   return res.status(200).json({
@@ -75,13 +83,20 @@ const registerVerifyOtp = catchAsync(async (req, res, next) => {
 
   // 1. Verify OTP via Firebase
   try {
-    await verifyOTP(phoneNumber, code, buildOtpMetadata(req));
+    await verifyOTP(phoneNumber, code);
   } catch (error) {
     if (error.code === 'NO_SESSION') {
       return next(new AppError('No OTP session found. Please request OTP first.', 400));
     }
-    const firebaseMsg = error.response?.data?.error?.message || error.message;
-    return next(new AppError(`Invalid OTP or expired: ${firebaseMsg}`, 400));
+    if (error.code === 'OTP_CONFIG') {
+      logOtpProviderError('config', error);
+      return next(new AppError('SMS verification is not configured. Please contact support.', 503));
+    }
+    if (error.code === 'OTP_PROVIDER') {
+      return next(new AppError('Invalid or expired OTP. Please try again.', 400));
+    }
+    logOtpProviderError('verify-register', error);
+    return next(new AppError('Invalid or expired OTP. Please try again.', 400));
   }
 
   // 2. Re-check if registered (race condition check)
@@ -147,10 +162,17 @@ const loginSendOtp = catchAsync(async (req, res, next) => {
 
   // 2. Send OTP via Firebase
   try {
-    await sendOTP(phoneNumber, buildOtpMetadata(req));
+    await sendOTP(phoneNumber);
   } catch (error) {
-    const firebaseMsg = error.response?.data?.error?.message || error.message;
-    return next(new AppError(`Failed to send OTP: ${firebaseMsg}`, 400));
+    if (error.code === 'OTP_CONFIG') {
+      logOtpProviderError('config', error);
+      return next(new AppError('SMS verification is not configured. Please contact support.', 503));
+    }
+    if (error.code === 'OTP_PROVIDER') {
+      return next(new AppError('Failed to send OTP. Please try again later.', 400));
+    }
+    logOtpProviderError('send-login', error);
+    return next(new AppError('Failed to send OTP. Please try again later.', 400));
   }
 
   return res.status(200).json({
@@ -173,13 +195,20 @@ const loginVerifyOtp = catchAsync(async (req, res, next) => {
 
   // 1. Verify OTP via Firebase
   try {
-    await verifyOTP(phoneNumber, code, buildOtpMetadata(req));
+    await verifyOTP(phoneNumber, code);
   } catch (error) {
     if (error.code === 'NO_SESSION') {
       return next(new AppError('No OTP session found. Please request OTP first.', 400));
     }
-    const firebaseMsg = error.response?.data?.error?.message || error.message;
-    return next(new AppError(`Invalid OTP or expired: ${firebaseMsg}`, 400));
+    if (error.code === 'OTP_CONFIG') {
+      logOtpProviderError('config', error);
+      return next(new AppError('SMS verification is not configured. Please contact support.', 503));
+    }
+    if (error.code === 'OTP_PROVIDER') {
+      return next(new AppError('Invalid or expired OTP. Please try again.', 400));
+    }
+    logOtpProviderError('verify-login', error);
+    return next(new AppError('Invalid or expired OTP. Please try again.', 400));
   }
 
   // 2. Fetch User

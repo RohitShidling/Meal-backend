@@ -8,7 +8,7 @@ const { validateProfessionalProfile } = require('../validators/profileValidator'
  * @swagger
  * tags:
  *   name: Client Professional Profile
- *   description: Professional profile management for Clients
+ *   description: Professional profile APIs for the mobile client JWT only. Admins use admin routes — no clientId impersonation on these paths (G2).
  */
 
 /**
@@ -179,16 +179,10 @@ router.put('/profile', validateProfessionalProfile, professionalController.saveP
  * @swagger
  * /api/client/professional/profile:
  *   get:
- *     summary: Get professional profile
+ *     summary: Get professional profile (authenticated client only)
  *     tags: [Client Professional Profile]
  *     security:
  *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: clientId
- *         schema:
- *           type: string
- *         description: (Admin only) Specific client ID to fetch profile for
  *     responses:
  *       200:
  *         description: Professional profile details
@@ -209,16 +203,10 @@ router.get('/profile', professionalController.getProfessionalProfile);
  * @swagger
  * /api/client/professional/profile:
  *   delete:
- *     summary: Delete professional profile
+ *     summary: Delete professional profile (authenticated client only)
  *     tags: [Client Professional Profile]
  *     security:
  *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: clientId
- *         schema:
- *           type: string
- *         description: (Admin only) Specific client ID to delete profile for
  *     responses:
  *       200:
  *         description: Professional profile deleted successfully

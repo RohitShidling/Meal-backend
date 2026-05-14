@@ -3,6 +3,10 @@ const bcrypt = require('bcrypt');
 process.env.DOTENVX_QUIET = '1';
 require('dotenv').config({ quiet: true });
 
+// E2: Session TimeZone drives DATE()/timestamp semantics for eligibility, start/end
+// windows, and "today" comparisons. Default Asia/Kolkata matches product region.
+// Operators: set PG_SESSION_TIMEZONE to a valid PostgreSQL zone only after planning
+// data migration — changing TZ without migrating historical DATE rows skews logic.
 const sessionTz = /^[A-Za-z0-9_/+-]+$/.test(process.env.PG_SESSION_TIMEZONE || '')
   ? process.env.PG_SESSION_TIMEZONE
   : 'Asia/Kolkata';
@@ -442,7 +446,8 @@ const initDB = async () => {
       meal_timing     TIME,
       include_saturday BOOLEAN NOT NULL DEFAULT true,
       start_date      DATE, -- User selected start date for this cart item
-      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(cart_id, entity_id, entity_type) -- Cannot add same entity twice to cart
     );
   `;
 
@@ -838,27 +843,6 @@ const initDB = async () => {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_transactions_order_id_status ON transactions(order_id, status);`);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_cart_per_client ON carts(client_id) WHERE status='active';`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_cart_items_cart_id ON cart_items(cart_id);`);
-    // Allow same entity with different subscription plans in one cart (per Saturday variant)
-    await pool.query(`
-      ALTER TABLE cart_items
-      DROP CONSTRAINT IF EXISTS cart_items_cart_id_entity_id_entity_type_key
-    `);
-    await pool.query(`
-      ALTER TABLE cart_items
-      DROP CONSTRAINT IF EXISTS uniq_cart_items_cart_entity_plan_sat
-    `);
-    try {
-      await pool.query(`
-        ALTER TABLE cart_items
-        ADD CONSTRAINT uniq_cart_items_cart_entity_plan_sat
-        UNIQUE (cart_id, entity_id, entity_type, subscription_id, include_saturday)
-      `);
-    } catch (e) {
-      const msg = String((e && e.message) || '');
-      if (!/already exists|duplicate|relation.*already exists/i.test(msg)) {
-        console.warn('cart_items unique constraint migration:', msg);
-      }
-    }
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_orders_client_status_created ON orders(client_id, status, created_at DESC);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_orders_cart_id ON orders(cart_id);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_client_subscriptions_client_active_end ON client_subscriptions(client_id, is_active, end_date DESC);`);
@@ -1052,7 +1036,7 @@ const initDB = async () => {
     // ──────────────────────────────────────────────
     // SEED: Default Admin
     // ──────────────────────────────────────────────
-    const shouldSeedDefaultAdmin = process.env.SEED_DEFAULT_ADMIN === 'true' || process.env.NODE_ENV !== 'production';
+    const shouldSeedDefaultAdmin = process.env.SEED_DEFAULT_ADMIN === 'true';
     const adminCheck = await pool.query('SELECT id FROM admins LIMIT 1');
     if (shouldSeedDefaultAdmin && adminCheck.rows.length === 0) {
       const salt = await bcrypt.genSalt(10);
@@ -1061,9 +1045,8 @@ const initDB = async () => {
         'INSERT INTO admins (phone_number, password, username) VALUES ($1, $2, $3)',
         ['+911234567890', hashedPassword, 'admin']
       );
-      console.log('Default admin seeded.');
+      console.log('Default admin seeded via SEED_DEFAULT_ADMIN=true');
     }
-    await pool.query(`UPDATE admins SET is_logged_in = false WHERE is_logged_in IS NULL;`);
 
     // ──────────────────────────────────────────────
     // Hash any plain-text passwords manually added to DB

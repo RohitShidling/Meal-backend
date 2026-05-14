@@ -8,6 +8,9 @@
  * - Sunday (ISO dow 7) has no meal for all plans
  * - If include_saturday is false, Saturday (ISO dow 6) has no meal
  * - Approved skip covering D only counts if range length >= configured min consecutive days
+ *
+ * SECURITY: SQL fragments in this module (mealTimeSql, subscriptionEligiblePredicateSql, etc.) must
+ * never interpolate user-controlled strings — only fixed column refs and parameters ($1, …).
  */
 const { pool, query } = require('../database');
 const AppError = require('../utils/AppError');

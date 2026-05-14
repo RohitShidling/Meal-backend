@@ -8,7 +8,7 @@ const { validateTeacherProfile } = require('../validators/profileValidator');
  * @swagger
  * tags:
  *   name: Client Teacher Profile
- *   description: Teacher profile management for Clients
+ *   description: Teacher profile APIs for the mobile client JWT only. Admins manage clients via admin routes, not clientId query params here (G2).
  */
 
 /**
@@ -173,16 +173,10 @@ router.put('/profile', clientAuthMiddleware, validateTeacherProfile, teacherCont
  * @swagger
  * /api/client/teacher/profile:
  *   get:
- *     summary: Get teacher profile (Client & Admin)
+ *     summary: Get teacher profile (authenticated client only)
  *     tags: [Client Teacher Profile]
  *     security:
  *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: clientId
- *         schema:
- *           type: string
- *         description: (Admin only) Specific client ID to fetch profile for
  *     responses:
  *       200:
  *         description: Teacher profile details
@@ -203,16 +197,10 @@ router.get('/profile', clientAuthMiddleware, teacherController.getTeacherProfile
  * @swagger
  * /api/client/teacher/profile:
  *   delete:
- *     summary: Delete teacher profile
+ *     summary: Delete teacher profile (authenticated client only)
  *     tags: [Client Teacher Profile]
  *     security:
  *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: clientId
- *         schema:
- *           type: string
- *         description: (Admin only) Specific client ID to delete profile for
  *     responses:
  *       200:
  *         description: Teacher profile deleted successfully

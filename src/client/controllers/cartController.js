@@ -131,6 +131,11 @@ exports.addToCart = catchAsync(async (req, res, next) => {
   const includeSaturdayFlag = parseBoolean(includeSaturday, true);
   const plan = sub.rows[0];
   const entityMealMeta = await resolveEntityMealMeta(entityType, entityId);
+  
+  if (plan.meal_size_id && entityMealMeta.meal_size_id && plan.meal_size_id !== entityMealMeta.meal_size_id) {
+    return next(new AppError("The selected plan does not match this profile's meal size", 400));
+  }
+  
   const effectiveMealSizeId = entityMealMeta.meal_size_id || plan.meal_size_id || null;
   const effectiveMealTiming = entityMealMeta.meal_timing || DEFAULT_MEAL_TIME;
   const selectedPrice = includeSaturdayFlag
@@ -149,12 +154,7 @@ exports.addToCart = catchAsync(async (req, res, next) => {
       [cart.id, subscriptionId, entityType, entityId, entityName, selectedPrice, effectiveMealSizeId, effectiveMealTiming, includeSaturdayFlag, effectiveStartDate]
     );
   } catch (e) {
-    if (e.code === '23505') {
-      return next(new AppError(
-        `${entityName || entityId} already has this plan in your cart. Choose a different plan or remove the existing line first.`,
-        400
-      ));
-    }
+    if (e.code === '23505') return next(new AppError(`${entityName || entityId} is already in your cart`, 400));
     throw e;
   }
 

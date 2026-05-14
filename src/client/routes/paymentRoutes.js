@@ -1,9 +1,18 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const paymentController = require('../controllers/paymentController');
 const clientAuth = require('../middlewares/authMiddleware');
 const { validateInitiatePayment, validateCheckoutCart, validateTxnPathParam } = require('../validators/paymentValidator');
 const webhookRawParser = express.raw({ type: '*/*' });
+
+const statusPageLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: Number.parseInt(process.env.PAYMENT_STATUS_PAGE_RATE_LIMIT_MAX || '15', 10),
+  message: { success: false, message: 'Too many status page requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 /**
  * @swagger
@@ -143,7 +152,7 @@ router.get('/callback', paymentController.handleRedirectCallback);
  * @swagger
  * /api/client/payment/status-page:
  *   get:
- *     summary: Browser redirect landing page — auto-syncs status and shows result UI
+ *     summary: Browser redirect landing page — auto-syncs status (minimal PII; see E4)
  *     tags: [Client - Payment]
  *     parameters:
  *       - in: query
@@ -154,9 +163,9 @@ router.get('/callback', paymentController.handleRedirectCallback);
  *         description: Merchant transaction ID (passed automatically by PhonePe redirect)
  *     responses:
  *       200:
- *         description: HTML page showing payment success or failure with amount and entity name
+ *         description: HTML page with success/fail, amount, and masked reference only (no beneficiary name)
  */
-router.get('/status-page', paymentController.statusPage);
+router.get('/status-page', statusPageLimiter, paymentController.statusPage);
 
 // ─── STATUS CHECK (API) ───────────────────────────────────────────────────────
 /**

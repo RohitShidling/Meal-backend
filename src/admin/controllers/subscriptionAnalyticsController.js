@@ -12,6 +12,36 @@ const parsePagination = (pageRaw, limitRaw, defaultLimit = 20, maxLimit = 100) =
   return { page, limit, offset: (page - 1) * limit };
 };
 
+/** E3: reject invalid YYYY-MM-DD and cap inclusive span when both bounds are set. */
+const parseYmdQuery = (value) => {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const s = String(value).trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  return s;
+};
+
+const validateAnalyticsDateRange = (startDate, endDate) => {
+  const s = parseYmdQuery(startDate);
+  const e = parseYmdQuery(endDate);
+  if (s === false || e === false) {
+    return { ok: false, message: 'startDate and endDate must be YYYY-MM-DD when provided' };
+  }
+  if (s && e) {
+    const d0 = new Date(`${s}T00:00:00Z`);
+    const d1 = new Date(`${e}T00:00:00Z`);
+    if (Number.isNaN(d0.getTime()) || Number.isNaN(d1.getTime())) {
+      return { ok: false, message: 'Invalid startDate or endDate' };
+    }
+    if (d1 < d0) return { ok: false, message: 'endDate must be on or after startDate' };
+    const spanDays = (d1 - d0) / 86400000;
+    const maxSpan = Number.parseInt(process.env.ANALYTICS_MAX_DATE_RANGE_DAYS || '400', 10);
+    if (Number.isFinite(maxSpan) && maxSpan > 0 && spanDays > maxSpan) {
+      return { ok: false, message: `Date range cannot exceed ${maxSpan} days` };
+    }
+  }
+  return { ok: true, start: s, end: e };
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER: shared filter builder
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,8 +106,10 @@ exports.getSubscriptionOverview = catchAsync(async (req, res) => {
  * @desc  School-wise subscription counts and revenue
  * @route GET /api/admin/subscriptions/analytics/by-school
  */
-exports.getBySchool = catchAsync(async (req, res) => {
+exports.getBySchool = catchAsync(async (req, res, next) => {
   const { schoolId, isActive, startDate, endDate } = req.query;
+  const range = validateAnalyticsDateRange(startDate, endDate);
+  if (!range.ok) return next(new AppError(range.message, 400));
   const { page, limit, offset } = parsePagination(req.query.page, req.query.limit, 20, 100);
   const params = [];
   let paramCount = 1;
@@ -93,7 +125,7 @@ exports.getBySchool = catchAsync(async (req, res) => {
     params.push(isActive === 'true');
     paramCount++;
   }
-  const dateFilter = buildDateFilter(params, paramCount, startDate, endDate);
+  const dateFilter = buildDateFilter(params, paramCount, range.start, range.end);
   where += dateFilter.clause;
   paramCount = dateFilter.paramCount;
 
@@ -213,8 +245,10 @@ exports.getChildrenBySchool = catchAsync(async (req, res, next) => {
  * @desc  All teacher subscriptions with filter by school/active/date
  * @route GET /api/admin/subscriptions/analytics/teachers
  */
-exports.getTeacherSubscriptions = catchAsync(async (req, res) => {
+exports.getTeacherSubscriptions = catchAsync(async (req, res, next) => {
   const { schoolName, isActive, startDate, endDate } = req.query;
+  const range = validateAnalyticsDateRange(startDate, endDate);
+  if (!range.ok) return next(new AppError(range.message, 400));
   const { page, limit, offset } = parsePagination(req.query.page, req.query.limit, 20, 100);
   const params = [];
   let paramCount = 1;
@@ -230,7 +264,7 @@ exports.getTeacherSubscriptions = catchAsync(async (req, res) => {
   } else if (isActive === 'false') {
     where += ' AND (cs.is_active = false OR cs.end_date <= NOW())';
   }
-  const dateFilter = buildDateFilter(params, paramCount, startDate, endDate);
+  const dateFilter = buildDateFilter(params, paramCount, range.start, range.end);
   where += dateFilter.clause;
   paramCount = dateFilter.paramCount;
 
@@ -283,8 +317,10 @@ exports.getTeacherSubscriptions = catchAsync(async (req, res) => {
  * @desc  All professional subscriptions with filter by location/active/date
  * @route GET /api/admin/subscriptions/analytics/professionals
  */
-exports.getProfessionalSubscriptions = catchAsync(async (req, res) => {
+exports.getProfessionalSubscriptions = catchAsync(async (req, res, next) => {
   const { locationId, city, isActive, startDate, endDate } = req.query;
+  const range = validateAnalyticsDateRange(startDate, endDate);
+  if (!range.ok) return next(new AppError(range.message, 400));
   const { page, limit, offset } = parsePagination(req.query.page, req.query.limit, 20, 100);
   const params = [];
   let paramCount = 1;
@@ -305,7 +341,7 @@ exports.getProfessionalSubscriptions = catchAsync(async (req, res) => {
   } else if (isActive === 'false') {
     where += ' AND (cs.is_active = false OR cs.end_date <= NOW())';
   }
-  const dateFilter = buildDateFilter(params, paramCount, startDate, endDate);
+  const dateFilter = buildDateFilter(params, paramCount, range.start, range.end);
   where += dateFilter.clause;
   paramCount = dateFilter.paramCount;
 

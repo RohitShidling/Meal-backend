@@ -1,9 +1,12 @@
 require('dotenv').config();
 console.log(`Environment Loaded: ${process.env.NODE_ENV || 'undefined'}`);
 
-console.log(`Firebase Key Loaded: ${process.env.FIREBASE_API_KEY ? 'Yes' : 'No'}`);
+if (process.env.NODE_ENV === 'development') {
+  console.log(`External SMS provider configured: ${process.env.FIREBASE_API_KEY ? 'yes' : 'no'}`);
+}
 const express = require('express');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
@@ -52,6 +55,7 @@ const adminMenuNutritionRoutes = require('./admin/routes/menuNutritionRoutes');
 const adminTrialPlanFeatureRoutes = require('./admin/routes/trialPlanFeatureRoutes');
 
 const app = express();
+app.use(cookieParser());
 const apiJsonParser = express.json({ limit: process.env.REQUEST_BODY_LIMIT || '100kb' });
 const apiUrlEncodedParser = express.urlencoded({ extended: true, limit: process.env.REQUEST_BODY_LIMIT || '100kb' });
 
@@ -62,6 +66,7 @@ app.disable('etag');
 app.use('/api', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   res.setHeader('Pragma', 'no-cache');
+  res.setHeader('X-API-Version', '1');
   next();
 });
 
@@ -71,15 +76,24 @@ const corsOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
-app.use(cors(corsOrigins.length > 0 ? {
-  origin(origin, callback) {
-    if (!origin || corsOrigins.includes(origin)) {
-      callback(null, true);
-      return;
-    }
-    callback(new Error('Not allowed by CORS'));
-  }
-} : {}));
+if (corsOrigins.length > 0) {
+  app.use(cors({
+    origin(origin, callback) {
+      if (!origin || corsOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  }));
+} else if (process.env.NODE_ENV === 'production') {
+  // D4: refuse permissive open CORS in production when no allowlist is configured.
+  console.error('[CORS] CORS_ORIGINS is empty in production — cross-origin browser requests will be denied. Set CORS_ORIGINS.');
+  app.use(cors({ origin: false, credentials: false }));
+} else {
+  app.use(cors({ origin: true, credentials: true }));
+}
 app.use((req, res, next) => {
   if (req.originalUrl.startsWith('/api/client/payment/webhook')) {
     next();
@@ -101,7 +115,7 @@ if (process.env.NODE_ENV === 'development') {
 // Global Rate Limiting (Industrial Standard)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // Limit each IP to 1000 requests per `window` (here, per 15 minutes)
+  max: Number.parseInt(process.env.API_RATE_LIMIT_MAX_PER_WINDOW || '400', 10),
   message: { success: false, message: 'Too many requests from this IP, please try again after 15 minutes' },
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
@@ -141,7 +155,7 @@ app.use(['/api/client/payment/webhook', '/api/client/payment/status', '/api/clie
 
 // Swagger Documentation
 if (process.env.ENABLE_SWAGGER_DOCS === 'true') {
-  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
+  app.use('/api-docs', docsAuthMiddleware, swaggerUi.serve, swaggerUi.setup(specs));
 }
 
 // Health Check

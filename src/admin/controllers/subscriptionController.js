@@ -1,6 +1,5 @@
 const { query } = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
-const { parseRupeeInt, mapRowIntPrices, mapRowsIntPrices } = require('../../common/utils/priceParse');
 
 /**
  * @desc    Create a new subscription plan
@@ -12,13 +11,8 @@ exports.createSubscription = async (req, res, next) => {
     const { plan_name, price, billing_cycle, trial_days, display_order, is_active } = req.body;
     const adminId = req.user.id;
 
-    if (!plan_name || price === undefined || price === null || String(price).trim() === '' || !billing_cycle) {
+    if (!plan_name || price === undefined || !billing_cycle) {
       return next(new AppError('plan_name, price, and billing_cycle are required', 400));
-    }
-
-    const priceInt = parseRupeeInt(price);
-    if (!Number.isFinite(priceInt)) {
-      return next(new AppError('price must be a valid non-negative whole number (₹)', 400));
     }
 
     const insertQuery = `
@@ -29,7 +23,7 @@ exports.createSubscription = async (req, res, next) => {
     `;
     const values = [
       plan_name,
-      priceInt,
+      price,
       billing_cycle,
       trial_days !== undefined ? trial_days : 0,
       display_order !== undefined ? display_order : 1,
@@ -43,7 +37,7 @@ exports.createSubscription = async (req, res, next) => {
     res.status(201).json({
       success: true,
       message: 'Subscription created successfully',
-      data: mapRowIntPrices(result.rows[0]),
+      data: result.rows[0],
     });
   } catch (error) {
     next(new AppError(error.message || 'Error creating subscription', 500));
@@ -83,17 +77,9 @@ exports.updateSubscription = async (req, res, next) => {
       WHERE id = $8
       RETURNING *;
     `;
-    let priceParam = null;
-    if (price !== undefined && price !== null && String(price).trim() !== '') {
-      const p = parseRupeeInt(price);
-      if (!Number.isFinite(p)) {
-        return next(new AppError('price must be a valid non-negative whole number (₹)', 400));
-      }
-      priceParam = p;
-    }
     const values = [
       plan_name,
-      priceParam,
+      price,
       billing_cycle,
       trial_days,
       display_order,
@@ -107,7 +93,7 @@ exports.updateSubscription = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: 'Subscription updated successfully',
-      data: mapRowIntPrices(result.rows[0]),
+      data: result.rows[0],
     });
   } catch (error) {
     next(new AppError(error.message || 'Error updating subscription', 500));
@@ -168,7 +154,7 @@ exports.getAllSubscriptions = async (req, res, next) => {
     res.status(200).json({
       success: true,
       count: result.rowCount,
-      data: mapRowsIntPrices(result.rows),
+      data: result.rows
     });
   } catch (error) {
     next(new AppError(error.message || 'Error fetching subscriptions', 500));
@@ -185,7 +171,7 @@ exports.getSubscriptionById = async (req, res, next) => {
     const { id } = req.params;
     const result = await query('SELECT * FROM subscriptions WHERE id=$1', [id]);
     if (result.rows.length === 0) return next(new AppError('Subscription not found', 404));
-    res.status(200).json({ success: true, data: mapRowIntPrices(result.rows[0]) });
+    res.status(200).json({ success: true, data: result.rows[0] });
   } catch (error) {
     next(new AppError(error.message || 'Error fetching subscription', 500));
   }

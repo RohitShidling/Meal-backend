@@ -1,3 +1,4 @@
+// DEV-ONLY — local maintenance script. Do not run against production databases; not loaded by the API server.
 const { Pool } = require('pg');
 require('dotenv').config();
 

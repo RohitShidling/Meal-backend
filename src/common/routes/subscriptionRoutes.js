@@ -2,16 +2,17 @@ const express = require('express');
 const router = express.Router();
 const subscriptionController = require('../controllers/subscriptionController');
 const commonAuthMiddleware = require('../middlewares/commonAuthMiddleware');
+const requireClientRole = require('../middlewares/requireClientRoleMiddleware');
 
 /**
  * @swagger
  * tags:
  *   name: Common Subscriptions
- *   description: Common Subscription Endpoints (Admin & Client)
+ *   description: "Legacy catalog routes — client JWT only (admin: use /api/admin/subscription-plan-days)."
  */
 
-// Common subscription routes require common authentication (Client or Admin)
 router.use(commonAuthMiddleware);
+router.use(requireClientRole);
 
 /**
  * @swagger

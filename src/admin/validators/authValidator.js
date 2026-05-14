@@ -50,10 +50,18 @@ const validateAdminVerifyOtp = (req, res, next) => {
 };
 
 const validateAdminRefresh = (req, res, next) => {
-  const { refreshToken } = req.body || {};
-  if (!refreshToken || typeof refreshToken !== 'string' || refreshToken.trim().length < 20) {
-    return next(new AppError('Validation failed.', 400, ['refreshToken is required.']));
+  const fromBody = req.body?.refreshToken;
+  const fromCookie = req.cookies?.admin_refresh_token;
+  const refreshToken =
+    typeof fromBody === 'string' && fromBody.trim().length >= 20
+      ? fromBody.trim()
+      : typeof fromCookie === 'string' && fromCookie.trim().length >= 20
+        ? fromCookie.trim()
+        : '';
+  if (!refreshToken) {
+    return next(new AppError('Validation failed.', 400, ['refreshToken is required (JSON body or HttpOnly cookie).']));
   }
+  req.adminRefreshToken = refreshToken;
   return next();
 };
 
