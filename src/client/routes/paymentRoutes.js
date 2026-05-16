@@ -70,6 +70,8 @@ const statusPageLimiter = rateLimit({
  *         description: Entity or subscription not found
  */
 router.post('/initiate', clientAuth, validateInitiatePayment, paymentController.initiatePayment);
+router.get('/meal-size-upgrade/options', clientAuth, paymentController.getMealSizeUpgradeOptions);
+router.post('/meal-size-upgrade/initiate', clientAuth, paymentController.initiateMealSizeUpgrade);
 
 // ─── CART CHECKOUT ───────────────────────────────────────────────────────────
 /**

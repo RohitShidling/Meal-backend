@@ -5,8 +5,8 @@ require('dotenv').config({ quiet: true });
 
 // E2: Session TimeZone drives DATE()/timestamp semantics for eligibility, start/end
 // windows, and "today" comparisons. Default Asia/Kolkata matches product region.
-// Operators: set PG_SESSION_TIMEZONE to a valid PostgreSQL zone only after planning
-// data migration — changing TZ without migrating historical DATE rows skews logic.
+// Node mirrors this via process.env.TZ (see server.js: NODE_DEFAULT_TIMEZONE,
+// APP_TIMEZONE, or PG_SESSION_TIMEZONE — fallback Asia/Kolkata).
 const sessionTz = /^[A-Za-z0-9_/+-]+$/.test(process.env.PG_SESSION_TIMEZONE || '')
   ? process.env.PG_SESSION_TIMEZONE
   : 'Asia/Kolkata';
@@ -102,7 +102,12 @@ const initDB = async () => {
     CREATE TABLE IF NOT EXISTS admins (
       id            SERIAL PRIMARY KEY,
       phone_number  VARCHAR(20) UNIQUE NOT NULL,
+      username      VARCHAR(120) UNIQUE,
+      name          VARCHAR(255),
       password      VARCHAR(255) NOT NULL,
+      is_logged_in  BOOLEAN DEFAULT false,
+      last_login    TIMESTAMP,
+      refresh_token TEXT,
       created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `;
@@ -361,8 +366,8 @@ const initDB = async () => {
       subscription_id VARCHAR(20) NOT NULL REFERENCES subscriptions(id),
       entity_type     VARCHAR(20) NOT NULL,
       entity_id       VARCHAR(20) NOT NULL,
-      start_date      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      end_date        TIMESTAMP NOT NULL,
+      start_date      DATE NOT NULL DEFAULT CURRENT_DATE,
+      end_date        DATE NOT NULL,
       is_active       BOOLEAN NOT NULL DEFAULT true,
       include_saturday BOOLEAN NOT NULL DEFAULT true,
       order_id        VARCHAR(20) REFERENCES orders(id),
@@ -428,8 +433,8 @@ const initDB = async () => {
       status          VARCHAR(20) NOT NULL DEFAULT 'active', -- 'active', 'checked_out', 'abandoned'
       total_amount    DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
       created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(client_id, status) -- Only one active cart per client
+      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      -- One active cart per client: partial unique index uniq_active_cart_per_client
     );
   `;
 
@@ -603,10 +608,16 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS refresh_token TEXT;`);
 
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS username VARCHAR(120);`);
+    await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS name VARCHAR(255);`);
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS is_logged_in BOOLEAN DEFAULT false;`);
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS last_login TIMESTAMP;`);
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS refresh_token TEXT;`);
     await pool.query(`UPDATE admins SET username = 'admin' WHERE username IS NULL;`);
+    try {
+      await pool.query(`ALTER TABLE admins ADD CONSTRAINT admins_username_unique UNIQUE (username);`);
+    } catch (e) {
+      // Ignore if constraint already exists
+    }
 
     // Create new feature tables
     await pool.query(createSchoolsTable);
@@ -822,6 +833,24 @@ const initDB = async () => {
       ON token_download_logs (token_scope, scope_id, meal_size_id, token_date)
     `);
 
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS meal_size_upgrade_prices (
+        id SERIAL PRIMARY KEY,
+        from_meal_size_id INTEGER NOT NULL REFERENCES meal_sizes(id) ON DELETE CASCADE,
+        to_meal_size_id INTEGER NOT NULL REFERENCES meal_sizes(id) ON DELETE CASCADE,
+        price DECIMAL(10, 2) NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (from_meal_size_id, to_meal_size_id),
+        CONSTRAINT chk_meal_size_upgrade_distinct CHECK (from_meal_size_id <> to_meal_size_id),
+        CONSTRAINT chk_meal_size_upgrade_price_nonneg CHECK (price >= 0)
+      );
+    `);
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_meal_size_upgrade_prices_lookup ON meal_size_upgrade_prices(from_meal_size_id, to_meal_size_id) WHERE is_active = TRUE`
+    );
+
     // Migration: Add order_type to orders table if it doesn't exist
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_type VARCHAR(20) NOT NULL DEFAULT 'single';`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cart_id VARCHAR(20) REFERENCES carts(id);`);
@@ -830,6 +859,7 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS upgrade_from_meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS meal_timing TIME;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS meal_timing TIME;`);
@@ -841,8 +871,26 @@ const initDB = async () => {
       console.warn('Skipping chk_client_subscriptions_meals due to existing invalid rows. Clean data and re-apply migration.');
     }
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_transactions_order_id_status ON transactions(order_id, status);`);
+    await pool.query(`ALTER TABLE carts DROP CONSTRAINT IF EXISTS carts_client_id_status_key;`);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_cart_per_client ON carts(client_id) WHERE status='active';`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_pending_cart_per_client ON carts(client_id) WHERE status='pending';`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_cart_items_cart_id ON cart_items(cart_id);`);
+    try {
+      await pool.query(`
+        ALTER TABLE client_subscriptions
+        ALTER COLUMN start_date TYPE DATE USING (
+          CASE WHEN start_date IS NULL THEN CURRENT_DATE ELSE start_date::date END
+        );
+      `);
+      await pool.query(`
+        ALTER TABLE client_subscriptions
+        ALTER COLUMN end_date TYPE DATE USING (
+          CASE WHEN end_date IS NULL THEN CURRENT_DATE ELSE end_date::date END
+        );
+      `);
+    } catch (dateMigrationError) {
+      console.warn('Skipping client_subscriptions DATE migration:', dateMigrationError.message);
+    }
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_orders_client_status_created ON orders(client_id, status, created_at DESC);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_orders_cart_id ON orders(cart_id);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_client_subscriptions_client_active_end ON client_subscriptions(client_id, is_active, end_date DESC);`);
@@ -1037,15 +1085,35 @@ const initDB = async () => {
     // SEED: Default Admin
     // ──────────────────────────────────────────────
     const shouldSeedDefaultAdmin = process.env.SEED_DEFAULT_ADMIN === 'true';
-    const adminCheck = await pool.query('SELECT id FROM admins LIMIT 1');
-    if (shouldSeedDefaultAdmin && adminCheck.rows.length === 0) {
+    const seedPhone = process.env.ADMIN_SEED_PHONE || '+911234567890';
+    const seedPass = process.env.ADMIN_SEED_PASSWORD || 'adminpassword';
+    const seedUsername = process.env.ADMIN_SEED_USERNAME || 'admin';
+    const seedName = process.env.ADMIN_SEED_NAME || 'Default Admin';
+
+    if (shouldSeedDefaultAdmin) {
+      const adminCheck = await pool.query('SELECT id, password FROM admins WHERE phone_number = $1', [seedPhone]);
       const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash('adminpassword', salt);
-      await pool.query(
-        'INSERT INTO admins (phone_number, password, username) VALUES ($1, $2, $3)',
-        ['+911234567890', hashedPassword, 'admin']
-      );
-      console.log('Default admin seeded via SEED_DEFAULT_ADMIN=true');
+      const hashedPassword = await bcrypt.hash(seedPass, salt);
+
+      if (adminCheck.rows.length === 0) {
+        await pool.query(
+          'INSERT INTO admins (phone_number, password, username, name) VALUES ($1, $2, $3, $4)',
+          [seedPhone, hashedPassword, seedUsername, seedName]
+        );
+        console.log(`Default admin seeded: ${seedUsername} (${seedPhone})`);
+      } else {
+        // If already exists, check if password needs hashing or update if requested (optional)
+        // For seeding, usually we don't want to override existing admin passwords unless forced
+        // but the user said "If already exists, the hashing of that number should happen"
+        // and "those all things, seeding you have to do me".
+        // I'll ensure the existing admin has a hashed password if it's plain text.
+        const existingAdmin = adminCheck.rows[0];
+        if (!existingAdmin.password.startsWith('$2b$') && !existingAdmin.password.startsWith('$2a$') && !existingAdmin.password.startsWith('$2y$')) {
+          await pool.query('UPDATE admins SET password = $1, username = $2, name = $3 WHERE phone_number = $4', 
+            [hashedPassword, seedUsername, seedName, seedPhone]);
+          console.log(`Updated and hashed password for existing admin: ${seedPhone}`);
+        }
+      }
     }
 
     // ──────────────────────────────────────────────

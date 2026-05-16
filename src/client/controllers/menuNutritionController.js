@@ -4,6 +4,7 @@ const catchAsync = require('../../common/utils/catchAsync');
 const mealEligibilityService = require('../../common/services/mealEligibilityService');
 const getToday = () => mealEligibilityService.parseSessionToday();
 
+/** Shared by weekly menu + nutrition APIs. */
 const fetchNutritionMapByDates = async (dates = []) => {
   if (!Array.isArray(dates) || dates.length === 0) return {};
 
@@ -29,6 +30,8 @@ const fetchNutritionMapByDates = async (dates = []) => {
     return acc;
   }, {});
 };
+
+exports.fetchNutritionMapByDates = fetchNutritionMapByDates;
 
 exports.getTodayNutrition = catchAsync(async (req, res) => {
   const todayMenuResult = await db.query(

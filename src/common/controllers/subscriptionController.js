@@ -1,5 +1,6 @@
 const { query } = require('../database');
 const AppError = require('../utils/AppError');
+const { formatSubscriptionRow } = require('../utils/formatMoney');
 
 /**
  * @desc    Get all active subscription plans
@@ -34,7 +35,7 @@ exports.getSubscriptions = async (req, res, next) => {
     res.status(200).json({
       success: true,
       count: result.rows.length,
-      data: result.rows,
+      data: result.rows.map(formatSubscriptionRow),
     });
   } catch (error) {
     next(new AppError(error.message || 'Error fetching subscriptions', 500));

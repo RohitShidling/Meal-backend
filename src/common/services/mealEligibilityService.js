@@ -396,6 +396,40 @@ async function fetchCorporateOverviewBase(delivery) {
   );
 }
 
+/** Schools and corporate locations that have at least one meal-eligible subscription on `deliveryDate`. */
+async function listMealReductionScopeOptions(deliveryDate) {
+  const pred = subscriptionEligiblePredicateSql('cs');
+  const schoolRows = await query(
+    `SELECT DISTINCT
+       COALESCE(ch.school_id, tp.school_id) AS school_id,
+       COALESCE(sch.name, 'School') AS school_name
+     FROM client_subscriptions cs
+     LEFT JOIN children ch ON cs.entity_type = 'child' AND cs.entity_id = ch.id
+     LEFT JOIN teacher_profiles tp ON cs.entity_type = 'teacher' AND cs.entity_id = tp.id
+     LEFT JOIN schools sch ON sch.id = COALESCE(ch.school_id, tp.school_id)
+     WHERE ${pred}
+       AND cs.entity_type IN ('child', 'teacher')
+       AND COALESCE(ch.school_id, tp.school_id) IS NOT NULL
+     ORDER BY school_name ASC`,
+    [deliveryDate]
+  );
+
+  const corpBase = await fetchCorporateOverviewBase(deliveryDate);
+
+  return {
+    date: deliveryDate,
+    schools: schoolRows.rows.map((r) => ({
+      school_id: r.school_id,
+      school_name: r.school_name,
+    })),
+    corporates: corpBase.rows.map((r) => ({
+      corporate_location_id: r.corporate_location_id,
+      corporate_location_name: r.corporate_location_name,
+      professionals_count: r.professionals_count,
+    })),
+  };
+}
+
 /**
  * Admin meal reduction for one calendar date (session "today" or future/past date if API extended later).
  * Transactional: one reduction row per date; idempotent per subscription via daily_meal_log unique key.
@@ -413,7 +447,42 @@ async function checkMealEligibilityBySubscriptionId(subscriptionId, deliveryDate
   return { eligible: r.rowCount > 0, subscription_id: subscriptionId, date: deliveryDate };
 }
 
-async function executeMealReductionForDate(adminId, deliveryDate) {
+function buildScopedEligibleSelect(deliveryDate, schoolIds, corporateLocationIds) {
+  const base = tokenEligibleSubscriptionsSql();
+  const schools = Array.isArray(schoolIds) ? [...new Set(schoolIds.map(String).filter(Boolean))] : [];
+  const corps = Array.isArray(corporateLocationIds) ? [...new Set(corporateLocationIds.map(String).filter(Boolean))] : [];
+  const hasScope = schools.length > 0 || corps.length > 0;
+
+  if (!hasScope) {
+    return { sql: base, params: [deliveryDate] };
+  }
+
+  const params = [deliveryDate];
+  const conds = [];
+  if (schools.length > 0) {
+    params.push(schools);
+    conds.push(
+      `(e.entity_type IN ('child','teacher') AND COALESCE(ch.school_id, tp.school_id) = ANY($${params.length}::varchar[]))`
+    );
+  }
+  if (corps.length > 0) {
+    params.push(corps);
+    conds.push(`(e.entity_type = 'professional' AND pp.corporate_location_id = ANY($${params.length}::varchar[]))`);
+  }
+
+  const sql = `
+    SELECT e.subscription_id, e.entity_type, e.entity_id
+    FROM (${base}) e
+    LEFT JOIN children ch ON e.entity_type='child' AND e.entity_id=ch.id
+    LEFT JOIN teacher_profiles tp ON e.entity_type='teacher' AND e.entity_id=tp.id
+    LEFT JOIN professional_profiles pp ON e.entity_type='professional' AND e.entity_id=pp.id
+    WHERE (${conds.join(' OR ')})
+  `;
+
+  return { sql, params };
+}
+
+async function executeMealReductionForDate(adminId, deliveryDate, scope = {}) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -443,25 +512,27 @@ async function executeMealReductionForDate(adminId, deliveryDate) {
       }
       reductionId = ex.rows[0].id;
     }
-    const tokenEligibleSql = tokenEligibleSubscriptionsSql();
 
-    const eligibleRes = await client.query(tokenEligibleSql, [deliveryDate]);
+    const { sql: eligibleSql, params: eligParams } = buildScopedEligibleSelect(
+      deliveryDate,
+      scope.schoolIds,
+      scope.corporateLocationIds
+    );
+
+    const eligibleRes = await client.query(eligibleSql, eligParams);
     const eligibleCount = eligibleRes.rowCount;
 
-    let reducedRows = [];
-    if (!isRepeatReduction) {
-      const insertLog = await client.query(
-        `INSERT INTO daily_meal_log (subscription_id, entity_type, entity_id, meal_date, reduction_id)
-         SELECT e.subscription_id, e.entity_type, e.entity_id, $1::date, $2
-         FROM (
-           ${tokenEligibleSql}
-         ) e
-         ON CONFLICT (subscription_id, meal_date) DO NOTHING
-         RETURNING subscription_id, entity_type, entity_id`,
-        [deliveryDate, reductionId]
-      );
-      reducedRows = insertLog.rows;
-    }
+    const mealDateParamIdx = eligParams.length + 1;
+    const reductionParamIdx = eligParams.length + 2;
+    const insertLog = await client.query(
+      `INSERT INTO daily_meal_log (subscription_id, entity_type, entity_id, meal_date, reduction_id)
+       SELECT t.subscription_id, t.entity_type, t.entity_id, $${mealDateParamIdx}::date, $${reductionParamIdx}
+       FROM (${eligibleSql}) t
+       ON CONFLICT (subscription_id, meal_date) DO NOTHING
+       RETURNING subscription_id, entity_type, entity_id`,
+      [...eligParams, deliveryDate, reductionId]
+    );
+    let reducedRows = insertLog.rows;
     const subscriptionIds = reducedRows.map((r) => r.subscription_id);
 
     if (subscriptionIds.length > 0) {
@@ -722,6 +793,7 @@ module.exports = {
   fetchDistinctSchoolsWithEligibleChildren,
   fetchDistinctCorporateLocationsWithEligible,
   fetchCorporateOverviewBase,
+  listMealReductionScopeOptions,
   executeMealReductionForDate,
   reverseMealReductionForDate,
   fetchTokenEligibleSubscriptionsForDate,

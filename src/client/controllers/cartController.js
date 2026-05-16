@@ -2,6 +2,17 @@ const db = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
 const catchAsync = require('../../common/utils/catchAsync');
 const mealEligibilityService = require('../../common/services/mealEligibilityService');
+const cartService = require('../../common/services/cartService');
+const { parseYmdStrict, parseSessionToday } = require('../../common/utils/sessionDate');
+const { formatCartPayload } = require('../../common/utils/formatMoney');
+
+const cartJson = (cart, items, extra = {}) => ({
+  success: true,
+  data: {
+    ...formatCartPayload(cart, items),
+    ...extra,
+  },
+});
 
 const parseBoolean = (value, defaultValue = true) => {
   if (value === undefined || value === null) return defaultValue;
@@ -13,16 +24,31 @@ const parseBoolean = (value, defaultValue = true) => {
 };
 
 const DEFAULT_MEAL_TIME = '1:00 PM';
-const YMD = /^\d{4}-\d{2}-\d{2}$/;
-const parseYmdStrict = (input) => {
-  const raw = String(input || '').trim();
-  if (!YMD.test(raw)) return null;
-  const [y, m, d] = raw.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
-  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
-  return raw;
-};
 
+/** Cart line meal size: prefer live profile size after upgrades, else stored line value. */
+const CART_ITEMS_SELECT_SQL = `
+  SELECT
+      ci.id,
+      ci.cart_id,
+      ci.subscription_id,
+      ci.entity_type,
+      ci.entity_id,
+      ci.entity_name,
+      ci.unit_price,
+      COALESCE(ch.meal_size_id, tp.meal_size_id, pp.meal_size_id, ci.meal_size_id) AS meal_size_id,
+      ci.meal_timing,
+      ci.include_saturday,
+      TO_CHAR(ci.start_date, 'YYYY-MM-DD') AS start_date,
+      s.plan_name,
+      s.billing_cycle,
+      ms.display_name AS meal_size_name
+   FROM cart_items ci
+   JOIN subscriptions s ON ci.subscription_id = s.id
+   LEFT JOIN children ch ON ci.entity_type = 'child' AND ci.entity_id = ch.id
+   LEFT JOIN teacher_profiles tp ON ci.entity_type = 'teacher' AND ci.entity_id = tp.id
+   LEFT JOIN professional_profiles pp ON ci.entity_type = 'professional' AND ci.entity_id = pp.id
+   LEFT JOIN meal_sizes ms ON ms.id = COALESCE(ch.meal_size_id, tp.meal_size_id, pp.meal_size_id, ci.meal_size_id)
+`;
 // ─── HELPER ────────────────────────────────────────────────────────────────
 const resolveEntityName = async (entityType, entityId) => {
   if (entityType === 'child') {
@@ -72,21 +98,6 @@ const resolveEntityMealMeta = async (entityType, entityId) => {
   return {};
 };
 
-// ─── GET OR CREATE ACTIVE CART ────────────────────────────────────────────
-const getOrCreateCart = async (clientId) => {
-  let cart = await db.query(
-    "SELECT * FROM carts WHERE client_id=$1 AND status='active'",
-    [clientId]
-  );
-  if (cart.rows.length > 0) return cart.rows[0];
-
-  const newCart = await db.query(
-    "INSERT INTO carts (client_id, status, total_amount) VALUES ($1,'active',0) RETURNING *",
-    [clientId]
-  );
-  return newCart.rows[0];
-};
-
 // ─── RECALCULATE CART TOTAL ────────────────────────────────────────────────
 const recalcCartTotal = async (cartId) => {
   await db.query(
@@ -110,7 +121,7 @@ exports.addToCart = catchAsync(async (req, res, next) => {
     return next(new AppError('entityType must be child, teacher, or professional', 400));
   }
 
-  const sessionToday = mealEligibilityService.parseSessionToday();
+  const sessionToday = parseSessionToday();
   let effectiveStartDate = sessionToday;
   if (startDate) {
     const parsedStart = parseYmdStrict(startDate);
@@ -145,7 +156,7 @@ exports.addToCart = catchAsync(async (req, res, next) => {
     return next(new AppError('Invalid plan pricing configuration', 500));
   }
 
-  const cart = await getOrCreateCart(clientId);
+  const cart = await cartService.getOrCreateActiveCart(clientId);
   const entityName = await resolveEntityName(entityType, entityId);
 
   try {
@@ -161,23 +172,7 @@ exports.addToCart = catchAsync(async (req, res, next) => {
   await recalcCartTotal(cart.id);
   const updatedCart = await db.query("SELECT * FROM carts WHERE id=$1", [cart.id]);
   const items = await db.query(
-    `SELECT
-        ci.id,
-        ci.cart_id,
-        ci.subscription_id,
-        ci.entity_type,
-        ci.entity_id,
-        ci.entity_name,
-        ci.unit_price,
-        ci.meal_size_id,
-        ci.meal_timing,
-        ci.include_saturday,
-        TO_CHAR(ci.start_date, 'YYYY-MM-DD') AS start_date,
-        s.plan_name,
-        ms.display_name AS meal_size_name
-     FROM cart_items ci
-     JOIN subscriptions s ON ci.subscription_id=s.id
-     LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
+    `${CART_ITEMS_SELECT_SQL}
      WHERE ci.cart_id=$1
      ORDER BY ci.created_at ASC`,
     [cart.id]
@@ -186,7 +181,7 @@ exports.addToCart = catchAsync(async (req, res, next) => {
   res.status(200).json({
     success: true,
     message: `${entityName} added to cart`,
-    data: { cart: updatedCart.rows[0], items: items.rows }
+    ...cartJson(updatedCart.rows[0], items.rows),
   });
 });
 
@@ -210,7 +205,7 @@ exports.updateCartItem = catchAsync(async (req, res, next) => {
   if (!effectiveStartDate) {
     return next(new AppError('Invalid startDate format. Use YYYY-MM-DD', 400));
   }
-  const sessionToday = mealEligibilityService.parseSessionToday();
+  const sessionToday = parseSessionToday();
   if (effectiveStartDate < sessionToday) {
     return next(new AppError('startDate cannot be in the past', 400));
   }
@@ -225,24 +220,7 @@ exports.updateCartItem = catchAsync(async (req, res, next) => {
   await db.query('UPDATE cart_items SET start_date=$1 WHERE id=$2', [effectiveStartDate, itemId]);
 
   const items = await db.query(
-    `SELECT
-        ci.id,
-        ci.cart_id,
-        ci.subscription_id,
-        ci.entity_type,
-        ci.entity_id,
-        ci.entity_name,
-        ci.unit_price,
-        ci.meal_size_id,
-        ci.meal_timing,
-        ci.include_saturday,
-        TO_CHAR(ci.start_date, 'YYYY-MM-DD') AS start_date,
-        s.plan_name,
-        s.billing_cycle,
-        ms.display_name AS meal_size_name
-     FROM cart_items ci
-     JOIN subscriptions s ON ci.subscription_id=s.id
-     LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
+    `${CART_ITEMS_SELECT_SQL}
      WHERE ci.cart_id=$1
      ORDER BY ci.created_at ASC`,
     [cartId]
@@ -252,7 +230,7 @@ exports.updateCartItem = catchAsync(async (req, res, next) => {
   res.status(200).json({
     success: true,
     message: 'Start date updated',
-    data: { cart: cart.rows[0], items: items.rows },
+    ...cartJson(cart.rows[0], items.rows),
   });
 });
 
@@ -275,23 +253,7 @@ exports.removeFromCart = catchAsync(async (req, res, next) => {
   await recalcCartTotal(cartId);
 
   const items = await db.query(
-    `SELECT
-        ci.id,
-        ci.cart_id,
-        ci.subscription_id,
-        ci.entity_type,
-        ci.entity_id,
-        ci.entity_name,
-        ci.unit_price,
-        ci.meal_size_id,
-        ci.meal_timing,
-        ci.include_saturday,
-        TO_CHAR(ci.start_date, 'YYYY-MM-DD') AS start_date,
-        s.plan_name,
-        ms.display_name AS meal_size_name
-     FROM cart_items ci
-     JOIN subscriptions s ON ci.subscription_id=s.id
-     LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
+    `${CART_ITEMS_SELECT_SQL}
      WHERE ci.cart_id=$1
      ORDER BY ci.created_at ASC`,
     [cartId]
@@ -301,7 +263,7 @@ exports.removeFromCart = catchAsync(async (req, res, next) => {
   res.status(200).json({
     success: true,
     message: 'Item removed from cart',
-    data: { cart: cart.rows[0], items: items.rows }
+    ...cartJson(cart.rows[0], items.rows),
   });
 });
 
@@ -312,38 +274,23 @@ exports.removeFromCart = catchAsync(async (req, res, next) => {
 exports.viewCart = catchAsync(async (req, res, next) => {
   const clientId = req.user.id;
 
-  const cart = await db.query("SELECT * FROM carts WHERE client_id=$1 AND status='active'", [clientId]);
+  const cart = await db.query(
+    "SELECT * FROM carts WHERE client_id=$1 AND status='active' ORDER BY updated_at DESC LIMIT 1",
+    [clientId]
+  );
   if (cart.rows.length === 0) {
     return res.status(200).json({ success: true, message: 'Cart is empty', data: { cart: null, items: [] } });
   }
 
   const items = await db.query(
-    `SELECT
-        ci.id,
-        ci.cart_id,
-        ci.subscription_id,
-        ci.entity_type,
-        ci.entity_id,
-        ci.entity_name,
-        ci.unit_price,
-        ci.meal_size_id,
-        ci.meal_timing,
-        ci.include_saturday,
-        TO_CHAR(ci.start_date, 'YYYY-MM-DD') AS start_date,
-        s.plan_name,
-        s.billing_cycle,
-        ms.display_name AS meal_size_name
-     FROM cart_items ci
-     JOIN subscriptions s ON ci.subscription_id=s.id
-     LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
+    `${CART_ITEMS_SELECT_SQL}
      WHERE ci.cart_id=$1
      ORDER BY ci.created_at ASC`,
     [cart.rows[0].id]
   );
 
   res.status(200).json({
-    success: true,
-    data: { cart: cart.rows[0], items: items.rows, item_count: items.rowCount }
+    ...cartJson(cart.rows[0], items.rows, { item_count: items.rowCount }),
   });
 });
 
@@ -353,7 +300,10 @@ exports.viewCart = catchAsync(async (req, res, next) => {
  */
 exports.clearCart = catchAsync(async (req, res, next) => {
   const clientId = req.user.id;
-  const cart = await db.query("SELECT id FROM carts WHERE client_id=$1 AND status='active'", [clientId]);
+  const cart = await db.query(
+    "SELECT id FROM carts WHERE client_id=$1 AND status='active' ORDER BY updated_at DESC LIMIT 1",
+    [clientId]
+  );
   if (cart.rows.length === 0) return next(new AppError('No active cart found', 404));
 
   await db.query('DELETE FROM cart_items WHERE cart_id=$1', [cart.rows[0].id]);

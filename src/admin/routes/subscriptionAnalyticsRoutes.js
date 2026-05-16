@@ -326,6 +326,31 @@ router.get('/analytics/expiring-soon', analytics.getExpiringSoon);
 
 /**
  * @swagger
+ * /api/admin/subscriptions/analytics/low-remaining-meals:
+ *   get:
+ *     summary: Active subscriptions with few remaining meals (renewal funnel)
+ *     tags: [Admin - Subscription Analytics]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: maxRemaining
+ *         schema: { type: integer, minimum: 1, maximum: 100, default: 5 }
+ *         description: Upper bound inclusive for remaining meals
+ *       - in: query
+ *         name: entityType
+ *         schema:
+ *           type: string
+ *           enum: [child, teacher, professional]
+ *         description: Optional filter by entity type
+ *     responses:
+ *       200:
+ *         description: Matching subscriptions
+ */
+router.get('/analytics/low-remaining-meals', analytics.getLowRemainingMeals);
+
+/**
+ * @swagger
  * /api/admin/subscriptions/analytics/all-members:
  *   get:
  *     summary: Full subscription status for ALL members — subscribed, expired, and never subscribed

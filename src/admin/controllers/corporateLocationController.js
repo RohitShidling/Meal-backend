@@ -2,24 +2,57 @@ const { query } = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
 
 /**
- * @desc    Get all corporate locations (active and inactive)
+ * @desc    Get corporate locations with pagination (optional search)
  * @route   GET /api/admin/corporate-locations
  * @access  Private (Admin only)
  */
 exports.getAllLocations = async (req, res, next) => {
   try {
-    const fetchQuery = `
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const parsedLimit = parseInt(req.query.limit, 10);
+    const limit = Math.min(100, Math.max(1, Number.isFinite(parsedLimit) ? parsedLimit : 20));
+    const rawSearch = String(req.query.search || '').trim();
+
+    let whereClause = 'WHERE 1=1';
+    const params = [];
+    if (rawSearch) {
+      params.push(`%${rawSearch}%`);
+      whereClause += ` AND (cl.name ILIKE $${params.length} OR cl.city ILIKE $${params.length} OR cl.address ILIKE $${params.length})`;
+    }
+
+    const countRes = await query(
+      `SELECT COUNT(*)::INTEGER AS cnt FROM corporate_locations cl ${whereClause}`,
+      params
+    );
+    const totalItems = countRes.rows[0]?.cnt ?? 0;
+    const totalPages = Math.max(1, Math.ceil(totalItems / limit));
+    const safePage = Math.min(page, totalPages);
+
+    const limitPos = params.length + 1;
+    const offsetPos = params.length + 2;
+
+    const result = await query(
+      `
       SELECT cl.*, a.username as created_by_name
       FROM corporate_locations cl
       LEFT JOIN admins a ON cl.created_by = a.id
-      ORDER BY cl.created_at DESC;
-    `;
-    const result = await query(fetchQuery);
+      ${whereClause}
+      ORDER BY cl.created_at DESC
+      LIMIT $${limitPos} OFFSET $${offsetPos}
+      `,
+      [...params, limit, (safePage - 1) * limit]
+    );
 
     res.status(200).json({
       success: true,
       count: result.rowCount,
       data: result.rows,
+      pagination: {
+        currentPage: safePage,
+        totalPages,
+        totalItems,
+        itemsPerPage: limit,
+      },
     });
   } catch (error) {
     next(new AppError(error.message || 'Error fetching corporate locations', 500));
@@ -76,9 +109,7 @@ exports.updateLocation = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { name, address, city, state, is_active } = req.body;
-    const adminId = req.user.id;
 
-    // Check if location exists
     const checkQuery = 'SELECT id FROM corporate_locations WHERE id = $1';
     const checkResult = await query(checkQuery, [id]);
 
@@ -121,7 +152,6 @@ exports.deleteLocation = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    // Check if location exists
     const checkQuery = 'SELECT id FROM corporate_locations WHERE id = $1';
     const checkResult = await query(checkQuery, [id]);
 
@@ -129,7 +159,6 @@ exports.deleteLocation = async (req, res, next) => {
       return next(new AppError('Corporate location not found', 404));
     }
 
-    // Check if any professional profile uses this location
     const checkProfileQuery = 'SELECT id FROM professional_profiles WHERE corporate_location_id = $1 LIMIT 1';
     const checkProfileResult = await query(checkProfileQuery, [id]);
 
@@ -184,4 +213,3 @@ exports.updateLocationStatus = async (req, res, next) => {
     next(new AppError(error.message || 'Error updating location status', 500));
   }
 };
-

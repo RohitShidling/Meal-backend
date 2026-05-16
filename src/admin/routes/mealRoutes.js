@@ -64,6 +64,57 @@ router.post('/reduce-today', mealController.reduceMealsForToday);
 
 /**
  * @swagger
+ * /api/admin/meals/reduce-scope-options:
+ *   get:
+ *     summary: Schools and corporate locations with eligible subscribers (scoped reduction picker)
+ *     tags: [Admin - Reduce Meals]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Delivery date YYYY-MM-DD (defaults to session today)
+ *     responses:
+ *       200:
+ *         description: Scope lists for the delivery date
+ */
+router.get('/reduce-scope-options', mealController.listMealReductionScopeOptions);
+
+/**
+ * @swagger
+ * /api/admin/meals/reduce-scoped:
+ *   post:
+ *     summary: Reduce meals only for selected schools / corporate locations
+ *     tags: [Admin - Reduce Meals]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               date:
+ *                 type: string
+ *                 description: Delivery date YYYY-MM-DD (optional; defaults to session today)
+ *               schoolIds:
+ *                 type: array
+ *                 items: { type: string }
+ *               corporateLocationIds:
+ *                 type: array
+ *                 items: { type: string }
+ *     responses:
+ *       200:
+ *         description: Batch applied
+ */
+router.post('/reduce-scoped', mealController.reduceMealsScoped);
+
+/**
+ * @swagger
  * /api/admin/meals/reduce-today/reverse:
  *   post:
  *     summary: Reverse today's reduce-meals operation

@@ -18,18 +18,89 @@ exports.reduceMealsForToday = catchAsync(async (req, res, next) => {
   const adminId = req.user.id;
   const today = mealEligibilityService.parseSessionToday();
 
-  const result = await mealEligibilityService.executeMealReductionForDate(adminId, today);
+  const result = await mealEligibilityService.executeMealReductionForDate(adminId, today, {});
 
   res.status(200).json({
     success: true,
-    message: result.repeated_reduction_mode
-      ? `Meal reduction for ${today} was already completed earlier. No additional deduction was applied.`
-      : `Meal reduction completed for ${today}.`,
+    message:
+      result.meals_reduced > 0
+        ? result.repeated_reduction_mode
+          ? `Recorded ${result.meals_reduced} meals for ${today} (additional batch).`
+          : `Meal reduction completed for ${today}.`
+        : result.repeated_reduction_mode
+          ? `No eligible subscribers left to deduct for ${today} in this batch.`
+          : `Nothing to deduct for ${today}: no eligible subscribers matched.`,
     data: {
       date: today,
       reduction_id: result.reductionId,
       repeated_reduction_mode: !!result.repeated_reduction_mode,
       eligible_for_meal_on_date: result.eligible_count,
+      meals_reduced: result.meals_reduced,
+      skipped_due_to_meal_pause: result.skipped_due_to_meal_pause,
+    },
+  });
+});
+
+/**
+ * @desc  Lists schools / corporate locations with meal-eligible subs for scoped reduction picker
+ * @route GET /api/admin/meals/reduce-scope-options?date=
+ */
+exports.listMealReductionScopeOptions = catchAsync(async (req, res, next) => {
+  const delivery = mealEligibilityService.resolveDeliveryDate(req.query?.date ?? null, next);
+  if (delivery === null) return;
+
+  const data = await mealEligibilityService.listMealReductionScopeOptions(delivery);
+
+  res.status(200).json({
+    success: true,
+    data,
+  });
+});
+
+/**
+ * @desc  Reduce meals for selected schools and/or corporate locations (same eligibility rules as full reduce).
+ * @route POST /api/admin/meals/reduce-scoped
+ */
+exports.reduceMealsScoped = catchAsync(async (req, res, next) => {
+  const adminId = req.user.id;
+  const delivery = mealEligibilityService.resolveDeliveryDate(req.body?.date ?? req.body?.deliveryDate ?? null, next);
+  if (delivery === null) return;
+
+  const schoolIds = req.body?.schoolIds ?? req.body?.school_ids ?? [];
+  const corporateLocationIds =
+    req.body?.corporateLocationIds ?? req.body?.corporate_location_ids ?? [];
+
+  if (!Array.isArray(schoolIds) || !Array.isArray(corporateLocationIds)) {
+    return next(new AppError('schoolIds and corporateLocationIds must be arrays', 400));
+  }
+
+  const normSchool = schoolIds.map(String).filter(Boolean);
+  const normCorp = corporateLocationIds.map(String).filter(Boolean);
+
+  if (normSchool.length === 0 && normCorp.length === 0) {
+    return next(new AppError('Select at least one school or corporate location', 400));
+  }
+
+  const result = await mealEligibilityService.executeMealReductionForDate(adminId, delivery, {
+    schoolIds: normSchool,
+    corporateLocationIds: normCorp,
+  });
+
+  res.status(200).json({
+    success: true,
+    message:
+      result.meals_reduced > 0
+        ? result.repeated_reduction_mode
+          ? `Scoped: recorded ${result.meals_reduced} meals for ${delivery} (additional batch).`
+          : `Scoped meal reduction completed for ${delivery}.`
+        : result.repeated_reduction_mode
+          ? `No scoped eligible subscribers left to deduct for ${delivery} in this batch.`
+          : `Nothing scoped to deduct for ${delivery}.`,
+    data: {
+      date: delivery,
+      reduction_id: result.reductionId,
+      repeated_reduction_mode: !!result.repeated_reduction_mode,
+      eligible_for_meal_in_scope: result.eligible_count,
       meals_reduced: result.meals_reduced,
       skipped_due_to_meal_pause: result.skipped_due_to_meal_pause,
     },
@@ -225,7 +296,7 @@ exports.getSubscribedUsersRemainingMeals = catchAsync(async (req, res) => {
   }
 
   const pageNum = Math.max(parseInt(page, 10) || 1, 1);
-  const limitNum = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+  const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 200);
   const offset = (pageNum - 1) * limitNum;
   const search = q ? `%${String(q).trim()}%` : null;
   const onlyActive = activeOnly === true || String(activeOnly).toLowerCase() === 'true';
@@ -240,7 +311,8 @@ exports.getSubscribedUsersRemainingMeals = catchAsync(async (req, res) => {
     params.push(search);
     const s = `$${params.length}`;
     where.push(
-      `(COALESCE(ch.name, tp.name, pp.name) ILIKE ${s} OR cs.entity_id ILIKE ${s} OR cs.id ILIKE ${s})`
+      `(COALESCE(ch.name, tp.name, pp.name) ILIKE ${s} OR cs.entity_id ILIKE ${s} OR cs.id ILIKE ${s}` +
+        ` OR COALESCE(sub.plan_name, '') ILIKE ${s} OR COALESCE(c.phone_number, '') ILIKE ${s})`
     );
   }
   if (onlyActive) {
@@ -266,6 +338,7 @@ exports.getSubscribedUsersRemainingMeals = catchAsync(async (req, res) => {
        (cs.total_meals - cs.used_meals) AS remaining_meals
      FROM client_subscriptions cs
      LEFT JOIN clients c ON cs.client_id = c.id
+     LEFT JOIN subscriptions sub ON cs.subscription_id = sub.id
      LEFT JOIN children ch ON cs.entity_type = 'child' AND cs.entity_id = ch.id
      LEFT JOIN teacher_profiles tp ON cs.entity_type = 'teacher' AND cs.entity_id = tp.id
      LEFT JOIN professional_profiles pp ON cs.entity_type = 'professional' AND cs.entity_id = pp.id
@@ -279,6 +352,8 @@ exports.getSubscribedUsersRemainingMeals = catchAsync(async (req, res) => {
   const countRes = await db.query(
     `SELECT COUNT(*)::int AS total
      FROM client_subscriptions cs
+     LEFT JOIN clients c ON cs.client_id = c.id
+     LEFT JOIN subscriptions sub ON cs.subscription_id = sub.id
      LEFT JOIN children ch ON cs.entity_type = 'child' AND cs.entity_id = ch.id
      LEFT JOIN teacher_profiles tp ON cs.entity_type = 'teacher' AND cs.entity_id = tp.id
      LEFT JOIN professional_profiles pp ON cs.entity_type = 'professional' AND cs.entity_id = pp.id
