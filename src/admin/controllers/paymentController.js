@@ -52,7 +52,7 @@ exports.getAllPayments = catchAsync(async (req, res) => {
   const parsedPage = Number.parseInt(req.query.page, 10);
   const parsedLimit = Number.parseInt(req.query.limit, 10);
   const page = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
-  const limit = Number.isInteger(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 100) : 10;
+  const limit = Number.isInteger(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 100) : 20;
   const { startDate, endDate } = req.query;
   const offset = (page - 1) * limit;
 
@@ -226,6 +226,48 @@ exports.getAllPayments = catchAsync(async (req, res) => {
       LEFT JOIN professional_profiles pp2 ON ci.entity_type = 'professional' AND ci.entity_id = pp2.id
       LEFT JOIN corporate_locations cl2 ON pp2.corporate_location_id = cl2.id
       WHERE o.entity_type = 'cart'
+
+      UNION ALL
+
+      SELECT
+        ('CART-' || c.id::text) AS order_id,
+        'pending_checkout' AS order_status,
+        'cart' AS order_type,
+        c.updated_at AS payment_date,
+        c.client_id,
+        TRIM(COALESCE(cl.phone_number, '')) AS client_phone,
+        'cart' AS entity_type,
+        c.id::text AS entity_id,
+        COALESCE(
+          NULLIF(
+            STRING_AGG(
+              DISTINCT COALESCE(NULLIF(TRIM(ci.entity_name), ''), ci.entity_type || ':' || ci.entity_id::text),
+              ', '
+            ),
+            ''
+          ),
+          'Cart'
+        ) AS customer_name,
+        NULL::text AS school_name,
+        NULL::integer AS school_id,
+        NULL::text AS corporate_location_name,
+        c.total_amount::numeric AS amount,
+        true AS is_cart_order,
+        'Pending checkout' AS subscription_name,
+        NULL::text AS meal_variant,
+        NULL::text AS meal_size_code,
+        NULL::text AS subscription_type,
+        'regular' AS plan_type,
+        false AS is_trial,
+        0 AS trial_days,
+        NULL::date AS subscription_start_date,
+        NULL::text AS merchant_transaction_id,
+        'pending_checkout' AS payment_status
+      FROM carts c
+      INNER JOIN clients cl ON cl.id = c.client_id
+      INNER JOIN cart_items ci ON ci.cart_id = c.id
+      WHERE c.status = 'active'
+      GROUP BY c.id, c.client_id, cl.phone_number, c.total_amount, c.updated_at
     )
   `;
 
@@ -446,4 +488,40 @@ exports.getPaymentStats = catchAsync(async (req, res) => {
     }
   });
 });
-//
+
+/**
+ * Active carts (items added, checkout not started) — admin visibility for pre-payment pending state.
+ */
+exports.getOpenActiveCarts = catchAsync(async (req, res) => {
+  const parsedLimit = parseInt(req.query.limit, 10);
+  const limit = Math.min(200, Math.max(1, Number.isFinite(parsedLimit) ? parsedLimit : 50));
+  const result = await db.query(
+    `
+    SELECT
+      c.id AS cart_id,
+      c.client_id,
+      TRIM(COALESCE(cl.phone_number, '')) AS client_phone,
+      c.total_amount::numeric AS total_amount,
+      c.updated_at,
+      COUNT(ci.id)::INTEGER AS item_count,
+      STRING_AGG(
+        COALESCE(NULLIF(TRIM(ci.entity_name), ''), ci.entity_type || ':' || ci.entity_id::text),
+        ', ' ORDER BY ci.created_at ASC
+      ) AS recipients_summary
+    FROM carts c
+    INNER JOIN clients cl ON cl.id = c.client_id
+    INNER JOIN cart_items ci ON ci.cart_id = c.id
+    WHERE c.status = 'active'
+    GROUP BY c.id, c.client_id, cl.phone_number, c.total_amount, c.updated_at
+    ORDER BY c.updated_at DESC
+    LIMIT $1
+    `,
+    [limit]
+  );
+
+  res.status(200).json({
+    success: true,
+    count: result.rowCount,
+    data: result.rows,
+  });
+});

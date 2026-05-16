@@ -1,6 +1,7 @@
 const db = require('../../common/database');
 const catchAsync = require('../../common/utils/catchAsync');
 const AppError = require('../../common/utils/AppError');
+const mealEligibilityService = require('../../common/services/mealEligibilityService');
 const DEFAULT_MEAL_TIME = '1:00 PM';
 
 const normalizeMealTime = (input) => {
@@ -157,6 +158,31 @@ const updateChild = catchAsync(async (req, res, next) => {
   const childCheck = await db.query('SELECT * FROM children WHERE id = $1 AND parent_id = $2', [childId, clientId]);
   if (childCheck.rows.length === 0) {
     return next(new AppError('Child not found or unauthorized.', 404));
+  }
+
+  const existing = childCheck.rows[0];
+  if (mealSizeId !== undefined && mealSizeId !== null) {
+    const newSize = Number(mealSizeId);
+    const oldSize = Number(existing.meal_size_id);
+    if (Number.isFinite(newSize) && Number.isFinite(oldSize) && newSize !== oldSize) {
+      const today = mealEligibilityService.parseSessionToday();
+      const block = await db.query(
+        `SELECT id FROM client_subscriptions
+         WHERE client_id=$1 AND entity_type='child' AND entity_id=$2 AND is_active=true
+           AND DATE(end_date) >= $3::date
+           AND ((total_meals - used_meals) > 0 OR DATE(start_date) > $3::date)
+         LIMIT 1`,
+        [clientId, childId, today]
+      );
+      if (block.rows.length > 0) {
+        return next(
+          new AppError(
+            'Meal size cannot be changed while a subscription is active or upcoming. Use Upgrade meal size in the app to pay for a larger pack.',
+            400
+          )
+        );
+      }
+    }
   }
 
   // Update fields if provided

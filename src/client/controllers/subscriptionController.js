@@ -71,12 +71,25 @@ exports.getMySubscriptionStatus = async (req, res, next) => {
                WHEN cs.entity_type='child' THEN ch.name
                WHEN cs.entity_type='teacher' THEN tp.name
                WHEN cs.entity_type='professional' THEN pp.name
-             END AS entity_name
+             END AS entity_name,
+             CASE
+               WHEN cs.entity_type='child' THEN ch.meal_size_id
+               WHEN cs.entity_type='teacher' THEN tp.meal_size_id
+               WHEN cs.entity_type='professional' THEN pp.meal_size_id
+             END AS profile_meal_size_id,
+             CASE
+               WHEN cs.entity_type='child' THEN ms_ch.display_name
+               WHEN cs.entity_type='teacher' THEN ms_tp.display_name
+               WHEN cs.entity_type='professional' THEN ms_pp.display_name
+             END AS meal_size_name
       FROM client_subscriptions cs
       JOIN subscriptions s ON cs.subscription_id = s.id
       LEFT JOIN children ch ON cs.entity_type='child' AND cs.entity_id=ch.id
       LEFT JOIN teacher_profiles tp ON cs.entity_type='teacher' AND cs.entity_id=tp.id
       LEFT JOIN professional_profiles pp ON cs.entity_type='professional' AND cs.entity_id=pp.id
+      LEFT JOIN meal_sizes ms_ch ON cs.entity_type='child' AND ms_ch.id=ch.meal_size_id
+      LEFT JOIN meal_sizes ms_tp ON cs.entity_type='teacher' AND ms_tp.id=tp.meal_size_id
+      LEFT JOIN meal_sizes ms_pp ON cs.entity_type='professional' AND ms_pp.id=pp.meal_size_id
       WHERE cs.client_id = $1
       ORDER BY (cs.total_meals - cs.used_meals) ASC, cs.end_date ASC, cs.created_at DESC;
     `;

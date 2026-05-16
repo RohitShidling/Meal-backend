@@ -252,4 +252,23 @@ router.get('/all', paymentController.getAllPayments);
  */
 router.get('/stats', paymentController.getPaymentStats);
 
+/**
+ * @swagger
+ * /api/admin/payment/open-carts:
+ *   get:
+ *     summary: Active carts with unpaid items (pending checkout)
+ *     tags: [Admin - Payment]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+ *         description: Max carts to return
+ *     responses:
+ *       200:
+ *         description: Open carts
+ */
+router.get('/open-carts', paymentController.getOpenActiveCarts);
+
 module.exports = router;

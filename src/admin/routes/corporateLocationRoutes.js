@@ -20,9 +20,21 @@ router.use(adminAuthMiddleware);
  *     tags: [Admin Corporate Locations]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *         description: Filter by name, city, or address (ILIKE)
  *     responses:
  *       200:
- *         description: List of all corporate locations fetched successfully
+ *         description: Paginated corporate locations
  *         content:
  *           application/json:
  *             schema:
@@ -34,6 +46,13 @@ router.use(adminAuthMiddleware);
  *                 count:
  *                   type: integer
  *                   example: 5
+ *                 pagination:
+ *                   type: object
+ *                   properties:
+ *                     currentPage: { type: integer }
+ *                     totalPages: { type: integer }
+ *                     totalItems: { type: integer }
+ *                     itemsPerPage: { type: integer }
  *                 data:
  *                   type: array
  *                   items:

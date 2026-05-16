@@ -5,8 +5,8 @@ require('dotenv').config({ quiet: true });
 
 // E2: Session TimeZone drives DATE()/timestamp semantics for eligibility, start/end
 // windows, and "today" comparisons. Default Asia/Kolkata matches product region.
-// Operators: set PG_SESSION_TIMEZONE to a valid PostgreSQL zone only after planning
-// data migration — changing TZ without migrating historical DATE rows skews logic.
+// Node mirrors this via process.env.TZ (see server.js: NODE_DEFAULT_TIMEZONE,
+// APP_TIMEZONE, or PG_SESSION_TIMEZONE — fallback Asia/Kolkata).
 const sessionTz = /^[A-Za-z0-9_/+-]+$/.test(process.env.PG_SESSION_TIMEZONE || '')
   ? process.env.PG_SESSION_TIMEZONE
   : 'Asia/Kolkata';
@@ -822,6 +822,24 @@ const initDB = async () => {
       ON token_download_logs (token_scope, scope_id, meal_size_id, token_date)
     `);
 
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS meal_size_upgrade_prices (
+        id SERIAL PRIMARY KEY,
+        from_meal_size_id INTEGER NOT NULL REFERENCES meal_sizes(id) ON DELETE CASCADE,
+        to_meal_size_id INTEGER NOT NULL REFERENCES meal_sizes(id) ON DELETE CASCADE,
+        price DECIMAL(10, 2) NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (from_meal_size_id, to_meal_size_id),
+        CONSTRAINT chk_meal_size_upgrade_distinct CHECK (from_meal_size_id <> to_meal_size_id),
+        CONSTRAINT chk_meal_size_upgrade_price_nonneg CHECK (price >= 0)
+      );
+    `);
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_meal_size_upgrade_prices_lookup ON meal_size_upgrade_prices(from_meal_size_id, to_meal_size_id) WHERE is_active = TRUE`
+    );
+
     // Migration: Add order_type to orders table if it doesn't exist
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_type VARCHAR(20) NOT NULL DEFAULT 'single';`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cart_id VARCHAR(20) REFERENCES carts(id);`);
@@ -830,6 +848,7 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS include_saturday BOOLEAN NOT NULL DEFAULT true;`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS upgrade_from_meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS meal_timing TIME;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS meal_size_id INTEGER REFERENCES meal_sizes(id) ON DELETE SET NULL;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS meal_timing TIME;`);

@@ -2,6 +2,8 @@ const db = require('../../common/database');
 const catchAsync = require('../../common/utils/catchAsync');
 const AppError = require('../../common/utils/AppError');
 const mealEligibilityService = require('../../common/services/mealEligibilityService');
+const { fetchNutritionMapByDates } = require('./menuNutritionController');
+const { formatSubscriptionRow } = require('../../common/utils/formatMoney');
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 const parseYmdStrict = (input) => {
@@ -192,7 +194,7 @@ exports.getWeeklyMenu = catchAsync(async (req, res, next) => {
       success: false,
       is_subscribed: false,
       message: 'You do not have an active subscription. Please subscribe to access the weekly menu.',
-      available_plans: plans.rows
+      available_plans: plans.rows.map(formatSubscriptionRow),
     });
   }
 
@@ -208,6 +210,16 @@ exports.getWeeklyMenu = catchAsync(async (req, res, next) => {
      ORDER BY menu_date ASC`
   );
 
+  const dates = menu.rows.map((row) => row.menu_date);
+  const nutritionMap = await fetchNutritionMapByDates(dates);
+  const menuWithNutrition = menu.rows.map((row) => {
+    const key = String(row.menu_date).slice(0, 10);
+    return {
+      ...row,
+      nutrition_points: nutritionMap[key] || [],
+    };
+  });
+
   res.status(200).json({
     success: true,
     is_subscribed: true,
@@ -220,7 +232,7 @@ exports.getWeeklyMenu = catchAsync(async (req, res, next) => {
       remaining_meals: s.remaining_meals,
       end_date: s.end_date
     })),
-    menu: menu.rows
+    menu: menuWithNutrition,
   });
 });
 
@@ -542,4 +554,23 @@ exports.deleteMealSkip = catchAsync(async (req, res, next) => {
   } finally {
     tx.release();
   }
+});
+
+exports.listActiveMealSizeUpgradePrices = catchAsync(async (_req, res) => {
+  const r = await db.query(
+    `SELECT p.from_meal_size_id, p.to_meal_size_id, p.price::text,
+            f.display_name AS from_display_name,
+            t.display_name AS to_display_name
+     FROM meal_size_upgrade_prices p
+     INNER JOIN meal_sizes f ON f.id = p.from_meal_size_id AND f.is_active = true
+     INNER JOIN meal_sizes t ON t.id = p.to_meal_size_id AND t.is_active = true
+     WHERE p.is_active = true
+     ORDER BY p.from_meal_size_id ASC, p.to_meal_size_id ASC`
+  );
+
+  res.status(200).json({
+    success: true,
+    count: r.rowCount,
+    data: r.rows,
+  });
 });

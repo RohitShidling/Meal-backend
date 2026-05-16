@@ -36,6 +36,24 @@ const adminAuthMiddleware = async (req, res, next) => {
       ...decoded,
       role,
     };
+
+    if (process.env.ADMIN_AUTH_AUDIT_LOG === 'true') {
+      try {
+        console.log(
+          JSON.stringify({
+            level: 'info',
+            event: 'admin_jwt_accept',
+            method: req.method,
+            path: String(req.originalUrl || '').split('?')[0],
+            admin_id: decoded.id,
+            role,
+          })
+        );
+      } catch (_) {
+        /* ignore */
+      }
+    }
+
     next();
   } catch (error) {
     if (error.name === 'TokenExpiredError') {

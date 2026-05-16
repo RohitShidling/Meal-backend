@@ -2,6 +2,15 @@ const db = require('../../common/database');
 const AppError = require('../../common/utils/AppError');
 const catchAsync = require('../../common/utils/catchAsync');
 const mealEligibilityService = require('../../common/services/mealEligibilityService');
+const { formatCartPayload } = require('../../common/utils/formatMoney');
+
+const cartJson = (cart, items, extra = {}) => ({
+  success: true,
+  data: {
+    ...formatCartPayload(cart, items),
+    ...extra,
+  },
+});
 
 const parseBoolean = (value, defaultValue = true) => {
   if (value === undefined || value === null) return defaultValue;
@@ -186,7 +195,7 @@ exports.addToCart = catchAsync(async (req, res, next) => {
   res.status(200).json({
     success: true,
     message: `${entityName} added to cart`,
-    data: { cart: updatedCart.rows[0], items: items.rows }
+    ...cartJson(updatedCart.rows[0], items.rows),
   });
 });
 
@@ -252,7 +261,7 @@ exports.updateCartItem = catchAsync(async (req, res, next) => {
   res.status(200).json({
     success: true,
     message: 'Start date updated',
-    data: { cart: cart.rows[0], items: items.rows },
+    ...cartJson(cart.rows[0], items.rows),
   });
 });
 
@@ -301,7 +310,7 @@ exports.removeFromCart = catchAsync(async (req, res, next) => {
   res.status(200).json({
     success: true,
     message: 'Item removed from cart',
-    data: { cart: cart.rows[0], items: items.rows }
+    ...cartJson(cart.rows[0], items.rows),
   });
 });
 
@@ -342,8 +351,7 @@ exports.viewCart = catchAsync(async (req, res, next) => {
   );
 
   res.status(200).json({
-    success: true,
-    data: { cart: cart.rows[0], items: items.rows, item_count: items.rowCount }
+    ...cartJson(cart.rows[0], items.rows, { item_count: items.rowCount }),
   });
 });
 

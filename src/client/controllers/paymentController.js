@@ -249,6 +249,38 @@ const recordSubscriptionHistory = async (queryRunner, row) => {
 };
 
 /**
+ * After successful PhonePe txn: bumps profile meal_size_id to paid target.
+ */
+const applyMealSizeUpgradeOrder = async (queryRunner, order) => {
+  const toId = order.meal_size_id;
+  const entityType = order.entity_type;
+  const entityId = order.entity_id;
+  const clientId = order.client_id;
+  if (toId == null) throw new Error('Missing target meal size on upgrade order');
+  if (entityType === 'child') {
+    const u = await queryRunner.query(
+      `UPDATE children SET meal_size_id = $1, updated_at = NOW() WHERE id = $2 AND parent_id = $3`,
+      [toId, entityId, clientId]
+    );
+    if (u.rowCount === 0) throw new Error('Child meal size upgrade apply failed');
+  } else if (entityType === 'teacher') {
+    const u = await queryRunner.query(
+      `UPDATE teacher_profiles SET meal_size_id = $1, updated_at = NOW() WHERE id = $2 AND client_id = $3`,
+      [toId, entityId, clientId]
+    );
+    if (u.rowCount === 0) throw new Error('Teacher meal size upgrade apply failed');
+  } else if (entityType === 'professional') {
+    const u = await queryRunner.query(
+      `UPDATE professional_profiles SET meal_size_id = $1, updated_at = NOW() WHERE id = $2 AND client_id = $3`,
+      [toId, entityId, clientId]
+    );
+    if (u.rowCount === 0) throw new Error('Professional meal size upgrade apply failed');
+  } else {
+    throw new Error('Invalid entity_type for meal size upgrade');
+  }
+};
+
+/**
  * Core function: finalize ONE subscription after successful payment
  */
 const activateSingleSubscription = async (queryRunner, clientId, subscriptionId, entityType, entityId, orderId, requestedStartDate, includeSaturday) => {
@@ -387,6 +419,8 @@ const finalizeSuccessfulPayment = async (orderId, source = 'unknown') => {
         );
       }
       await client.query("UPDATE carts SET status='checked_out', updated_at=NOW() WHERE id=$1", [order.cart_id]);
+    } else if (order.order_type === 'meal_size_upgrade') {
+      await applyMealSizeUpgradeOrder(client, order);
     } else {
       await activateSingleSubscription(
         client,
@@ -560,6 +594,200 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
       planName: subscription.plan_name,
       paymentUrl: response.data.instrumentResponse.redirectInfo.url,
     }
+  });
+});
+
+/**
+ * @desc Live upgrade options for an entity (from current profile meal size)
+ * @route GET /api/client/payment/meal-size-upgrade/options
+ */
+exports.getMealSizeUpgradeOptions = catchAsync(async (req, res, next) => {
+  const clientId = req.user.id;
+  const entityType = req.query.entityType || req.query.entity_type;
+  const entityId = req.query.entityId || req.query.entity_id;
+
+  if (!entityType || !entityId) {
+    return next(new AppError('entityType and entityId are required', 400));
+  }
+
+  const owned = await validateEntityOwnership(entityType, entityId, clientId);
+  if (!owned) return next(new AppError(`${entityType} profile not found or unauthorized`, 404));
+
+  const meta = await resolveEntityMealMeta(entityType, entityId);
+  const fromId = meta.meal_size_id != null ? Number(meta.meal_size_id) : NaN;
+  if (!Number.isFinite(fromId)) {
+    return res.status(200).json({
+      success: true,
+      current_meal_size_id: null,
+      current_meal_size_name: null,
+      data: [],
+    });
+  }
+
+  const currentRes = await db.query(
+    'SELECT id, display_name, sort_order FROM meal_sizes WHERE id=$1 AND is_active=true',
+    [fromId]
+  );
+  if (currentRes.rows.length === 0) {
+    return next(new AppError('Current meal size is invalid or inactive', 400));
+  }
+  const currentRow = currentRes.rows[0];
+  const currentSort = Number(currentRow.sort_order ?? 0);
+
+  const priceRes = await db.query(
+    `SELECT p.to_meal_size_id, p.price::text,
+            t.display_name AS to_display_name,
+            t.sort_order AS to_sort_order
+     FROM meal_size_upgrade_prices p
+     INNER JOIN meal_sizes t ON t.id = p.to_meal_size_id AND t.is_active = true
+     WHERE p.from_meal_size_id = $1 AND p.is_active = true
+       AND COALESCE(t.sort_order, 0) > $2
+     ORDER BY t.sort_order ASC, t.id ASC`,
+    [fromId, currentSort]
+  );
+
+  const { formatMoney } = require('../../common/utils/formatMoney');
+
+  res.status(200).json({
+    success: true,
+    current_meal_size_id: fromId,
+    current_meal_size_name: currentRow.display_name,
+    data: priceRes.rows.map((row) => ({
+      to_meal_size_id: row.to_meal_size_id,
+      to_display_name: row.to_display_name,
+      to_sort_order: row.to_sort_order,
+      price: formatMoney(row.price),
+    })),
+  });
+});
+
+/**
+ * @desc Paid bump of profile meal_size_id (requires admin-configured upgrade matrix)
+ * @route POST /api/client/payment/meal-size-upgrade/initiate
+ */
+exports.initiateMealSizeUpgrade = catchAsync(async (req, res, next) => {
+  const clientId = req.user.id;
+  const { entityType, entityId, toMealSizeId, redirectUrl: customRedirect } = req.body || {};
+
+  if (!entityType || !entityId || toMealSizeId === undefined || toMealSizeId === null) {
+    return next(new AppError('entityType, entityId, and toMealSizeId are required', 400));
+  }
+
+  const owned = await validateEntityOwnership(entityType, entityId, clientId);
+  if (!owned) return next(new AppError(`${entityType} profile not found or unauthorized`, 404));
+
+  const toId = Number(toMealSizeId);
+  if (!Number.isFinite(toId)) return next(new AppError('toMealSizeId must be numeric', 400));
+
+  const meta = await resolveEntityMealMeta(entityType, entityId);
+  const fromIdRaw = meta.meal_size_id;
+  const fromId = fromIdRaw != null ? Number(fromIdRaw) : NaN;
+  if (!Number.isFinite(fromId)) {
+    return next(new AppError('Your profile does not have a meal size set yet', 400));
+  }
+  if (fromId === toId) {
+    return next(new AppError('Select a different meal size than your current one', 400));
+  }
+
+  const toSizeCheck = await db.query('SELECT id FROM meal_sizes WHERE id=$1 AND is_active=true', [toId]);
+  if (toSizeCheck.rows.length === 0) return next(new AppError('Invalid or inactive target meal size', 400));
+
+  const priceRes = await db.query(
+    `SELECT price::float AS price
+     FROM meal_size_upgrade_prices
+     WHERE from_meal_size_id=$1 AND to_meal_size_id=$2 AND is_active=true`,
+    [fromId, toId]
+  );
+  if (priceRes.rows.length === 0) {
+    return next(
+      new AppError(
+        'No upgrade price is published for this size change. Ask your administrator to add it under meal size upgrade prices.',
+        404
+      )
+    );
+  }
+  const selectedPrice = Number(priceRes.rows[0].price);
+  if (!Number.isFinite(selectedPrice) || selectedPrice < 0) {
+    return next(new AppError('Invalid upgrade price configuration', 500));
+  }
+
+  const todayYmd = mealEligibilityService.parseSessionToday();
+  const csRes = await db.query(
+    `SELECT subscription_id, include_saturday
+     FROM client_subscriptions
+     WHERE client_id=$1 AND entity_type=$2 AND entity_id=$3 AND is_active=true
+       AND DATE(end_date) >= $4::date
+       AND (
+         (total_meals - used_meals) > 0
+         OR DATE(start_date) > $4::date
+       )
+     LIMIT 1`,
+    [clientId, entityType, entityId, todayYmd]
+  );
+  if (csRes.rows.length === 0) {
+    return next(
+      new AppError(
+        'An active or upcoming subscription is required to upgrade meal size. Subscribe first, then use Upgrade meal size.',
+        400
+      )
+    );
+  }
+
+  const subscriptionId = csRes.rows[0].subscription_id;
+  const includeSaturdayFlag = csRes.rows[0].include_saturday !== false;
+  const effectiveMealTiming = meta.meal_timing || DEFAULT_MEAL_TIME;
+  const entityName = await resolveEntityName(entityType, entityId);
+
+  const orderResult = await db.query(
+    `INSERT INTO orders (client_id, subscription_id, entity_type, entity_id, amount, meal_size_id, meal_timing, include_saturday, status, order_type, upgrade_from_meal_size_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    [
+      clientId,
+      subscriptionId,
+      entityType,
+      entityId,
+      selectedPrice,
+      toId,
+      effectiveMealTiming,
+      includeSaturdayFlag,
+      'pending',
+      'meal_size_upgrade',
+      fromId,
+    ]
+  );
+  const order = orderResult.rows[0];
+
+  const merchantTransactionId = `TXN_MZ_${order.id.replace('ORD-', '')}_${Date.now()}`;
+  await db.query(
+    'INSERT INTO transactions (order_id,merchant_transaction_id,amount,status) VALUES ($1,$2,$3,$4)',
+    [order.id, merchantTransactionId, selectedPrice, 'pending']
+  );
+
+  const clientData = await db.query('SELECT phone_number FROM clients WHERE id=$1', [clientId]);
+  const finalRedirectUrl = sanitizeFrontendRedirectUrl(customRedirect || process.env.PHONEPE_REDIRECT_URL || DEFAULT_FRONTEND_REDIRECT);
+  const backendCallbackUrl = `${resolveApiBaseUrl(req)}/api/client/payment/callback?tid=${merchantTransactionId}&frontendUrl=${encodeURIComponent(finalRedirectUrl)}`;
+
+  const response = await phonepe.initiatePayment({
+    transactionId: merchantTransactionId,
+    userId: clientId,
+    amount: selectedPrice,
+    redirectUrl: backendCallbackUrl,
+    mobileNumber: clientData.rows[0].phone_number.replace(/\D/g, '').slice(-10),
+  });
+
+  if (!response.success) return next(new AppError(response.message || 'Payment Gateway Error', 500));
+
+  res.status(200).json({
+    success: true,
+    data: {
+      orderId: order.id,
+      merchantTransactionId,
+      entityName,
+      amount: selectedPrice,
+      fromMealSizeId: fromId,
+      toMealSizeId: toId,
+      paymentUrl: response.data.instrumentResponse.redirectInfo.url,
+    },
   });
 });
 
@@ -1021,10 +1249,15 @@ exports.getMyPaymentHistory = catchAsync(async (req, res) => {
 
   const total = await db.query('SELECT COUNT(*) FROM orders WHERE client_id=$1', [clientId]);
 
+  const { formatMoney } = require('../../common/utils/formatMoney');
+
   res.status(200).json({
     success: true,
     pagination: { total: parseInt(total.rows[0].count, 10), page, limit },
-    data: result.rows
+    data: result.rows.map((row) => ({
+      ...row,
+      amount: formatMoney(row.amount),
+    })),
   });
 });
 
@@ -1041,6 +1274,7 @@ exports.getMyActiveSubscriptions = catchAsync(async (req, res) => {
             s.plan_name, s.price, s.price_with_saturday, s.price_without_saturday, s.billing_cycle,
             o.amount as amount_paid,
             COALESCE(me.display_name, 'Large') AS meal_size_name,
+            COALESCE(ch.meal_size_id, tp.meal_size_id, pp.meal_size_id) AS profile_meal_size_id,
             (cs.total_meals - cs.used_meals) AS remaining_meals,
             CASE
               WHEN cs.entity_type='child' THEN ch.meal_time
@@ -1064,17 +1298,25 @@ exports.getMyActiveSubscriptions = catchAsync(async (req, res) => {
      LEFT JOIN professional_profiles pp ON cs.entity_type='professional' AND cs.entity_id=pp.id
      LEFT JOIN meal_sizes me ON me.id = COALESCE(ch.meal_size_id, tp.meal_size_id, pp.meal_size_id, s.meal_size_id)
     WHERE cs.client_id=$1 AND cs.is_active=true
-      AND (cs.total_meals - cs.used_meals) > 0
       AND DATE(cs.end_date) >= $2::date
+      AND (
+        (cs.total_meals - cs.used_meals) > 0
+        OR DATE(cs.start_date) > $2::date
+      )
      ORDER BY cs.start_date ASC, cs.end_date ASC`,
     [clientId, today]
   );
+
+  const { formatMoney } = require('../../common/utils/formatMoney');
 
   res.status(200).json({
     success: true,
     has_active_subscription: result.rowCount > 0,
     count: result.rowCount,
-    data: result.rows
+    data: result.rows.map((row) => ({
+      ...row,
+      amount_paid: formatMoney(row.amount_paid),
+    })),
   });
 });
 

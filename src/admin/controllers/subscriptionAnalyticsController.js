@@ -447,6 +447,71 @@ exports.getExpiringSoon = catchAsync(async (req, res) => {
   });
 });
 
+/**
+ * @desc  Active subscriptions where remaining meals (total_meals - used_meals) are low
+ * @route GET /api/admin/subscriptions/analytics/low-remaining-meals
+ */
+exports.getLowRemainingMeals = catchAsync(async (req, res) => {
+  const parsedMax = parseInt(req.query.maxRemaining ?? req.query.max_remaining, 10);
+  const maxRemaining = Number.isFinite(parsedMax) ? Math.min(100, Math.max(1, parsedMax)) : 5;
+  const { entityType } = req.query;
+  const params = [maxRemaining];
+  let entityFilter = '';
+
+  const et = String(entityType || '').trim().toLowerCase();
+  if (et === 'child' || et === 'teacher' || et === 'professional') {
+    entityFilter = ' AND cs.entity_type = $2';
+    params.push(et);
+  }
+
+  const result = await db.query(
+    `
+    SELECT
+      cs.entity_type,
+      cs.entity_id,
+      cs.end_date,
+      GREATEST(0, (cs.total_meals - cs.used_meals))::INT AS remaining_meals,
+      cs.total_meals::INT AS total_meals,
+      cs.used_meals::INT AS used_meals,
+      sub.plan_name,
+      c.phone_number AS client_phone,
+      CASE
+        WHEN cs.entity_type='child' THEN ch.name
+        WHEN cs.entity_type='teacher' THEN tp.name
+        WHEN cs.entity_type='professional' THEN pp.name
+      END AS entity_name,
+      CASE
+        WHEN cs.entity_type='child' THEN sch.name
+        WHEN cs.entity_type='teacher' THEN tp.school_college_name
+        WHEN cs.entity_type='professional' THEN cl.name
+      END AS institution_name
+    FROM client_subscriptions cs
+    JOIN subscriptions sub ON cs.subscription_id = sub.id
+    JOIN clients c ON cs.client_id = c.id
+    LEFT JOIN children ch ON cs.entity_type='child' AND cs.entity_id=ch.id
+    LEFT JOIN schools sch ON ch.school_id = sch.id
+    LEFT JOIN teacher_profiles tp ON cs.entity_type='teacher' AND cs.entity_id=tp.id
+    LEFT JOIN professional_profiles pp ON cs.entity_type='professional' AND cs.entity_id=pp.id
+    LEFT JOIN corporate_locations cl ON pp.corporate_location_id = cl.id
+    WHERE cs.is_active = true
+      AND DATE(cs.end_date) >= CURRENT_DATE
+      AND (cs.total_meals - cs.used_meals) > 0
+      AND (cs.total_meals - cs.used_meals) <= $1
+      ${entityFilter}
+    ORDER BY remaining_meals ASC, cs.end_date ASC
+    `,
+    params
+  );
+
+  res.status(200).json({
+    success: true,
+    message: `Active subscriptions with at most ${maxRemaining} meals remaining`,
+    max_remaining: maxRemaining,
+    count: result.rowCount,
+    data: result.rows,
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 7. ALL MEMBERS SUBSCRIPTION STATUS (subscribed + unsubscribed + expired)
 // ─────────────────────────────────────────────────────────────────────────────

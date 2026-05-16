@@ -1,4 +1,11 @@
 require('dotenv').config();
+
+// Align Node's default TZ with Postgres session calendar (delivery "today"; logging).
+const appTzCandidate =
+  process.env.NODE_DEFAULT_TIMEZONE || process.env.APP_TIMEZONE || process.env.PG_SESSION_TIMEZONE || '';
+const appTz = /^[A-Za-z0-9_/+-]+$/.test(appTzCandidate) ? appTzCandidate : 'Asia/Kolkata';
+process.env.TZ = appTz;
+
 console.log(`Environment Loaded: ${process.env.NODE_ENV || 'undefined'}`);
 
 if (process.env.NODE_ENV === 'development') {
@@ -53,6 +60,7 @@ const adminSubscriptionPlanDurationRoutes = require('./admin/routes/subscription
 const commonSubscriptionPlanDurationRoutes = require('./common/routes/subscriptionPlanDurationRoutes');
 const adminMenuNutritionRoutes = require('./admin/routes/menuNutritionRoutes');
 const adminTrialPlanFeatureRoutes = require('./admin/routes/trialPlanFeatureRoutes');
+const adminMealSizeUpgradeRoutes = require('./admin/routes/mealSizeUpgradeRoutes');
 
 const app = express();
 app.use(cookieParser());
@@ -197,6 +205,7 @@ app.use('/api/client/cart', clientCartRoutes);
 app.use('/api/client/meals', clientMealRoutes);
 app.use('/api/client/menu-nutrition', clientMenuNutritionRoutes);
 app.use('/api/admin/meals', adminMealRoutes);
+app.use('/api/admin/meal-size-upgrade-prices', adminMealSizeUpgradeRoutes);
 app.use('/api/admin/payment', adminPaymentRoutes);
 app.use('/api/admin/homepage', adminHomepageRoutes);
 app.use('/api/common/homepage', commonHomepageRoutes);
@@ -267,6 +276,7 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT,"0.0.0.0", async () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`Default timezone (Node TZ / delivery-date helpers): ${appTz}`);
   if (process.env.ENABLE_SWAGGER_DOCS === 'true') {
     console.log(`Swagger Docs available at http://localhost:${PORT}/api-docs`);
   }

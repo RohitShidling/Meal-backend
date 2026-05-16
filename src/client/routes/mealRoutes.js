@@ -349,4 +349,6 @@ router.delete('/skip/:skipId', validateSkipIdParam, mealController.cancelMealSki
  */
 router.delete('/skip/:skipId/delete', validateSkipIdParam, mealController.deleteMealSkip);
 
+router.get('/meal-size-upgrade-prices', mealController.listActiveMealSizeUpgradePrices);
+
 module.exports = router;

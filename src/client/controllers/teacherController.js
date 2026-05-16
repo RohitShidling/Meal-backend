@@ -1,6 +1,7 @@
 const db = require('../../common/database');
 const { query } = db;
 const AppError = require('../../common/utils/AppError');
+const mealEligibilityService = require('../../common/services/mealEligibilityService');
 const DEFAULT_MEAL_TIME = '1:00 PM';
 
 const normalizeMealTime = (input) => {
@@ -68,14 +69,35 @@ exports.saveTeacherProfile = async (req, res, next) => {
       await tx.query('BEGIN');
       await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [String(clientId)]);
 
-      const profCheck = await tx.query('SELECT id FROM professional_profiles WHERE client_id = $1', [clientId]);
-      if (profCheck.rows.length > 0) {
-        await tx.query('ROLLBACK');
-        return next(new AppError('A Professional profile already exists for this account. You cannot have both Teacher and Professional profiles.', 403));
-      }
-
       const profileCheck = await tx.query('SELECT * FROM teacher_profiles WHERE client_id = $1', [clientId]);
       profileExists = profileCheck.rows.length > 0;
+
+      if (profileExists) {
+        const newSize = Number(mealSizeInput);
+        const oldSize = Number(profileCheck.rows[0].meal_size_id);
+        const entityId = profileCheck.rows[0].id;
+        if (Number.isFinite(newSize) && Number.isFinite(oldSize) && newSize !== oldSize) {
+          const today = mealEligibilityService.parseSessionToday();
+          const block = await tx.query(
+            `SELECT id FROM client_subscriptions
+             WHERE client_id=$1 AND entity_type='teacher' AND entity_id=$2 AND is_active=true
+               AND DATE(end_date) >= $3::date
+               AND ((total_meals - used_meals) > 0 OR DATE(start_date) > $3::date)
+             LIMIT 1`,
+            [clientId, entityId, today]
+          );
+          if (block.rows.length > 0) {
+            await tx.query('ROLLBACK');
+            tx.release();
+            return next(
+              new AppError(
+                'Meal size cannot be changed while a subscription is active or upcoming. Use Upgrade meal size in the app to pay for a larger pack.',
+                400
+              )
+            );
+          }
+        }
+      }
 
       let resolvedSchoolId = null;
       const schoolMatch = await tx.query(
