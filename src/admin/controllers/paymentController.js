@@ -249,7 +249,7 @@ exports.getAllPayments = catchAsync(async (req, res) => {
           'Cart'
         ) AS customer_name,
         NULL::text AS school_name,
-        NULL::integer AS school_id,
+        NULL::text AS school_id,
         NULL::text AS corporate_location_name,
         c.total_amount::numeric AS amount,
         true AS is_cart_order,

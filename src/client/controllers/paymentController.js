@@ -3,6 +3,8 @@ const phonepe = require('../../common/utils/phonepe');
 const AppError = require('../../common/utils/AppError');
 const catchAsync = require('../../common/utils/catchAsync');
 const mealEligibilityService = require('../../common/services/mealEligibilityService');
+const cartService = require('../../common/services/cartService');
+const { parseYmdStrict, parseSessionToday, toSessionYmd } = require('../../common/utils/sessionDate');
 const DEFAULT_MEAL_TIME = '1:00 PM';
 const DEFAULT_FRONTEND_REDIRECT = process.env.DEFAULT_FRONTEND_REDIRECT_URL;
 const MAX_HISTORY_LIMIT = 100;
@@ -141,30 +143,6 @@ const getCachedGatewayStatus = async (txnId) => {
   return payload;
 };
 
-const YMD = /^\d{4}-\d{2}-\d{2}$/;
-const parseYmdStrict = (input) => {
-  if (!input) return null;
-
-  // DB DATE fields can come as Date objects or ISO datetime strings.
-  if (input instanceof Date) {
-    if (Number.isNaN(input.getTime())) return null;
-    const yy = input.getUTCFullYear();
-    const mm = String(input.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(input.getUTCDate()).padStart(2, '0');
-    return `${yy}-${mm}-${dd}`;
-  }
-
-  const raw = String(input).trim();
-  const normalized = YMD.test(raw)
-    ? raw
-    : (raw.length >= 10 && YMD.test(raw.slice(0, 10)) ? raw.slice(0, 10) : null);
-  if (!normalized) return null;
-  const [y, m, d] = normalized.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
-  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
-  return normalized;
-};
-
 const addDaysYmd = (ymd, days) => {
   const [y, m, d] = ymd.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
@@ -278,6 +256,15 @@ const applyMealSizeUpgradeOrder = async (queryRunner, order) => {
   } else {
     throw new Error('Invalid entity_type for meal size upgrade');
   }
+
+  await queryRunner.query(
+    `UPDATE cart_items ci
+     SET meal_size_id = $1
+     FROM carts c
+     WHERE ci.cart_id = c.id AND c.client_id = $2 AND c.status = 'active'
+       AND ci.entity_type = $3 AND ci.entity_id = $4`,
+    [toId, clientId, entityType, entityId]
+  );
 };
 
 /**
@@ -307,7 +294,7 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
   );
   const currentSub = existingSubRes.rows[0] || null;
 
-  const sessionToday = mealEligibilityService.parseSessionToday();
+  const sessionToday = parseSessionToday();
   let baseDateYmd = parseYmdStrict(requestedStartDate) || sessionToday;
   // If variant-specific duration is configured, treat it as exact meal count.
   // Legacy plans without variant-specific durations keep old calendar-based counting behavior.
@@ -317,7 +304,7 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
   let newUsedMeals = 0;
 
   if (currentSub && currentSub.is_active && currentSub.order_id !== orderId) {
-    const currentEndYmd = String(currentSub.end_date).slice(0, 10);
+    const currentEndYmd = toSessionYmd(currentSub.end_date) || String(currentSub.end_date).slice(0, 10);
     if (currentEndYmd >= sessionToday) {
       const nextAfterCurrentEnd = addDaysYmd(currentEndYmd, 1);
       // No overlap and no day duplication: new pack starts the day after existing end.
@@ -346,7 +333,7 @@ const activateSingleSubscription = async (queryRunner, clientId, subscriptionId,
 
   const upsertRes = await queryRunner.query(
     `INSERT INTO client_subscriptions (client_id,subscription_id,entity_type,entity_id,start_date,end_date,order_id,is_active,total_meals,used_meals,include_saturday)
-     VALUES ($1,$2,$3,$4,$8,$5,$6,true,$7,$9,$10)
+     VALUES ($1,$2,$3,$4,$8::date,$5::date,$6,true,$7,$9,$10)
      ON CONFLICT (client_id,entity_id,entity_type) DO UPDATE SET
        start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date, subscription_id=EXCLUDED.subscription_id,
        order_id=EXCLUDED.order_id, is_active=true, updated_at=NOW(),
@@ -414,7 +401,7 @@ const finalizeSuccessfulPayment = async (orderId, source = 'unknown') => {
           item.entity_type,
           item.entity_id,
           orderId,
-          item.start_date,
+          parseYmdStrict(item.start_date),
           item.include_saturday !== false
         );
       }
@@ -429,7 +416,7 @@ const finalizeSuccessfulPayment = async (orderId, source = 'unknown') => {
         order.entity_type,
         order.entity_id,
         orderId,
-        order.start_date,
+        parseYmdStrict(order.start_date),
         order.include_saturday !== false
       );
     }
@@ -454,18 +441,31 @@ const markTransactionStatus = async (merchantTransactionId, status, gatewayTrans
 
 const processSuccessfulTransaction = async (merchantTransactionId, gatewayTransactionId, gatewayPayload, source) => {
   const peek = await db.query(
-    'SELECT id, status, order_id, merchant_transaction_id FROM transactions WHERE merchant_transaction_id=$1',
+    `SELECT t.id, t.status, t.order_id, t.merchant_transaction_id,
+            o.status AS order_status
+     FROM transactions t
+     JOIN orders o ON o.id = t.order_id
+     WHERE t.merchant_transaction_id=$1`,
     [merchantTransactionId]
   );
   if (peek.rows.length === 0) return null;
-  if (peek.rows[0].status === 'success') {
+  const row = peek.rows[0];
+
+  if (row.status === 'success') {
+    if (row.order_status === 'pending') {
+      await finalizeSuccessfulPayment(row.order_id, source);
+    }
     invalidateGatewayStatusCache(merchantTransactionId);
-    return peek.rows[0];
+    const updated = await db.query(
+      'SELECT * FROM transactions WHERE merchant_transaction_id=$1',
+      [merchantTransactionId]
+    );
+    return updated.rows[0] || row;
   }
 
+  await finalizeSuccessfulPayment(row.order_id, source);
   const txn = await markTransactionStatus(merchantTransactionId, 'success', gatewayTransactionId, gatewayPayload);
   if (!txn) return null;
-  await finalizeSuccessfulPayment(txn.order_id, source);
   invalidateGatewayStatusCache(merchantTransactionId);
   return txn;
 };
@@ -476,21 +476,16 @@ const processFailedTransaction = async (merchantTransactionId, gatewayPayload, s
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
-    const orderRes = await client.query('SELECT status, order_type, cart_id FROM orders WHERE id=$1 FOR UPDATE', [txn.order_id]);
+    const orderRes = await client.query(
+      'SELECT status, order_type, cart_id, client_id FROM orders WHERE id=$1 FOR UPDATE',
+      [txn.order_id]
+    );
     if (orderRes.rows.length > 0 && orderRes.rows[0].status === 'pending') {
       const order = orderRes.rows[0];
       await client.query('UPDATE orders SET status=$1, updated_at=NOW(), payment_finalized_source=$2 WHERE id=$3', ['failed', source, txn.order_id]);
-      
+
       if (order.order_type === 'cart' && order.cart_id) {
-        // Clone the cart into a new 'active' cart so the user can continue shopping, 
-        // while preserving the original cart_id snapshot for the failed order.
-        const newCartRes = await client.query("INSERT INTO carts (client_id, status, total_amount) SELECT client_id, 'active', total_amount FROM carts WHERE id=$1 RETURNING id", [order.cart_id]);
-        if (newCartRes.rows.length > 0) {
-          const newCartId = newCartRes.rows[0].id;
-          await client.query("INSERT INTO cart_items (cart_id, subscription_id, entity_type, entity_id, entity_name, unit_price, meal_size_id, meal_timing, include_saturday, start_date) SELECT $1, subscription_id, entity_type, entity_id, entity_name, unit_price, meal_size_id, meal_timing, include_saturday, start_date FROM cart_items WHERE cart_id=$2", [newCartId, order.cart_id]);
-          // Mark the old cart as failed/abandoned so it's not picked up
-          await client.query("UPDATE carts SET status='failed', updated_at=NOW() WHERE id=$1", [order.cart_id]);
-        }
+        await cartService.reactivateCartAfterFailedPayment(client, order.client_id, order.cart_id);
       }
     }
     await client.query('COMMIT');
@@ -517,7 +512,7 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
   if (!subscriptionId || !entityType || !entityId)
     return next(new AppError('subscriptionId, entityType and entityId are required', 400));
 
-  const sessionToday = mealEligibilityService.parseSessionToday();
+  const sessionToday = parseSessionToday();
   let effectiveStartDateYmd = sessionToday;
   if (startDate) {
     const parsed = parseYmdStrict(startDate);
@@ -809,13 +804,17 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
   let merchantTransactionId;
   try {
     await checkoutClient.query('BEGIN');
-    const cartRes = await checkoutClient.query("SELECT * FROM carts WHERE client_id=$1 AND status='active' FOR UPDATE", [clientId]);
-    if (cartRes.rows.length === 0) {
+    await cartService.mergeDuplicateActiveCarts(checkoutClient, clientId);
+    const activeCartsRes = await checkoutClient.query(
+      "SELECT * FROM carts WHERE client_id=$1 AND status='active' ORDER BY updated_at DESC LIMIT 1 FOR UPDATE",
+      [clientId]
+    );
+    if (activeCartsRes.rows.length === 0) {
       await checkoutClient.query('ROLLBACK');
       return next(new AppError('Your cart is empty', 400));
     }
 
-    cart = cartRes.rows[0];
+    cart = activeCartsRes.rows[0];
     const itemsRes = await checkoutClient.query(
       `SELECT ci.*, s.plan_name, s.meal_size_id,
               s.price, s.price_with_saturday, s.price_without_saturday, s.is_active as subscription_active,
@@ -854,22 +853,19 @@ exports.checkoutCart = catchAsync(async (req, res, next) => {
 
     totalAmount = items.rows.reduce((sum, item) => sum + Number(item.unit_price || 0), 0);
 
-    // Abandon any stuck 'pending' carts for this client (from previous failed/cancelled checkouts
-    // that never got resolved). This prevents the unique constraint violation on (client_id, status).
+    // Free the single pending slot and abandon stale carts (prevents carts_client_id_status_key violation).
+    await cartService.prepareCartsForCheckout(checkoutClient, clientId, cart.id);
     const stuckPendingCarts = await checkoutClient.query(
-      "SELECT id FROM carts WHERE client_id=$1 AND status='pending' AND id != $2",
+      "SELECT id FROM carts WHERE client_id=$1 AND status='pending' AND id <> $2",
       [clientId, cart.id]
     );
     for (const stuckCart of stuckPendingCarts.rows) {
-      // Mark stuck cart as 'failed'
-      await checkoutClient.query("UPDATE carts SET status='failed', updated_at=NOW() WHERE id=$1", [stuckCart.id]);
-      // Mark its associated pending order as 'failed' too
       await checkoutClient.query("UPDATE orders SET status='failed', updated_at=NOW() WHERE cart_id=$1 AND status='pending'", [stuckCart.id]);
-      // Mark its transactions as 'failure'
       await checkoutClient.query(
         "UPDATE transactions SET status='failure', updated_at=NOW() WHERE order_id IN (SELECT id FROM orders WHERE cart_id=$1)",
         [stuckCart.id]
       );
+      await checkoutClient.query("UPDATE carts SET status='abandoned', updated_at=NOW() WHERE id=$1", [stuckCart.id]);
     }
 
     await checkoutClient.query("UPDATE carts SET total_amount=$1, status='pending', updated_at=NOW() WHERE id=$2", [totalAmount, cart.id]);
@@ -1094,6 +1090,9 @@ exports.checkPaymentStatus = catchAsync(async (req, res, next) => {
     await processFailedTransaction(txnId, gatewayRes.data, 'status_check');
     localTxn.status = 'failure';
     localTxn.order_status = 'failed';
+  } else if (isSuccess && localTxn.status === 'success' && localTxn.order_status === 'pending') {
+    await finalizeSuccessfulPayment(localTxn.order_id, 'status_check');
+    localTxn.order_status = 'completed';
   }
 
   // If cart order, attach cart items
@@ -1341,6 +1340,14 @@ exports.forceSync = catchAsync(async (req, res, next) => {
   }
 
   if (localTxn.status !== 'pending') {
+    if (localTxn.status === 'success' && localTxn.order_status === 'pending') {
+      await finalizeSuccessfulPayment(localTxn.order_id, 'force_sync');
+      return res.status(200).json({
+        success: true,
+        message: 'Order finalized and subscription activated.',
+        data: { localStatus: localTxn.status, orderStatus: 'completed' },
+      });
+    }
     return res.status(200).json({
       success: true,
       message: `Payment already ${localTxn.status}. No sync needed.`,

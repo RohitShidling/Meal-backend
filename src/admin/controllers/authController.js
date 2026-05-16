@@ -116,7 +116,7 @@ const consumeAdminChallenge = (challengeToken, phoneNumber) => {
 // Helper to generate Admin Tokens
 const generateTokens = (id, phoneNumber) => {
   const accessToken = jwt.sign({ id, phoneNumber, role: 'admin' }, ADMIN_JWT_SECRET, {
-    expiresIn: process.env.ADMIN_JWT_EXPIRES_IN || '15m',
+    expiresIn: process.env.ADMIN_JWT_EXPIRES_IN || '1d',
   });
   const refreshToken = jwt.sign({ id, phoneNumber, role: 'admin' }, ADMIN_REFRESH_SECRET, {
     expiresIn: process.env.ADMIN_REFRESH_TOKEN_EXPIRES_IN || '30d',
@@ -240,6 +240,7 @@ const verifyOtpController = catchAsync(async (req, res, next) => {
     user: {
       id: updatedUser.id,
       username: updatedUser.username || null,
+      name: updatedUser.name || null,
       phoneNumber: updatedUser.phone_number,
       isLoggedIn: updatedUser.is_logged_in,
       lastLogin: updatedUser.last_login,
