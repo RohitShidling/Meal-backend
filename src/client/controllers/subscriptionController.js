@@ -109,6 +109,14 @@ exports.getMySubscriptionStatus = async (req, res, next) => {
         sub.end_date >= today
     );
 
+    const hasUpcomingSubscription = subscriptions.some(
+      (sub) =>
+        sub.subscription_status === true &&
+        sub.remaining_meals > 0 &&
+        sub.start_date > today &&
+        sub.end_date >= today
+    );
+
     const notificationRows = await pool.query(
       `SELECT id, subscription_id, entity_type, entity_id, alert_type, trigger_remaining_meals,
               title, message, is_read, is_sent, sent_channel, sent_at, created_at
@@ -122,6 +130,7 @@ exports.getMySubscriptionStatus = async (req, res, next) => {
     res.status(200).json({
       success: true,
       has_active_subscription: hasActiveSubscription,
+      has_upcoming_subscription: hasUpcomingSubscription,
       alerts: alerts, // NEW ALERTS ARRAY
       notifications: notificationRows.rows,
       count: subscriptions.length,
