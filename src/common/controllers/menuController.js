@@ -55,6 +55,7 @@ exports.getMenuHistory = async (req, res, next) => {
         id,
         image_url,
         items,
+        bulk_order_enabled,
         TO_CHAR(menu_date::date, 'YYYY-MM-DD') AS menu_date,
         created_at
       FROM daily_menus

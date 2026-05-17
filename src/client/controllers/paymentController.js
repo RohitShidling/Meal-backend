@@ -4,6 +4,7 @@ const AppError = require('../../common/utils/AppError');
 const catchAsync = require('../../common/utils/catchAsync');
 const mealEligibilityService = require('../../common/services/mealEligibilityService');
 const cartService = require('../../common/services/cartService');
+const bulkOrderService = require('../../common/services/bulkOrderService');
 const { parseYmdStrict, parseSessionToday, toSessionYmd } = require('../../common/utils/sessionDate');
 const DEFAULT_MEAL_TIME = '1:00 PM';
 const DEFAULT_FRONTEND_REDIRECT = process.env.DEFAULT_FRONTEND_REDIRECT_URL;
@@ -408,6 +409,8 @@ const finalizeSuccessfulPayment = async (orderId, source = 'unknown') => {
       await client.query("UPDATE carts SET status='checked_out', updated_at=NOW() WHERE id=$1", [order.cart_id]);
     } else if (order.order_type === 'meal_size_upgrade') {
       await applyMealSizeUpgradeOrder(client, order);
+    } else if (order.order_type === 'bulk') {
+      await bulkOrderService.confirmBulkOrder(client, order.entity_id);
     } else {
       await activateSingleSubscription(
         client,
@@ -477,7 +480,7 @@ const processFailedTransaction = async (merchantTransactionId, gatewayPayload, s
   try {
     await client.query('BEGIN');
     const orderRes = await client.query(
-      'SELECT status, order_type, cart_id, client_id FROM orders WHERE id=$1 FOR UPDATE',
+      'SELECT status, order_type, cart_id, client_id, entity_id FROM orders WHERE id=$1 FOR UPDATE',
       [txn.order_id]
     );
     if (orderRes.rows.length > 0 && orderRes.rows[0].status === 'pending') {
@@ -486,6 +489,8 @@ const processFailedTransaction = async (merchantTransactionId, gatewayPayload, s
 
       if (order.order_type === 'cart' && order.cart_id) {
         await cartService.reactivateCartAfterFailedPayment(client, order.client_id, order.cart_id);
+      } else if (order.order_type === 'bulk' && order.entity_id) {
+        await bulkOrderService.cancelBulkOrder(client, order.entity_id);
       }
     }
     await client.query('COMMIT');
@@ -1046,6 +1051,7 @@ exports.checkPaymentStatus = catchAsync(async (req, res, next) => {
               WHEN o.entity_type='teacher' THEN tp.name
               WHEN o.entity_type='professional' THEN pp.name
               WHEN o.entity_type='cart' THEN 'Cart Order'
+              WHEN o.entity_type='bulk' THEN 'Bulk Order'
             END as entity_name
      FROM transactions t
      JOIN orders o ON t.order_id=o.id
@@ -1069,11 +1075,26 @@ exports.checkPaymentStatus = catchAsync(async (req, res, next) => {
   // Poll PhonePe
   const gatewayRes = await getCachedGatewayStatus(txnId);
   if (!gatewayRes.success || !gatewayRes.data) {
-    // Return local DB data even if gateway fails
+    let cartItemsEarly = [];
+    if (localTxn.order_type === 'cart' && localTxn.cart_id) {
+      const ci = await db.query(
+        `SELECT ci.*, s.plan_name, ms.display_name AS meal_size_name
+         FROM cart_items ci
+         JOIN subscriptions s ON ci.subscription_id=s.id
+         LEFT JOIN meal_sizes ms ON ms.id = ci.meal_size_id
+         WHERE ci.cart_id=$1`,
+        [localTxn.cart_id]
+      );
+      cartItemsEarly = ci.rows;
+    }
+    let bulkOrderEarly = null;
+    if (localTxn.order_type === 'bulk') {
+      bulkOrderEarly = await bulkOrderService.getBulkSummaryForOrder(localTxn.order_id);
+    }
     return res.status(200).json({
       success: true,
       source: 'local_db',
-      data: buildStatusResponse(localTxn, null)
+      data: { ...buildStatusResponse(localTxn, null), cartItems: cartItemsEarly, bulkOrder: bulkOrderEarly },
     });
   }
 
@@ -1109,10 +1130,15 @@ exports.checkPaymentStatus = catchAsync(async (req, res, next) => {
     cartItems = ci.rows;
   }
 
+  let bulkOrder = null;
+  if (localTxn.order_type === 'bulk') {
+    bulkOrder = await bulkOrderService.getBulkSummaryForOrder(localTxn.order_id);
+  }
+
   res.status(200).json({
     success: true,
     source: 'gateway_synced',
-    data: { ...buildStatusResponse(localTxn, gwState), cartItems }
+    data: { ...buildStatusResponse(localTxn, gwState), cartItems, bulkOrder }
   });
 });
 
@@ -1233,6 +1259,7 @@ exports.getMyPaymentHistory = catchAsync(async (req, res) => {
               WHEN o.entity_type='teacher' THEN tp.name
               WHEN o.entity_type='professional' THEN pp.name
               WHEN o.entity_type='cart' THEN 'Cart Order'
+              WHEN o.entity_type='bulk' THEN 'Bulk Order'
             END as entity_name
      FROM orders o
      LEFT JOIN subscriptions s ON o.subscription_id=s.id
