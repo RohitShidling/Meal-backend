@@ -87,6 +87,7 @@ const initDB = async () => {
     CREATE SEQUENCE IF NOT EXISTS entity_id_seq;
     CREATE SEQUENCE IF NOT EXISTS bulk_order_id_seq;
     CREATE SEQUENCE IF NOT EXISTS bulk_variety_meal_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS bulk_variety_category_id_seq;
   `;
 
   // ──────────────────────────────────────────────
@@ -985,6 +986,97 @@ const initDB = async () => {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_bulk_orders_client_created ON bulk_orders(client_id, created_at DESC);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_bulk_orders_order_id ON bulk_orders(order_id);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_bulk_order_items_bulk_order_id ON bulk_order_items(bulk_order_id);`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bulk_variety_categories (
+        id               VARCHAR(20) PRIMARY KEY DEFAULT 'BVC-' || nextval('bulk_variety_category_id_seq')::TEXT,
+        name             VARCHAR(255) NOT NULL,
+        description      TEXT,
+        image_url        TEXT,
+        image_public_id  VARCHAR(255),
+        sort_order       INTEGER NOT NULL DEFAULT 0,
+        is_active        BOOLEAN NOT NULL DEFAULT true,
+        created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_bulk_variety_categories_active ON bulk_variety_categories(is_active, sort_order, created_at DESC);`
+    );
+    await pool.query(
+      `ALTER TABLE bulk_variety_meals ADD COLUMN IF NOT EXISTS category_id VARCHAR(20) REFERENCES bulk_variety_categories(id) ON DELETE RESTRICT;`
+    );
+    await pool.query(`
+      INSERT INTO bulk_variety_categories (id, name, description, is_active, sort_order)
+      SELECT 'BVC-1', 'General', 'Default category for existing meals', true, 0
+      WHERE NOT EXISTS (SELECT 1 FROM bulk_variety_categories WHERE id = 'BVC-1');
+    `);
+    await pool.query(`
+      UPDATE bulk_variety_meals SET category_id = 'BVC-1' WHERE category_id IS NULL;
+    `);
+    await pool.query(`
+      DO $$ BEGIN
+        ALTER TABLE bulk_variety_meals ALTER COLUMN category_id SET NOT NULL;
+      EXCEPTION WHEN others THEN NULL;
+      END $$;
+    `);
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_bulk_variety_meals_category ON bulk_variety_meals(category_id, is_active, sort_order);`
+    );
+
+    await pool.query(
+      `ALTER TABLE bulk_order_config ADD COLUMN IF NOT EXISTS standard_max_quantity INTEGER;`
+    );
+    await pool.query(`
+      UPDATE bulk_order_config
+      SET standard_max_quantity = GREATEST(min_quantity, tier_threshold - 1)
+      WHERE standard_max_quantity IS NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE bulk_order_config
+      ALTER COLUMN standard_max_quantity SET DEFAULT 49;
+    `);
+    await pool.query(`
+      DO $$ BEGIN
+        ALTER TABLE bulk_order_config ADD CONSTRAINT chk_bulk_standard_max_qty
+          CHECK (standard_max_quantity >= min_quantity AND standard_max_quantity < tier_threshold);
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$;
+    `);
+
+    await pool.query(
+      `ALTER TABLE bulk_order_config ADD COLUMN IF NOT EXISTS hub_intro_text TEXT;`
+    );
+    await pool.query(
+      `ALTER TABLE bulk_order_config ADD COLUMN IF NOT EXISTS standard_tier_title VARCHAR(120);`
+    );
+    await pool.query(
+      `ALTER TABLE bulk_order_config ADD COLUMN IF NOT EXISTS standard_tier_subtitle VARCHAR(200);`
+    );
+    await pool.query(
+      `ALTER TABLE bulk_order_config ADD COLUMN IF NOT EXISTS standard_tier_description TEXT;`
+    );
+    await pool.query(
+      `ALTER TABLE bulk_order_config ADD COLUMN IF NOT EXISTS variety_tier_title VARCHAR(120);`
+    );
+    await pool.query(
+      `ALTER TABLE bulk_order_config ADD COLUMN IF NOT EXISTS variety_tier_subtitle VARCHAR(200);`
+    );
+    await pool.query(
+      `ALTER TABLE bulk_order_config ADD COLUMN IF NOT EXISTS variety_tier_description TEXT;`
+    );
+    await pool.query(`
+      UPDATE bulk_order_config SET
+        hub_intro_text = COALESCE(hub_intro_text, 'Choose the type of bulk order that fits your group size.'),
+        standard_tier_title = COALESCE(standard_tier_title, 'Standard bulk'),
+        standard_tier_subtitle = COALESCE(standard_tier_subtitle, min_quantity::text || '–' || standard_max_quantity::text || ' meals'),
+        standard_tier_description = COALESCE(standard_tier_description, 'One meal for your delivery date — the same dish for everyone. Enter how many meals you need.'),
+        variety_tier_title = COALESCE(variety_tier_title, 'Large event bulk'),
+        variety_tier_subtitle = COALESCE(variety_tier_subtitle, tier_threshold::text || '+ meals'),
+        variety_tier_description = COALESCE(variety_tier_description, 'Browse meal categories, pick dishes, and set portions for each.')
+      WHERE id = 1;
+    `);
+
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cart_id VARCHAR(20) REFERENCES carts(id);`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS start_date DATE;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS start_date DATE;`);
