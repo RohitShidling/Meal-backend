@@ -295,17 +295,20 @@ const validateAndQuote = async ({ deliveryDate, items }, executor = db.query.bin
       if (!allowedIds.has(meal.id)) {
         throw new AppError(`Bulk meal ${meal.name} is not available for ordering.`, 400);
       }
-      const mealMin = Number(meal.min_order_quantity ?? 1);
-      if (distinctIds.length > 1 && line.quantity < mealMin) {
-        throw new AppError(
-          `${meal.name} requires at least ${mealMin} portions when ordering multiple different meals.`,
-          400
-        );
-      }
       mealRows.push({ ...line, meal, unitPrice: Number(meal.price_per_meal) });
     }
 
-    if (distinctIds.length > 1) {
+    const multipleMealTypes = mealRows.length > 1;
+    if (multipleMealTypes) {
+      for (const row of mealRows) {
+        const mealMin = Number(row.meal.min_order_quantity ?? 1);
+        if (row.quantity < mealMin) {
+          throw new AppError(
+            `${row.meal.name} requires at least ${mealMin} portions when ordering multiple different meals.`,
+            400
+          );
+        }
+      }
       const minSum = mealRows.reduce(
         (sum, row) => sum + Number(row.meal.min_order_quantity ?? 1),
         0
