@@ -61,6 +61,10 @@ const commonSubscriptionPlanDurationRoutes = require('./common/routes/subscripti
 const adminMenuNutritionRoutes = require('./admin/routes/menuNutritionRoutes');
 const adminTrialPlanFeatureRoutes = require('./admin/routes/trialPlanFeatureRoutes');
 const adminMealSizeUpgradeRoutes = require('./admin/routes/mealSizeUpgradeRoutes');
+const adminBulkOrderRoutes = require('./admin/routes/bulkOrderAdminRoutes');
+const adminClientRoutes = require('./admin/routes/clientAdminRoutes');
+const commonBulkOrderConfigRoutes = require('./common/routes/bulkOrderConfigRoutes');
+const clientBulkOrderRoutes = require('./client/routes/bulkOrderRoutes');
 
 const app = express();
 app.use(cookieParser());
@@ -217,6 +221,10 @@ app.use('/api/admin/subscription-plan-days', adminSubscriptionPlanDurationRoutes
 app.use('/api/common/subscription-plan-days', commonSubscriptionPlanDurationRoutes);
 app.use('/api/admin/menu-nutrition', adminMenuNutritionRoutes);
 app.use('/api/admin/trial-plan-features', adminTrialPlanFeatureRoutes);
+app.use('/api/admin/bulk-orders', adminBulkOrderRoutes);
+app.use('/api/admin/clients', adminClientRoutes);
+app.use('/api/common/bulk-orders', commonBulkOrderConfigRoutes);
+app.use('/api/client/bulk-orders', clientBulkOrderRoutes);
 
 // Health Check Endpoint
 app.get('/health', (req, res) => {

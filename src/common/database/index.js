@@ -85,6 +85,8 @@ const initDB = async () => {
     CREATE SEQUENCE IF NOT EXISTS cart_id_seq;
     CREATE SEQUENCE IF NOT EXISTS client_subscription_id_seq;
     CREATE SEQUENCE IF NOT EXISTS entity_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS bulk_order_id_seq;
+    CREATE SEQUENCE IF NOT EXISTS bulk_variety_meal_id_seq;
   `;
 
   // ──────────────────────────────────────────────
@@ -574,6 +576,75 @@ const initDB = async () => {
     );
   `;
 
+  const createBulkOrderConfigTable = `
+    CREATE TABLE IF NOT EXISTS bulk_order_config (
+      id                            SMALLINT PRIMARY KEY DEFAULT 1,
+      min_quantity                  INTEGER NOT NULL DEFAULT 10,
+      min_lead_days                 INTEGER NOT NULL DEFAULT 3,
+      tier_threshold                INTEGER NOT NULL DEFAULT 50,
+      price_per_meal_under_threshold DECIMAL(10, 2) NOT NULL DEFAULT 0,
+      variety_menu_lookahead_days   INTEGER NOT NULL DEFAULT 14,
+      max_variety_types             INTEGER NOT NULL DEFAULT 5,
+      allow_multiple_variety_meals  BOOLEAN NOT NULL DEFAULT true,
+      min_quantity_per_variety_meal INTEGER NOT NULL DEFAULT 1,
+      is_active                     BOOLEAN NOT NULL DEFAULT true,
+      created_at                    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at                    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT chk_bulk_config_singleton CHECK (id = 1),
+      CONSTRAINT chk_bulk_min_quantity CHECK (min_quantity >= 1),
+      CONSTRAINT chk_bulk_min_lead_days CHECK (min_lead_days >= 0),
+      CONSTRAINT chk_bulk_tier_threshold CHECK (tier_threshold >= 2),
+      CONSTRAINT chk_bulk_price_under_nonneg CHECK (price_per_meal_under_threshold >= 0),
+      CONSTRAINT chk_bulk_lookahead_days CHECK (variety_menu_lookahead_days >= 0),
+      CONSTRAINT chk_bulk_max_variety CHECK (max_variety_types >= 1),
+      CONSTRAINT chk_bulk_min_qty_per_variety CHECK (min_quantity_per_variety_meal >= 1)
+    );
+  `;
+
+  const createBulkOrderVarietyPricesTable = `
+    CREATE TABLE IF NOT EXISTS bulk_order_variety_prices (
+      slot_number     INTEGER PRIMARY KEY,
+      price_per_meal  DECIMAL(10, 2) NOT NULL,
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT chk_bulk_variety_slot_nonneg CHECK (slot_number >= 1),
+      CONSTRAINT chk_bulk_variety_price_nonneg CHECK (price_per_meal >= 0)
+    );
+  `;
+
+  const createBulkOrdersTable = `
+    CREATE TABLE IF NOT EXISTS bulk_orders (
+      id              VARCHAR(20) PRIMARY KEY DEFAULT 'BLK-' || nextval('bulk_order_id_seq')::TEXT,
+      client_id       VARCHAR(20) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      order_id        VARCHAR(20) REFERENCES orders(id) ON DELETE SET NULL,
+      delivery_date   DATE NOT NULL,
+      total_quantity  INTEGER NOT NULL,
+      total_amount    DECIMAL(10, 2) NOT NULL,
+      tier_mode       VARCHAR(30) NOT NULL,
+      status          VARCHAR(20) NOT NULL DEFAULT 'pending',
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT chk_bulk_orders_qty CHECK (total_quantity > 0),
+      CONSTRAINT chk_bulk_orders_amount CHECK (total_amount >= 0)
+    );
+  `;
+
+  const createBulkOrderItemsTable = `
+    CREATE TABLE IF NOT EXISTS bulk_order_items (
+      id              SERIAL PRIMARY KEY,
+      bulk_order_id   VARCHAR(20) NOT NULL REFERENCES bulk_orders(id) ON DELETE CASCADE,
+      daily_menu_id   VARCHAR(20) NOT NULL REFERENCES daily_menus(id) ON DELETE RESTRICT,
+      menu_date       DATE NOT NULL,
+      quantity        INTEGER NOT NULL,
+      variety_slot    INTEGER,
+      unit_price      DECIMAL(10, 2) NOT NULL,
+      line_total      DECIMAL(10, 2) NOT NULL,
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT chk_bulk_item_qty CHECK (quantity > 0),
+      CONSTRAINT chk_bulk_item_prices CHECK (unit_price >= 0 AND line_total >= 0)
+    );
+  `;
+
   try {
     // 1. Drop existing tables if they use old integer IDs (Migration Step)
     const tableChecks = await pool.query(`
@@ -643,6 +714,10 @@ const initDB = async () => {
     await pool.query(createDailyMenuNutritionTable);
     await pool.query(createEntitiesTable);
     await pool.query(createHomepagesTable);
+    await pool.query(createBulkOrderConfigTable);
+    await pool.query(createBulkOrderVarietyPricesTable);
+    await pool.query(createBulkOrdersTable);
+    await pool.query(createBulkOrderItemsTable);
     await pool.query(createCartsTable);
     await pool.query(createCartItemsTable);
     await pool.query(createAppSettingsTable);
@@ -853,6 +928,63 @@ const initDB = async () => {
 
     // Migration: Add order_type to orders table if it doesn't exist
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_type VARCHAR(20) NOT NULL DEFAULT 'single';`);
+    await pool.query(`ALTER TABLE orders ALTER COLUMN subscription_id DROP NOT NULL;`);
+    await pool.query(
+      `ALTER TABLE daily_menus ADD COLUMN IF NOT EXISTS bulk_order_enabled BOOLEAN NOT NULL DEFAULT false;`
+    );
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bulk_order_menu_prices (
+        daily_menu_id   VARCHAR(20) PRIMARY KEY REFERENCES daily_menus(id) ON DELETE CASCADE,
+        price_per_meal  DECIMAL(10, 2) NOT NULL,
+        created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT chk_bulk_menu_price_nonneg CHECK (price_per_meal >= 0)
+      );
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bulk_variety_meals (
+        id               VARCHAR(20) PRIMARY KEY DEFAULT 'BVM-' || nextval('bulk_variety_meal_id_seq')::TEXT,
+        name             VARCHAR(500) NOT NULL,
+        image_url        TEXT NOT NULL,
+        image_public_id  VARCHAR(255),
+        price_per_meal   DECIMAL(10, 2) NOT NULL,
+        min_order_quantity INTEGER NOT NULL DEFAULT 1,
+        is_active        BOOLEAN NOT NULL DEFAULT true,
+        sort_order       INTEGER NOT NULL DEFAULT 0,
+        created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT chk_bvm_price_nonneg CHECK (price_per_meal >= 0),
+        CONSTRAINT chk_bvm_min_order_qty CHECK (min_order_quantity >= 1)
+      );
+    `);
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_bulk_variety_meals_active ON bulk_variety_meals(is_active, sort_order, created_at DESC);`
+    );
+    await pool.query(
+      `ALTER TABLE bulk_variety_meals ADD COLUMN IF NOT EXISTS min_order_quantity INTEGER NOT NULL DEFAULT 1;`
+    );
+    await pool.query(
+      `ALTER TABLE bulk_order_config ADD COLUMN IF NOT EXISTS allow_multiple_variety_meals BOOLEAN NOT NULL DEFAULT true;`
+    );
+    await pool.query(
+      `ALTER TABLE bulk_order_config ADD COLUMN IF NOT EXISTS min_quantity_per_variety_meal INTEGER NOT NULL DEFAULT 1;`
+    );
+    await pool.query(`ALTER TABLE bulk_order_items ALTER COLUMN daily_menu_id DROP NOT NULL;`);
+    await pool.query(
+      `ALTER TABLE bulk_order_items ADD COLUMN IF NOT EXISTS bulk_variety_meal_id VARCHAR(20) REFERENCES bulk_variety_meals(id) ON DELETE RESTRICT;`
+    );
+    await pool.query(`
+      DO $$ BEGIN
+        ALTER TABLE bulk_order_items ADD CONSTRAINT chk_bulk_item_menu_ref CHECK (
+          (daily_menu_id IS NOT NULL AND bulk_variety_meal_id IS NULL)
+          OR (daily_menu_id IS NULL AND bulk_variety_meal_id IS NOT NULL)
+        );
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$;
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bulk_orders_client_created ON bulk_orders(client_id, created_at DESC);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bulk_orders_order_id ON bulk_orders(order_id);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bulk_order_items_bulk_order_id ON bulk_order_items(bulk_order_id);`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cart_id VARCHAR(20) REFERENCES carts(id);`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS start_date DATE;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS start_date DATE;`);
@@ -1152,6 +1284,17 @@ const initDB = async () => {
         ('meal_skip_min_notice_days', '1', 'How many days in advance skip must be requested')
       ON CONFLICT (setting_key) DO NOTHING;
     `);
+
+    await pool.query(`
+      INSERT INTO bulk_order_config (id, min_quantity, min_lead_days, tier_threshold, price_per_meal_under_threshold, variety_menu_lookahead_days, max_variety_types, is_active)
+      VALUES (1, 10, 3, 50, 0, 14, 5, true)
+      ON CONFLICT (id) DO NOTHING;
+    `);
+    const varietyPriceSeed = await pool.query('SELECT slot_number FROM bulk_order_variety_prices LIMIT 1');
+    if (varietyPriceSeed.rows.length === 0) {
+      const slots = [1, 2, 3, 4, 5].map((n) => `(${n}, 0)`).join(', ');
+      await pool.query(`INSERT INTO bulk_order_variety_prices (slot_number, price_per_meal) VALUES ${slots};`);
+    }
 
     // ──────────────────────────────────────────────
     // SEED: Standards (1st to 12th)

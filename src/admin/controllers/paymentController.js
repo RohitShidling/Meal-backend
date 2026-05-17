@@ -1,4 +1,5 @@
 const db = require('../../common/database');
+const { clientDisplayNameSql } = require('../../common/utils/clientDisplayName');
 const catchAsync = require('../../common/utils/catchAsync');
 
 const mapEntityTypeToSector = (entityType) => {
@@ -12,6 +13,7 @@ const mapEntityTypeToSectorLabel = (entityType) => {
   if (entityType === 'child') return 'Student';
   if (entityType === 'teacher') return 'Teacher';
   if (entityType === 'professional') return 'Professional Worker';
+  if (entityType === 'bulk') return 'Bulk order';
   return entityType || null;
 };
 
@@ -119,12 +121,14 @@ exports.getAllPayments = catchAsync(async (req, res) => {
         o.created_at AS payment_date,
         o.client_id,
         c.phone_number AS client_phone,
+        c.username AS client_username,
         o.entity_type,
         o.entity_id,
         CASE
           WHEN o.entity_type = 'child' THEN ch.name
           WHEN o.entity_type = 'teacher' THEN tp.name
           WHEN o.entity_type = 'professional' THEN pp.name
+          WHEN o.entity_type = 'bulk' THEN ${clientDisplayNameSql('c')}
           ELSE NULL
         END AS customer_name,
         CASE
@@ -140,7 +144,10 @@ exports.getAllPayments = catchAsync(async (req, res) => {
         cl.name AS corporate_location_name,
         o.amount::numeric AS amount,
         false AS is_cart_order,
-        s.plan_name AS subscription_name,
+        COALESCE(
+          s.plan_name,
+          CASE WHEN o.order_type = 'bulk' THEN 'Bulk order' END
+        ) AS subscription_name,
         ms.display_name AS meal_variant,
         ms.name AS meal_size_code,
         s.billing_cycle AS subscription_type,
@@ -165,6 +172,43 @@ exports.getAllPayments = catchAsync(async (req, res) => {
       LEFT JOIN professional_profiles pp ON o.entity_type = 'professional' AND o.entity_id = pp.id
       LEFT JOIN corporate_locations cl ON pp.corporate_location_id = cl.id
       WHERE o.entity_type IS DISTINCT FROM 'cart'
+        AND COALESCE(LOWER(TRIM(o.order_type)), '') <> 'bulk'
+        AND COALESCE(LOWER(TRIM(o.entity_type)), '') <> 'bulk'
+
+      UNION ALL
+
+      -- Bulk orders: payer is the registered client (app signup username)
+      SELECT
+        o.id AS order_id,
+        o.status AS order_status,
+        o.order_type,
+        o.created_at AS payment_date,
+        o.client_id,
+        c.phone_number AS client_phone,
+        c.username AS client_username,
+        o.entity_type,
+        o.entity_id,
+        ${clientDisplayNameSql('c')} AS customer_name,
+        NULL::text AS school_name,
+        NULL::text AS school_id,
+        NULL::text AS corporate_location_name,
+        o.amount::numeric AS amount,
+        false AS is_cart_order,
+        'Bulk order' AS subscription_name,
+        'Bulk' AS meal_variant,
+        'bulk' AS meal_size_code,
+        'regular' AS subscription_type,
+        'regular' AS plan_type,
+        false AS is_trial,
+        0 AS trial_days,
+        o.start_date::date AS subscription_start_date,
+        tx.merchant_transaction_id,
+        tx.status AS payment_status
+      FROM orders o
+      INNER JOIN clients c ON o.client_id = c.id
+      LEFT JOIN transactions tx ON tx.order_id = o.id
+      WHERE COALESCE(LOWER(TRIM(o.order_type)), '') = 'bulk'
+         OR COALESCE(LOWER(TRIM(o.entity_type)), '') = 'bulk'
 
       UNION ALL
 
@@ -176,6 +220,7 @@ exports.getAllPayments = catchAsync(async (req, res) => {
         o.created_at AS payment_date,
         o.client_id,
         c.phone_number AS client_phone,
+        c.username AS client_username,
         ci.entity_type,
         ci.entity_id,
         COALESCE(
@@ -236,6 +281,7 @@ exports.getAllPayments = catchAsync(async (req, res) => {
         c.updated_at AS payment_date,
         c.client_id,
         TRIM(COALESCE(cl.phone_number, '')) AS client_phone,
+        cl.username AS client_username,
         'cart' AS entity_type,
         c.id::text AS entity_id,
         COALESCE(
@@ -267,7 +313,7 @@ exports.getAllPayments = catchAsync(async (req, res) => {
       INNER JOIN clients cl ON cl.id = c.client_id
       INNER JOIN cart_items ci ON ci.cart_id = c.id
       WHERE c.status = 'active'
-      GROUP BY c.id, c.client_id, cl.phone_number, c.total_amount, c.updated_at
+      GROUP BY c.id, c.client_id, cl.phone_number, cl.username, c.total_amount, c.updated_at
     )
   `;
 
@@ -303,6 +349,7 @@ exports.getAllPayments = catchAsync(async (req, res) => {
       np.entity_id,
       np.payment_date AS created_at,
       np.client_phone,
+      np.client_username,
       np.merchant_transaction_id,
       np.payment_status,
       COALESCE(np.customer_name, 'Unknown') AS customer_name,
@@ -319,14 +366,26 @@ exports.getAllPayments = catchAsync(async (req, res) => {
   );
 
   const normalized = result.rows.map((row) => {
+    const isBulkOrder =
+      String(row.order_type || '').toLowerCase() === 'bulk' ||
+      String(row.entity_type || '').toLowerCase() === 'bulk';
     const sector = mapEntityTypeToSector(row.entity_type);
     const sectorLabel = mapEntityTypeToSectorLabel(row.entity_type);
-    const customerName = row.customer_name || 'Unknown';
+    const customerName = isBulkOrder
+      ? [row.client_username, row.customer_name, row.client_phone]
+          .map((v) => String(v || '').trim())
+          .find((v) => v && v.toLowerCase() !== 'unknown') || '—'
+      : row.customer_name || 'Unknown';
     const schoolName = row.school_name || null;
-    const mealVariant = row.meal_variant || row.meal_size_code || 'Unknown';
+    const mealVariant = isBulkOrder
+      ? 'Bulk'
+      : row.meal_variant || row.meal_size_code || 'Unknown';
     const subscriptionType = row.subscription_type || row.plan_type || 'regular';
     const planTypeValue = row.plan_type || (row.is_trial ? 'trial' : 'regular');
-    const normalizedPlanName = String(row.subscription_name || '').trim() || `${planTypeValue === 'trial' ? 'Trial Plan' : 'Regular Plan'} - ${mealVariant}`;
+    const normalizedPlanName = isBulkOrder
+      ? 'Bulk order'
+      : String(row.subscription_name || '').trim() ||
+        `${planTypeValue === 'trial' ? 'Trial Plan' : 'Regular Plan'} - ${mealVariant}`;
     return {
       ...row,
       amount: Number(row.amount),
@@ -450,6 +509,7 @@ exports.getPaymentStats = catchAsync(async (req, res) => {
           WHEN np.entity_type='child' THEN ch.name
           WHEN np.entity_type='teacher' THEN tp.name
           WHEN np.entity_type='professional' THEN pp.name
+          WHEN np.entity_type='bulk' THEN ${clientDisplayNameSql('c')}
           ELSE NULL
         END AS customer_name
       FROM normalized_payments np

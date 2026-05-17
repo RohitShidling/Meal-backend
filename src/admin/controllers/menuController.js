@@ -1,6 +1,13 @@
 const db = require('../../common/database');
 const cloudinary = require('cloudinary').v2;
 
+const parseBulkOrderEnabled = (value) => {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'boolean') return value;
+  const raw = String(value).trim().toLowerCase();
+  return ['true', '1', 'yes', 'y'].includes(raw);
+};
+
 const isAllowedMenuImageUrl = (urlValue) => {
   try {
     const u = new URL(String(urlValue || '').trim());
@@ -15,7 +22,8 @@ const isAllowedMenuImageUrl = (urlValue) => {
 // @route   POST /api/admin/menu/upload
 exports.uploadMenu = async (req, res, next) => {
   try {
-    const { items, menu_date } = req.body;
+    const { items, menu_date, bulk_order_enabled } = req.body;
+    const bulkEnabled = parseBulkOrderEnabled(bulk_order_enabled);
     const image_url = req.file ? req.file.path : null;
     const image_public_id = req.file ? req.file.filename : null; // Multer-storage-cloudinary uses .filename for public_id
 
@@ -27,12 +35,19 @@ exports.uploadMenu = async (req, res, next) => {
     }
 
     const query = `
-      INSERT INTO daily_menus (image_url, image_public_id, items, menu_date, created_by)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO daily_menus (image_url, image_public_id, items, menu_date, bulk_order_enabled, created_by)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *
     `;
     
-    const values = [image_url, image_public_id, items, menu_date || new Date(), req.admin ? req.admin.id : req.user.id];
+    const values = [
+      image_url,
+      image_public_id,
+      items,
+      menu_date || new Date(),
+      bulkEnabled,
+      req.admin ? req.admin.id : req.user.id,
+    ];
     const result = await db.query(query, values);
 
     res.status(201).json({
@@ -130,7 +145,9 @@ exports.updateMenu = async (req, res, next) => {
       date = new Date().toISOString().split('T')[0];
     }
     
-    const { items, is_active, menu_date } = req.body;
+    const { items, is_active, menu_date, bulk_order_enabled } = req.body;
+    const bulkEnabled =
+      bulk_order_enabled !== undefined ? parseBulkOrderEnabled(bulk_order_enabled) : undefined;
     let normalizedMenuDate = menu_date;
     if (normalizedMenuDate === 'today') {
       normalizedMenuDate = new Date().toISOString().split('T')[0];
@@ -152,14 +169,15 @@ exports.updateMenu = async (req, res, next) => {
       await cloudinary.uploader.destroy(currentMenu.rows[0].image_public_id);
     }
 
-    let query = 'UPDATE daily_menus SET items = $1, is_active = $2, menu_date = COALESCE($3, menu_date), updated_at = CURRENT_TIMESTAMP';
-    let values = [items, is_active, normalizedMenuDate || null];
+    let query =
+      'UPDATE daily_menus SET items = $1, is_active = $2, menu_date = COALESCE($3, menu_date), bulk_order_enabled = COALESCE($4, bulk_order_enabled), updated_at = CURRENT_TIMESTAMP';
+    let values = [items, is_active, normalizedMenuDate || null, bulkEnabled ?? null];
 
     if (image_url) {
-      query += ', image_url = $4, image_public_id = $5 WHERE id = $6 RETURNING *';
+      query += ', image_url = $5, image_public_id = $6 WHERE id = $7 RETURNING *';
       values.push(image_url, image_public_id, menuId);
     } else {
-      query += ' WHERE id = $4 RETURNING *';
+      query += ' WHERE id = $5 RETURNING *';
       values.push(menuId);
     }
 
