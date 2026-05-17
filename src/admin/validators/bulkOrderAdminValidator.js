@@ -29,6 +29,34 @@ exports.validateUpdateConfig = (req, res, next) => {
     if (body.tier_threshold !== undefined) {
       payload.tier_threshold = parsePositiveInt(body.tier_threshold, 'tier_threshold', { min: 2, max: 5000 });
     }
+    if (body.standard_max_quantity !== undefined) {
+      payload.standard_max_quantity = parsePositiveInt(body.standard_max_quantity, 'standard_max_quantity', {
+        min: 1,
+        max: 5000,
+      });
+    }
+    const hubTextFields = [
+      'hub_intro_text',
+      'standard_tier_title',
+      'standard_tier_subtitle',
+      'standard_tier_description',
+      'variety_tier_title',
+      'variety_tier_subtitle',
+      'variety_tier_description',
+    ];
+    for (const key of hubTextFields) {
+      if (body[key] !== undefined) {
+        const val = String(body[key] ?? '').trim();
+        if (key.endsWith('_title') || key.endsWith('_subtitle')) {
+          if (val.length > 200) {
+            throw new AppError(`${key} must be at most 200 characters.`, 400);
+          }
+        } else if (val.length > 2000) {
+          throw new AppError(`${key} must be at most 2000 characters.`, 400);
+        }
+        payload[key] = val || null;
+      }
+    }
     if (body.price_per_meal_under_threshold !== undefined) {
       payload.price_per_meal_under_threshold = parseNonNegativeMoney(
         body.price_per_meal_under_threshold,
@@ -73,6 +101,76 @@ exports.validateUpdateConfig = (req, res, next) => {
   }
 };
 
+const parseCategoryId = (value) => {
+  const id = String(value || '').trim();
+  if (!/^BVC-\d+$/.test(id)) {
+    throw new AppError('category_id must be a valid bulk variety category id (BVC-n).', 400);
+  }
+  return id;
+};
+
+exports.validateVarietyCategoryId = (req, res, next) => {
+  const id = String(req.params?.id || '').trim();
+  if (!/^BVC-\d+$/.test(id)) {
+    return next(new AppError('Invalid bulk variety category id.', 400));
+  }
+  req.params.id = id;
+  return next();
+};
+
+exports.validateCreateVarietyCategory = (req, res, next) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (!name || name.length > 255) {
+      throw new AppError('name is required (max 255 characters).', 400);
+    }
+    req.validatedCategory = {
+      name,
+      description: req.body?.description ? String(req.body.description).trim() : null,
+      is_active:
+        req.body?.is_active !== undefined
+          ? !(req.body.is_active === false || req.body.is_active === 'false')
+          : true,
+      sort_order:
+        req.body?.sort_order !== undefined
+          ? parsePositiveInt(req.body.sort_order, 'sort_order', { min: 0, max: 10000 })
+          : 0,
+    };
+    return next();
+  } catch (err) {
+    return next(err);
+  }
+};
+
+exports.validateUpdateVarietyCategory = (req, res, next) => {
+  try {
+    const payload = {};
+    if (req.body?.name !== undefined) {
+      const name = String(req.body.name).trim();
+      if (!name || name.length > 255) {
+        throw new AppError('name must be a non-empty string (max 255 characters).', 400);
+      }
+      payload.name = name;
+    }
+    if (req.body?.description !== undefined) {
+      payload.description = String(req.body.description).trim() || null;
+    }
+    if (req.body?.is_active !== undefined) {
+      payload.is_active = !(req.body.is_active === false || req.body.is_active === 'false');
+    }
+    if (req.body?.sort_order !== undefined) {
+      payload.sort_order = parsePositiveInt(req.body.sort_order, 'sort_order', { min: 0, max: 10000 });
+    }
+    if (Object.keys(payload).length === 0 && !req.file) {
+      return next(new AppError('No valid fields to update.', 400));
+    }
+    req.validatedCategory = payload;
+    return next();
+  } catch (err) {
+    return next(err);
+  }
+};
+
 exports.validateVarietyMealId = (req, res, next) => {
   const id = String(req.params?.id || '').trim();
   if (!/^BVM-\d+$/.test(id)) {
@@ -90,6 +188,7 @@ exports.validateCreateVarietyMeal = (req, res, next) => {
     }
     req.validatedVarietyMeal = {
       name,
+      category_id: parseCategoryId(req.body?.category_id),
       price_per_meal: parseNonNegativeMoney(req.body?.price_per_meal, 'price_per_meal'),
       min_order_quantity:
         req.body?.min_order_quantity !== undefined
@@ -135,6 +234,9 @@ exports.validateUpdateVarietyMeal = (req, res, next) => {
     }
     if (req.body?.sort_order !== undefined) {
       payload.sort_order = parsePositiveInt(req.body.sort_order, 'sort_order', { min: 0, max: 10000 });
+    }
+    if (req.body?.category_id !== undefined) {
+      payload.category_id = parseCategoryId(req.body.category_id);
     }
     if (Object.keys(payload).length === 0 && !req.file) {
       return next(new AppError('No valid fields to update.', 400));

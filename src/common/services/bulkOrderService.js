@@ -34,19 +34,31 @@ const loadConfig = async (executor = db.query.bind(db)) => {
   return config;
 };
 
+const mapPublicConfig = (config) => ({
+  min_quantity: Number(config.min_quantity),
+  standard_max_quantity: Number(
+    config.standard_max_quantity ?? Math.max(Number(config.min_quantity), Number(config.tier_threshold) - 1)
+  ),
+  min_lead_days: Number(config.min_lead_days),
+  tier_threshold: Number(config.tier_threshold),
+  price_per_meal_under_threshold: Number(config.price_per_meal_under_threshold),
+  variety_menu_lookahead_days: Number(config.variety_menu_lookahead_days),
+  max_variety_types: Number(config.max_variety_types),
+  allow_multiple_variety_meals: config.allow_multiple_variety_meals !== false,
+  min_quantity_per_variety_meal: Number(config.min_quantity_per_variety_meal ?? 1),
+  is_active: config.is_active,
+  hub_intro_text: config.hub_intro_text || null,
+  standard_tier_title: config.standard_tier_title || null,
+  standard_tier_subtitle: config.standard_tier_subtitle || null,
+  standard_tier_description: config.standard_tier_description || null,
+  variety_tier_title: config.variety_tier_title || null,
+  variety_tier_subtitle: config.variety_tier_subtitle || null,
+  variety_tier_description: config.variety_tier_description || null,
+});
+
 const getPublicConfig = async () => {
   const config = await loadConfig();
-  return {
-    min_quantity: Number(config.min_quantity),
-    min_lead_days: Number(config.min_lead_days),
-    tier_threshold: Number(config.tier_threshold),
-    price_per_meal_under_threshold: Number(config.price_per_meal_under_threshold),
-    variety_menu_lookahead_days: Number(config.variety_menu_lookahead_days),
-    max_variety_types: Number(config.max_variety_types),
-    allow_multiple_variety_meals: config.allow_multiple_variety_meals !== false,
-    min_quantity_per_variety_meal: Number(config.min_quantity_per_variety_meal ?? 1),
-    is_active: config.is_active,
-  };
+  return mapPublicConfig(config);
 };
 
 const getEarliestDeliveryDate = (config) => {
@@ -66,21 +78,64 @@ const fetchMenuByDate = async (menuDate, executor = db.query.bind(db)) => {
   return res.rows[0] || null;
 };
 
-const fetchVarietyMeals = async (executor = db.query.bind(db)) => {
+const mapVarietyMealRow = (row) => ({
+  id: row.id,
+  name: row.name,
+  items: row.name,
+  image_url: row.image_url,
+  price_per_meal: Number(row.price_per_meal),
+  min_order_quantity: Number(row.min_order_quantity ?? 1),
+  category_id: row.category_id || null,
+});
+
+const fetchVarietyMeals = async (executor = db.query.bind(db), { categoryId = null } = {}) => {
+  const params = [];
+  let where = `m.is_active = true AND c.is_active = true`;
+  if (categoryId) {
+    params.push(categoryId);
+    where += ` AND m.category_id = $${params.length}`;
+  }
   const res = await executor(
-    `SELECT id, name, image_url, price_per_meal, min_order_quantity, is_active, sort_order
-     FROM bulk_variety_meals
-     WHERE is_active = true
-     ORDER BY sort_order ASC, created_at DESC`
+    `SELECT m.id, m.name, m.image_url, m.price_per_meal, m.min_order_quantity, m.category_id
+     FROM bulk_variety_meals m
+     INNER JOIN bulk_variety_categories c ON c.id = m.category_id
+     WHERE ${where}
+     ORDER BY m.sort_order ASC, m.created_at DESC`,
+    params
+  );
+  return res.rows.map(mapVarietyMealRow);
+};
+
+const fetchVarietyCategories = async (executor = db.query.bind(db)) => {
+  const res = await executor(
+    `SELECT c.id, c.name, c.description, c.image_url, c.sort_order,
+            COUNT(m.id) FILTER (WHERE m.is_active = true)::int AS meal_count
+     FROM bulk_variety_categories c
+     LEFT JOIN bulk_variety_meals m ON m.category_id = c.id
+     WHERE c.is_active = true
+     GROUP BY c.id
+     HAVING COUNT(m.id) FILTER (WHERE m.is_active = true) > 0
+     ORDER BY c.sort_order ASC, c.created_at DESC`
   );
   return res.rows.map((row) => ({
     id: row.id,
     name: row.name,
-    items: row.name,
+    description: row.description,
     image_url: row.image_url,
-    price_per_meal: Number(row.price_per_meal),
-    min_order_quantity: Number(row.min_order_quantity ?? 1),
+    sort_order: row.sort_order,
+    meal_count: Number(row.meal_count ?? 0),
   }));
+};
+
+const fetchVarietyMealsByCategory = async (categoryId, executor = db.query.bind(db)) => {
+  const catRes = await executor(
+    `SELECT id FROM bulk_variety_categories WHERE id = $1 AND is_active = true`,
+    [categoryId]
+  );
+  if (catRes.rows.length === 0) {
+    throw new AppError('Category not found or inactive.', 404);
+  }
+  return fetchVarietyMeals(executor, { categoryId });
 };
 
 const normalizeItems = (items) => {
@@ -138,10 +193,20 @@ const validateAndQuote = async ({ deliveryDate, items }, executor = db.query.bin
 
   let quotedLines = [];
 
+  const standardMax = Number(
+    config.standard_max_quantity ?? Math.max(Number(config.min_quantity), threshold - 1)
+  );
+
   if (tierMode === TIER_MODE.UNDER_THRESHOLD) {
     const deliveryMenu = await fetchMenuByDate(deliveryYmd, executor);
     if (!deliveryMenu) {
       throw new AppError(`No active menu for delivery date ${deliveryYmd}.`, 400);
+    }
+    if (totalQuantity > standardMax) {
+      throw new AppError(
+        `Standard bulk orders allow at most ${standardMax} meals. For ${threshold} or more, use large event bulk.`,
+        400
+      );
     }
     if (totalQuantity >= threshold) {
       throw new AppError(`For quantities of ${threshold} or more, use the variety ordering mode.`, 400);
@@ -209,8 +274,11 @@ const validateAndQuote = async ({ deliveryDate, items }, executor = db.query.bin
     const getBulkMeal = async (id) => {
       if (mealCache.has(id)) return mealCache.get(id);
       const res = await executor(
-        `SELECT id, name, image_url, price_per_meal, min_order_quantity, is_active
-         FROM bulk_variety_meals WHERE id = $1`,
+        `SELECT m.id, m.name, m.image_url, m.price_per_meal, m.min_order_quantity, m.is_active, m.category_id,
+                c.is_active AS category_active
+         FROM bulk_variety_meals m
+         INNER JOIN bulk_variety_categories c ON c.id = m.category_id
+         WHERE m.id = $1`,
         [id]
       );
       const meal = res.rows[0] || null;
@@ -221,7 +289,7 @@ const validateAndQuote = async ({ deliveryDate, items }, executor = db.query.bin
     const mealRows = [];
     for (const line of normalizedItems) {
       const meal = await getBulkMeal(line.bulkMealId);
-      if (!meal || !meal.is_active) {
+      if (!meal || !meal.is_active || !meal.category_active) {
         throw new AppError(`Bulk meal ${line.bulkMealId} is not available.`, 400);
       }
       if (!allowedIds.has(meal.id)) {
@@ -394,6 +462,8 @@ module.exports = {
   getEarliestDeliveryDate,
   fetchMenuByDate,
   fetchVarietyMeals,
+  fetchVarietyCategories,
+  fetchVarietyMealsByCategory,
   validateAndQuote,
   persistBulkOrder,
   confirmBulkOrder,
