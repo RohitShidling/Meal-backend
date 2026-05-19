@@ -81,6 +81,22 @@ exports.getSubscriptionOverview = catchAsync(async (req, res) => {
     ORDER BY cs.entity_type;
   `);
 
+  const bulkOverview = await db.query(`
+    SELECT
+      'bulk' AS entity_type,
+      COUNT(*)::int AS total_subscribed,
+      COUNT(*) FILTER (
+        WHERE COALESCE(NULLIF(TRIM(o.status), ''), bo.status) IN ('pending', 'confirmed', 'completed')
+      )::int AS active_count,
+      COUNT(*) FILTER (
+        WHERE bo.status = 'cancelled'
+           OR COALESCE(NULLIF(TRIM(o.status), ''), '') IN ('failed', 'cancelled')
+      )::int AS expired_count,
+      COALESCE(SUM(o.amount), 0)::float AS total_revenue
+    FROM bulk_orders bo
+    LEFT JOIN orders o ON o.id = bo.order_id;
+  `);
+
   const totals = await db.query(`
     SELECT
       COUNT(*) AS grand_total,
@@ -90,12 +106,33 @@ exports.getSubscriptionOverview = catchAsync(async (req, res) => {
     LEFT JOIN orders o ON cs.order_id = o.id;
   `);
 
+  const bulkRow = bulkOverview.rows[0] || {
+    entity_type: 'bulk',
+    total_subscribed: 0,
+    active_count: 0,
+    expired_count: 0,
+    total_revenue: 0,
+  };
+
+  const byEntityType = [...overview.rows, bulkRow].sort((a, b) =>
+    String(a.entity_type).localeCompare(String(b.entity_type))
+  );
+
+  const totalsRow = totals.rows[0] || {
+    grand_total: 0,
+    grand_active: 0,
+    grand_revenue: 0,
+  };
+  totalsRow.grand_total = Number(totalsRow.grand_total) + Number(bulkRow.total_subscribed || 0);
+  totalsRow.grand_active = Number(totalsRow.grand_active) + Number(bulkRow.active_count || 0);
+  totalsRow.grand_revenue = Number(totalsRow.grand_revenue) + Number(bulkRow.total_revenue || 0);
+
   res.status(200).json({
     success: true,
     data: {
-      byEntityType: overview.rows,
-      totals: totals.rows[0],
-    }
+      byEntityType,
+      totals: totalsRow,
+    },
   });
 });
 

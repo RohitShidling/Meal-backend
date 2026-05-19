@@ -12,7 +12,7 @@ exports.quote = catchAsync(async (req, res) => {
 
 exports.initiatePayment = catchAsync(async (req, res, next) => {
   const clientId = req.user.id;
-  const { deliveryDate, items, redirectUrl } = req.bulkOrderPayload;
+  const { deliveryDate, items, deliveryAddress, redirectUrl } = req.bulkOrderPayload;
 
   const client = await db.pool.connect();
   let quote;
@@ -22,7 +22,10 @@ exports.initiatePayment = catchAsync(async (req, res, next) => {
 
   try {
     await client.query('BEGIN');
-    quote = await bulkOrderService.validateAndQuote({ deliveryDate, items }, client.query.bind(client));
+    quote = await bulkOrderService.validateAndQuote(
+      { deliveryDate, items, deliveryAddress: req.bulkOrderPayload.deliveryAddress },
+      client.query.bind(client)
+    );
     const persisted = await bulkOrderService.persistBulkOrder(client, clientId, quote);
     bulkOrder = persisted.bulkOrder;
     order = persisted.order;

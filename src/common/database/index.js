@@ -1077,6 +1077,22 @@ const initDB = async () => {
       WHERE id = 1;
     `);
 
+    await pool.query(
+      `ALTER TABLE bulk_orders ADD COLUMN IF NOT EXISTS state_id INTEGER REFERENCES states(id) ON DELETE SET NULL;`
+    );
+    await pool.query(
+      `ALTER TABLE bulk_orders ADD COLUMN IF NOT EXISTS city_id INTEGER REFERENCES cities(id) ON DELETE SET NULL;`
+    );
+    await pool.query(
+      `ALTER TABLE bulk_orders ADD COLUMN IF NOT EXISTS address_line TEXT;`
+    );
+    await pool.query(
+      `ALTER TABLE bulk_orders ADD COLUMN IF NOT EXISTS pincode VARCHAR(10);`
+    );
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_bulk_orders_city ON bulk_orders(city_id);`
+    );
+
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cart_id VARCHAR(20) REFERENCES carts(id);`);
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS start_date DATE;`);
     await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS start_date DATE;`);
