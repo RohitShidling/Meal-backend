@@ -154,7 +154,54 @@ const normalizeItems = (items) => {
     );
 };
 
-const validateAndQuote = async ({ deliveryDate, items }, executor = db.query.bind(db)) => {
+const validateDeliveryAddress = async (address, executor = db.query.bind(db)) => {
+  if (!address || typeof address !== 'object') {
+    throw new AppError('Delivery address is required (state, city, and street address).', 400);
+  }
+  const stateId = Number(address.stateId ?? address.state_id);
+  const cityId = Number(address.cityId ?? address.city_id);
+  const addressLine = String(address.address ?? address.addressLine ?? address.address_line ?? '').trim();
+  const pincodeRaw = String(address.pincode ?? '').trim();
+
+  if (!Number.isInteger(stateId) || stateId < 1) {
+    throw new AppError('Please select a valid state.', 400);
+  }
+  if (!Number.isInteger(cityId) || cityId < 1) {
+    throw new AppError('Please select a valid city.', 400);
+  }
+  if (addressLine.length < 5) {
+    throw new AppError('Delivery address must be at least 5 characters.', 400);
+  }
+  if (addressLine.length > 500) {
+    throw new AppError('Delivery address is too long (max 500 characters).', 400);
+  }
+  if (pincodeRaw && !/^\d{6}$/.test(pincodeRaw)) {
+    throw new AppError('Pincode must be 6 digits.', 400);
+  }
+
+  const cityRes = await executor(
+    `SELECT c.id, c.name AS city_name, c.state_id, s.name AS state_name
+     FROM cities c
+     INNER JOIN states s ON s.id = c.state_id
+     WHERE c.id = $1 AND c.is_active = true AND s.is_active = true`,
+    [cityId]
+  );
+  const cityRow = cityRes.rows[0];
+  if (!cityRow || Number(cityRow.state_id) !== stateId) {
+    throw new AppError('Selected city does not belong to the selected state.', 400);
+  }
+
+  return {
+    state_id: stateId,
+    city_id: cityId,
+    state_name: cityRow.state_name,
+    city_name: cityRow.city_name,
+    address_line: addressLine,
+    pincode: pincodeRaw || null,
+  };
+};
+
+const validateAndQuote = async ({ deliveryDate, items, deliveryAddress }, executor = db.query.bind(db)) => {
   const config = await loadConfig(executor);
   const deliveryYmd = parseYmdStrict(deliveryDate);
   if (!deliveryYmd) {
@@ -173,6 +220,8 @@ const validateAndQuote = async ({ deliveryDate, items }, executor = db.query.bin
   if (normalizedItems.length === 0) {
     throw new AppError('At least one menu line is required.', 400);
   }
+
+  const resolvedAddress = await validateDeliveryAddress(deliveryAddress, executor);
 
   const totalQuantity = normalizedItems.reduce((sum, row) => sum + row.quantity, 0);
   if (totalQuantity > MAX_TOTAL_QUANTITY) {
@@ -344,14 +393,19 @@ const validateAndQuote = async ({ deliveryDate, items }, executor = db.query.bin
     total_amount: Number(totalAmount.toFixed(2)),
     tier_mode: tierMode,
     earliest_delivery_date: earliest,
+    delivery_address: resolvedAddress,
     lines: quotedLines,
   };
 };
 
 const persistBulkOrder = async (client, clientId, quote) => {
+  const addr = quote.delivery_address || {};
   const bulkRes = await client.query(
-    `INSERT INTO bulk_orders (client_id, delivery_date, total_quantity, total_amount, tier_mode, status)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO bulk_orders (
+       client_id, delivery_date, total_quantity, total_amount, tier_mode, status,
+       state_id, city_id, address_line, pincode
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING *`,
     [
       clientId,
@@ -360,6 +414,10 @@ const persistBulkOrder = async (client, clientId, quote) => {
       quote.total_amount,
       quote.tier_mode,
       BULK_ORDER_STATUS.PENDING,
+      addr.state_id ?? null,
+      addr.city_id ?? null,
+      addr.address_line ?? null,
+      addr.pincode ?? null,
     ]
   );
   const bulkOrder = bulkRes.rows[0];
@@ -411,11 +469,19 @@ const cancelBulkOrder = async (client, bulkOrderId) => {
   );
 };
 
+const bulkOrderAddressSelect = `
+  bo.state_id, bo.city_id, bo.address_line, bo.pincode,
+  st.name AS state_name, ct.name AS city_name
+`;
+
 const getBulkOrderForClient = async (bulkOrderId, clientId) => {
   const res = await db.query(
-    `SELECT bo.*, o.status AS order_status
+    `SELECT bo.*, o.status AS order_status,
+            ${bulkOrderAddressSelect}
      FROM bulk_orders bo
      LEFT JOIN orders o ON o.id = bo.order_id
+     LEFT JOIN states st ON st.id = bo.state_id
+     LEFT JOIN cities ct ON ct.id = bo.city_id
      WHERE bo.id = $1 AND bo.client_id = $2`,
     [bulkOrderId, clientId]
   );
@@ -436,8 +502,11 @@ const getBulkOrderForClient = async (bulkOrderId, clientId) => {
 
 const getBulkSummaryForOrder = async (orderId) => {
   const res = await db.query(
-    `SELECT bo.id, bo.delivery_date, bo.total_quantity, bo.total_amount, bo.tier_mode, bo.status
+    `SELECT bo.id, bo.delivery_date, bo.total_quantity, bo.total_amount, bo.tier_mode, bo.status,
+            ${bulkOrderAddressSelect}
      FROM bulk_orders bo
+     LEFT JOIN states st ON st.id = bo.state_id
+     LEFT JOIN cities ct ON ct.id = bo.city_id
      WHERE bo.order_id = $1`,
     [orderId]
   );
@@ -467,6 +536,7 @@ module.exports = {
   fetchVarietyMeals,
   fetchVarietyCategories,
   fetchVarietyMealsByCategory,
+  validateDeliveryAddress,
   validateAndQuote,
   persistBulkOrder,
   confirmBulkOrder,

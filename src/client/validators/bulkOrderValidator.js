@@ -47,46 +47,89 @@ const normalizeItems = (items) => {
   return { items: out };
 };
 
-exports.validateQuoteBody = (req, res, next) => {
-  const { deliveryDate, items } = req.body || {};
-  const errors = [];
+const normalizeDeliveryAddress = (body) => {
+  const raw = body.deliveryAddress ?? body.delivery_address ?? body.address;
+  if (!raw || typeof raw !== 'object') {
+    return { error: 'deliveryAddress is required (stateId, cityId, address).' };
+  }
+  const stateId = Number(raw.stateId ?? raw.state_id);
+  const cityId = Number(raw.cityId ?? raw.city_id);
+  const address = String(raw.address ?? raw.addressLine ?? raw.address_line ?? '').trim();
+  const pincode = String(raw.pincode ?? '').trim();
+
+  if (!Number.isInteger(stateId) || stateId < 1) {
+    return { error: 'deliveryAddress.stateId must be a positive integer.' };
+  }
+  if (!Number.isInteger(cityId) || cityId < 1) {
+    return { error: 'deliveryAddress.cityId must be a positive integer.' };
+  }
+  if (address.length < 5) {
+    return { error: 'deliveryAddress.address must be at least 5 characters.' };
+  }
+  if (address.length > 500) {
+    return { error: 'deliveryAddress.address must be at most 500 characters.' };
+  }
+  if (pincode && !/^\d{6}$/.test(pincode)) {
+    return { error: 'deliveryAddress.pincode must be 6 digits when provided.' };
+  }
+
+  return {
+    deliveryAddress: {
+      stateId,
+      cityId,
+      address,
+      pincode: pincode || undefined,
+    },
+  };
+};
+
+const buildPayload = (body, errors) => {
   const ymd =
-    typeof deliveryDate === 'string' && YMD_REGEX.test(deliveryDate.trim())
-      ? deliveryDate.trim()
+    typeof body.deliveryDate === 'string' && YMD_REGEX.test(body.deliveryDate.trim())
+      ? body.deliveryDate.trim()
       : null;
   if (!ymd || !parseYmdStrict(ymd)) {
     errors.push('deliveryDate must be YYYY-MM-DD.');
   }
-  const normalized = normalizeItems(items);
+
+  const normalized = normalizeItems(body.items);
   if (!normalized || normalized.error) {
     errors.push(normalized?.error || 'items must be a non-empty array.');
   }
-  if (errors.length > 0) {
+
+  const addressNorm = normalizeDeliveryAddress(body);
+  if (addressNorm.error) {
+    errors.push(addressNorm.error);
+  }
+
+  if (errors.length > 0) return null;
+
+  return {
+    deliveryDate: ymd,
+    items: normalized.items,
+    deliveryAddress: addressNorm.deliveryAddress,
+  };
+};
+
+exports.validateQuoteBody = (req, res, next) => {
+  const errors = [];
+  const payload = buildPayload(req.body || {}, errors);
+  if (!payload) {
     return next(new AppError('Validation failed.', 400, errors));
   }
-  req.bulkOrderPayload = { deliveryDate: ymd, items: normalized.items };
+  req.bulkOrderPayload = payload;
   return next();
 };
 
 exports.validateInitiateBody = (req, res, next) => {
-  const { deliveryDate, items, redirectUrl } = req.body || {};
+  const { redirectUrl } = req.body || {};
   const errors = [];
-  const ymd =
-    typeof deliveryDate === 'string' && YMD_REGEX.test(deliveryDate.trim())
-      ? deliveryDate.trim()
-      : null;
-  if (!ymd || !parseYmdStrict(ymd)) {
-    errors.push('deliveryDate must be YYYY-MM-DD.');
-  }
-  const normalized = normalizeItems(items);
-  if (!normalized || normalized.error) {
-    errors.push(normalized?.error || 'items must be a non-empty array.');
-  }
+  const payload = buildPayload(req.body || {}, errors);
   validateUrlIfProvided(redirectUrl, 'redirectUrl', errors);
-  if (errors.length > 0) {
+  if (!payload || errors.length > 0) {
     return next(new AppError('Validation failed.', 400, errors));
   }
-  req.bulkOrderPayload = { deliveryDate: ymd, items: normalized.items, redirectUrl };
+  req.bulkOrderPayload = { ...payload, redirectUrl };
   return next();
 };
 

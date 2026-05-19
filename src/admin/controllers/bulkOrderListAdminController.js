@@ -80,6 +80,10 @@ const buildListQuery = (query) => {
       OR c.phone_number ILIKE ${p}
       OR c.username ILIKE ${p}
       OR (${clientDisplayNameSql('c')}) ILIKE ${p}
+      OR bo.address_line ILIKE ${p}
+      OR bo.pincode ILIKE ${p}
+      OR st.name ILIKE ${p}
+      OR ct.name ILIKE ${p}
       ${tierClause}
       OR EXISTS (
         SELECT 1 FROM bulk_order_items boi
@@ -104,6 +108,8 @@ const buildListQuery = (query) => {
 const orderSelectSql = `
   SELECT bo.id, bo.client_id, bo.delivery_date, bo.total_quantity, bo.total_amount,
          bo.tier_mode, bo.created_at,
+         bo.state_id, bo.city_id, bo.address_line, bo.pincode,
+         st.name AS state_name, ct.name AS city_name,
          COALESCE(o.status, bo.status) AS status,
          c.phone_number,
          c.username AS client_username,
@@ -142,6 +148,8 @@ const orderSelectSql = `
   FROM bulk_orders bo
   LEFT JOIN orders o ON o.id = bo.order_id
   JOIN clients c ON c.id = bo.client_id
+  LEFT JOIN states st ON st.id = bo.state_id
+  LEFT JOIN cities ct ON ct.id = bo.city_id
 `;
 
 exports.listOrders = catchAsync(async (req, res) => {
@@ -152,6 +160,8 @@ exports.listOrders = catchAsync(async (req, res) => {
      FROM bulk_orders bo
      LEFT JOIN orders o ON o.id = bo.order_id
      JOIN clients c ON c.id = bo.client_id
+     LEFT JOIN states st ON st.id = bo.state_id
+     LEFT JOIN cities ct ON ct.id = bo.city_id
      ${whereSql}`,
     params
   );
